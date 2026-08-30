@@ -63,6 +63,7 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("branches:\n      - master", workflow)
         self.assertIn('tags:\n      - "**"', workflow)
         self.assertIn("python -m pip install -e .[build]", workflow)
+        self.assertIn('python-version: "3.10"', workflow)
         self.assertIn("run: .\\build_exe.ps1", workflow)
         self.assertIn("dist\\windows-ddc.exe", workflow)
         self.assertIn("if: github.ref == 'refs/heads/master'", workflow)
