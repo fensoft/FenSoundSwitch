@@ -10,6 +10,7 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Added
 
+- Added a release workflow that verifies a build on `master` and publishes `windows-ddc.exe` only for pushed Git tags.
 - Added keyboard mnemonics, refresh shortcuts, slider boundary/page navigation, focusable controls, and descriptive volume button labels.
 - Added release-history, architecture, and repository-agent documentation.
 - Added hardware-free unit coverage for hook liveness, readiness loss, write failures, shutdown, and paired volume-key events.

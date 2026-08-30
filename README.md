@@ -334,7 +334,7 @@ The script resolves the `python` command, changes to the repository root, verifi
 python -m nuitka --onefile --windows-console-mode=disable --enable-plugins=tk-inter --windows-icon-from-ico=windows-ddc.ico --include-data-files=windows-ddc.ico=windows-ddc.ico --output-dir=dist --output-filename=windows-ddc.exe --remove-output --assume-yes-for-downloads app.py
 ```
 
-The icon is both the executable icon and runtime data because `theme.py` loads a sibling `windows-ddc.ico`. The build can download Nuitka support/toolchain components, writes the named artifact under `dist\`, may overwrite an existing artifact, and removes its intermediate build directory. `dist\` is ignored. CI validates source without executing this build; no installer, signing step, CI artifact build, or release-publishing workflow is defined.
+The icon is both the executable icon and runtime data because `theme.py` loads a sibling `windows-ddc.ico`. The build can download Nuitka support/toolchain components, writes the named artifact under `dist\`, may overwrite an existing artifact, and removes its intermediate build directory. `dist\` is ignored. CI validates source without executing this build. The separate Release workflow builds and verifies the executable on `master` without publishing it, then builds and publishes the executable only when a new Git tag is pushed. The repository defines no installer or signing automation.
 
 ## Development and testing
 
@@ -368,7 +368,7 @@ $parseErrors = $null
 if ($parseErrors.Count -ne 0) { $parseErrors; exit 1 }
 ```
 
-CI installs only the runtime project with `python -m pip install -e .`; it does not install the optional Nuitka build extra or publish artifacts. A workflow contract test keeps the supported Python boundary, low-risk commands, and prohibited hardware/runtime commands explicit.
+CI installs only the runtime project with `python -m pip install -e .`; it does not install the optional Nuitka build extra or publish artifacts. The Release workflow installs the build extra only for its disposable build; it does not publish on `master`. A workflow contract test keeps the supported Python boundary, low-risk commands, and prohibited hardware/runtime commands explicit.
 
 Changes to GUI, plugins, Discord RPC/OAuth, audio-output policy, autostart, tray, hook, display notifications, or DDC behavior still require an authorized manual test on Windows with compatible monitors. Back up live settings first. At minimum, verify primary startup; duplicate launch exits before plugin setup; first Discord authorization and silent restart reuse; shortcut capture/conflict/rebind, one-second output restoration, repeated presses, Discord absence/restart, both external plugin folders, and shutdown during a switch; Start with Windows enable/disable and restart persistence; unique/no-serial/duplicate identity behavior; Change speed behavior and persistence; accessibility/theme/mixed-DPI behavior; exact/inferred/ambiguous audio-output matching; driver/topology changes; fresh writes/readback and coalescing; focus-safe overlay behavior; key pass-through and native failures; tray recovery; and clean exit. These tests can change Discord voice routing, OAuth credentials, audio endpoint visibility/name, the current-user Run key, physical monitor volume, and user-session keyboard behavior.
 

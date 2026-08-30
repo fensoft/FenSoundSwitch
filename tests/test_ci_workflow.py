@@ -5,6 +5,9 @@ from pathlib import Path
 
 
 WORKFLOW_PATH = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+RELEASE_WORKFLOW_PATH = (
+    Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
+)
 
 
 class CIWorkflowTests(unittest.TestCase):
@@ -54,6 +57,19 @@ class CIWorkflowTests(unittest.TestCase):
         for command in forbidden_commands:
             with self.subTest(command=command):
                 self.assertNotIn(command, self.workflow)
+
+    def test_release_workflow_builds_master_but_publishes_only_tags(self) -> None:
+        workflow = RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertIn("branches:\n      - master", workflow)
+        self.assertIn('tags:\n      - "**"', workflow)
+        self.assertIn("python -m pip install -e .[build]", workflow)
+        self.assertIn("run: .\\build_exe.ps1", workflow)
+        self.assertIn("dist\\windows-ddc.exe", workflow)
+        self.assertIn("if: github.ref == 'refs/heads/master'", workflow)
+        self.assertIn("if: startsWith(github.ref, 'refs/tags/')", workflow)
+        self.assertIn("permissions:\n      contents: read", workflow)
+        self.assertIn("permissions:\n      contents: write", workflow)
+        self.assertIn("softprops/action-gh-release@v2", workflow)
 
 
 if __name__ == "__main__":
