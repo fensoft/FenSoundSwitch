@@ -1,0 +1,285 @@
+from __future__ import annotations
+
+import json
+import os
+import socket
+import threading
+import time
+import tkinter as tk
+from dataclasses import dataclass
+from pathlib import Path
+from tkinter import ttk
+
+from plugin_api import PLUGIN_API_VERSION, HotkeySpec, PluginHostContext, show_host_port_route_editor
+
+
+CONFIG_SCHEMA_VERSION = 1
+DEFAULT_PORT = 8102
+CONNECT_TIMEOUT_SECONDS = 2.0
+IO_TIMEOUT_SECONDS = 2.0
+MAX_LINE_SIZE = 256
+RECEIVE_SIZE = 1024
+MAIN_ZONE_MINIMUM = 0
+MAIN_ZONE_MAXIMUM = 185
+
+
+class PioneerEliteError(RuntimeError):
+    """The configured Pioneer/Elite receiver did not provide a usable response."""
+
+
+@dataclass(frozen=True)
+class ReceiverConfig:
+    host: str
+    port: int = DEFAULT_PORT
+
+
+class PioneerLineParser:
+    """Incrementally extracts CR-terminated Pioneer/Elite protocol lines."""
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+
+    def feed(self, data: bytes) -> list[bytes]:
+        self._buffer.extend(data)
+        lines: list[bytes] = []
+        while True:
+            marker = self._buffer.find(b"\r")
+            if marker < 0:
+                if len(self._buffer) > MAX_LINE_SIZE:
+                    self._buffer.clear()
+                break
+            line = bytes(self._buffer[:marker]).rstrip(b"\n")
+            del self._buffer[: marker + 1]
+            if self._buffer[:1] == b"\n":
+                del self._buffer[:1]
+            if 0 < len(line) <= MAX_LINE_SIZE:
+                lines.append(line)
+        return lines
+
+
+def _valid_config(value: object) -> ReceiverConfig | None:
+    if not isinstance(value, dict) or value.get("schema_version") != CONFIG_SCHEMA_VERSION:
+        return None
+    if set(value) - {"schema_version", "host", "port"}:
+        return None
+    host = value.get("host")
+    port = value.get("port", DEFAULT_PORT)
+    if not isinstance(host, str) or not (host := host.strip()) or len(host) > 253:
+        return None
+    if any(character.isspace() or ord(character) < 32 for character in host):
+        return None
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        return None
+    return ReceiverConfig(host, port)
+
+
+def _load_config(path: Path) -> ReceiverConfig | None:
+    try:
+        return _valid_config(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _save_config(path: Path, config: ReceiverConfig) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    payload = json.dumps({"schema_version": CONFIG_SCHEMA_VERSION, "host": config.host, "port": config.port}, indent=2)
+    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def _main_zone_volume(line: bytes) -> int | None:
+    if len(line) != 6 or not line.startswith(b"VOL") or not line[3:].isdigit():
+        return None
+    value = int(line[3:])
+    if not MAIN_ZONE_MINIMUM <= value <= MAIN_ZONE_MAXIMUM:
+        return None
+    return value
+
+
+def _to_percent(value: int) -> int:
+    if not MAIN_ZONE_MINIMUM <= value <= MAIN_ZONE_MAXIMUM:
+        raise PioneerEliteError("The receiver returned an unsupported main-zone volume value.")
+    return round(value * 100 / MAIN_ZONE_MAXIMUM)
+
+
+def _from_percent(value: int) -> int:
+    value = max(0, min(100, int(value)))
+    return round(value * MAIN_ZONE_MAXIMUM / 100)
+
+
+class PioneerEliteVolumePlugin:
+    plugin_id = "pioneer-elite-volume"
+    name = "Pioneer/Elite network volume"
+    description = "Controls a configured Pioneer or Elite receiver main zone using its documented network control protocol."
+    provider_name = "Pioneer/Elite main-zone volume"
+
+    def __init__(self) -> None:
+        self._host: PluginHostContext | None = None
+        self._config: ReceiverConfig | None = None
+        self._socket: socket.socket | None = None
+        self._parser = PioneerLineParser()
+        self._lock = threading.Lock()
+
+    def initialize(self, host: PluginHostContext) -> None:
+        self._host = host
+
+    def create_output(self, parameters: object) -> "PioneerEliteVolumePlugin":
+        if not isinstance(parameters, dict):
+            raise ValueError("Pioneer/Elite route parameters must be an object.")
+        instance = PioneerEliteVolumePlugin()
+        instance._config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **parameters})
+        return instance
+
+    def route_output_form_values(self, parameters: dict[str, object]) -> dict[str, str]:
+        config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **parameters})
+        return {"host": config.host if config is not None else "", "port": str(config.port if config is not None else DEFAULT_PORT)}
+
+    def validate_route_output_form(self, host: str, port: str) -> dict[str, object]:
+        config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, "host": host, "port": _parse_port(port)})
+        if config is None:
+            raise ValueError("Enter a non-empty host and a TCP port from 1 through 65535.")
+        return {"host": config.host, "port": config.port}
+
+    def configure_route_output(self, parent: tk.Misc, parameters: dict[str, object], on_save: callable) -> None:
+        host = self._require_host()
+        show_host_port_route_editor(parent, host.prepare_window, "Configure Pioneer/Elite route", parameters, self.route_output_form_values, self.validate_route_output_form, on_save)
+
+    def route_output_summary(self, parameters: dict[str, object]) -> str:
+        values = self.route_output_form_values(parameters)
+        return f"Configured: {values['host']}:{values['port']}" if values["host"] else "Not configured."
+
+    def configure(self, parent: tk.Misc) -> None:
+        host = self._require_host()
+        window = tk.Toplevel(parent)
+        window.title("Configure Pioneer/Elite network volume")
+        window.transient(parent)
+        host.prepare_window(window)
+        frame = ttk.Frame(window, padding=12)
+        frame.grid(sticky="nsew")
+        window.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        configured = self._config or ReceiverConfig("")
+        host_value = tk.StringVar(value=configured.host)
+        port_value = tk.StringVar(value=str(configured.port))
+        status = tk.StringVar(value="Configure the receiver hostname or IP address. Only the main zone is controlled.")
+        ttk.Label(frame, text="Receiver host:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=host_value, width=40).grid(row=0, column=1, sticky="ew")
+        ttk.Label(frame, text="Port:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(frame, textvariable=port_value, width=8).grid(row=1, column=1, sticky="w", pady=(8, 0))
+        ttk.Label(frame, textvariable=status, wraplength=460).grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+        def save() -> None:
+            candidate = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, "host": host_value.get(), "port": _parse_port(port_value.get())})
+            if candidate is None:
+                status.set("Enter a non-empty host and a port from 1 through 65535.")
+                return
+            try:
+                _save_config(host.config_path, candidate)
+            except OSError as exc:
+                status.set(f"Could not save configuration: {exc}")
+                return
+            with self._lock:
+                self._config = candidate
+                self._close_transport_locked()
+            host.request_volume_refresh()
+            window.destroy()
+
+        ttk.Button(frame, text="Save", command=save).grid(row=3, column=1, sticky="e", pady=(12, 0))
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        window.grab_set()
+
+    def get_hotkey(self) -> HotkeySpec | None:
+        return None
+
+    def trigger(self) -> None:
+        return
+
+    def is_volume_provider_available(self) -> tuple[bool, str | None]:
+        if self._config is None:
+            return False, "Configure a Pioneer or Elite receiver in Routes."
+        return True, None
+
+    def activate_volume_provider(self) -> None:
+        return
+
+    def deactivate_volume_provider(self) -> None:
+        return
+
+    def on_volume_topology_changed(self) -> None:
+        return
+
+    def read_volume(self) -> int:
+        with self._lock:
+            return _to_percent(self._request_volume_locked(b"?V\r"))
+
+    def write_volume(self, target_volume: int) -> int:
+        command = f"{_from_percent(target_volume):03d}V\r".encode("ascii")
+        with self._lock:
+            return _to_percent(self._request_volume_locked(command))
+
+    def shutdown(self, timeout: float) -> bool:
+        with self._lock:
+            self._close_transport_locked()
+        return True
+
+    def _request_volume_locked(self, command: bytes) -> int:
+        try:
+            connection = self._connection_locked()
+            connection.sendall(command)
+            deadline = time.monotonic() + IO_TIMEOUT_SECONDS
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PioneerEliteError("Timed out waiting for the receiver main-zone volume.")
+                connection.settimeout(remaining)
+                received = connection.recv(RECEIVE_SIZE)
+                if not received:
+                    raise PioneerEliteError("The receiver closed the network control connection.")
+                for line in self._parser.feed(received):
+                    volume = _main_zone_volume(line)
+                    if volume is not None:
+                        return volume
+        except (OSError, socket.timeout, PioneerEliteError) as exc:
+            self._close_transport_locked()
+            if isinstance(exc, PioneerEliteError):
+                raise
+            raise PioneerEliteError(f"Could not communicate with the configured Pioneer/Elite receiver: {exc}") from exc
+
+    def _connection_locked(self) -> socket.socket:
+        config = self._config
+        if config is None:
+            raise PioneerEliteError("Configure a Pioneer or Elite receiver in Routes.")
+        if self._socket is None:
+            self._socket = socket.create_connection((config.host, config.port), timeout=CONNECT_TIMEOUT_SECONDS)
+            self._socket.settimeout(IO_TIMEOUT_SECONDS)
+            self._parser = PioneerLineParser()
+        return self._socket
+
+    def _close_transport_locked(self) -> None:
+        connection, self._socket = self._socket, None
+        self._parser = PioneerLineParser()
+        if connection is not None:
+            try:
+                connection.close()
+            except OSError:
+                pass
+
+    def _require_host(self) -> PluginHostContext:
+        if self._host is None:
+            raise RuntimeError("Pioneer/Elite volume plugin is not initialized.")
+        return self._host
+
+
+def _parse_port(value: str) -> object:
+    try:
+        return int(value.strip(), 10)
+    except (AttributeError, ValueError):
+        return None
+
+
+def create_plugin() -> PioneerEliteVolumePlugin:
+    return PioneerEliteVolumePlugin()

@@ -29,8 +29,15 @@ def _selection_from_json(value: object) -> SavedMonitorSelection | None:
     if not isinstance(value, dict):
         return None
     description = value.get("description")
+    if not isinstance(description, str) or not description.strip():
+        return None
     identity = value.get("identity")
-    if not isinstance(description, str) or not description.strip() or not isinstance(identity, dict):
+    if identity is None:
+        legacy_ordinal = value.get("legacy_ordinal")
+        if isinstance(legacy_ordinal, bool) or not isinstance(legacy_ordinal, int) or legacy_ordinal < 1:
+            return None
+        return SavedMonitorSelection(description=description.strip(), legacy_ordinal=legacy_ordinal)
+    if not isinstance(identity, dict):
         return None
     device_path = identity.get("device_path")
     if not isinstance(device_path, str) or not device_path.strip():
@@ -51,7 +58,12 @@ def _selection_from_json(value: object) -> SavedMonitorSelection | None:
 
 def _selection_to_json(selection: SavedMonitorSelection) -> dict[str, object]:
     if selection.identity is None:
-        raise ValueError("DDC monitor selection needs a stable identity.")
+        if selection.legacy_ordinal is None:
+            raise ValueError("DDC monitor selection needs a stable identity or unambiguous legacy description.")
+        return {
+            "description": selection.description,
+            "legacy_ordinal": selection.legacy_ordinal,
+        }
     identity: dict[str, object] = {"device_path": selection.identity.device_path}
     for name in ("manufacturer_id", "product_code", "serial_number"):
         value = getattr(selection.identity, name)
@@ -76,15 +88,31 @@ class DdcVolumePlugin:
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
-        self._selection = self._load_selection(host.config_path)
-        if self._selection is None:
-            # One-way compatibility migration. The legacy value is retained.
-            legacy = load_selected_monitor_key()
-            if legacy is not None and legacy.identity is not None:
-                self._selection = legacy
-                self._save_selection()
+
+    def create_output(self, parameters: object) -> "DdcVolumePlugin":
+        if not isinstance(parameters, dict):
+            raise ValueError("DDC route parameters must be an object.")
+        instance = DdcVolumePlugin()
+        # Route instances retain the initialized host boundary for their
+        # asynchronous audio-output reconciliation callbacks.
+        instance._host = self._host
+        instance._selection = _selection_from_json(parameters.get("selected_monitor"))
+        if instance._selection is None:
+            # A route created before selection is configured remains unavailable,
+            # rather than borrowing another route's monitor.
+            return instance
+        return instance
 
     def configure(self, parent: tk.Misc) -> None:
+        # Definitions are configured through the route editor, never globally.
+        return None
+
+    def configure_route_output(
+        self,
+        parent: tk.Misc,
+        parameters: dict[str, object],
+        on_save: callable,
+    ) -> None:
         host = self._require_host()
         window = tk.Toplevel(parent)
         window.title("Configure DDC monitor volume")
@@ -94,7 +122,7 @@ class DdcVolumePlugin:
         frame.grid(sticky="nsew")
         window.columnconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
-        value = tk.StringVar(value="Choose Refresh to discover DDC monitors.")
+        value = tk.StringVar(value="Discovering monitors…")
         combo = ttk.Combobox(frame, state="readonly", width=56)
         ttk.Label(frame, textvariable=value, wraplength=520).grid(row=0, column=0, columnspan=2, sticky="w")
         combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -112,7 +140,7 @@ class DdcVolumePlugin:
                 def finish() -> None:
                     discovered[:] = monitors
                     combo["values"] = [monitor.display_name for monitor in monitors]
-                    match = match_selected_monitor(monitors, self._selection)
+                    match = match_selected_monitor(monitors, _selection_from_json(parameters.get("selected_monitor")))
                     if match.status == SelectionMatchStatus.FOUND and match.index is not None:
                         combo.current(match.index)
                     value.set(f"{len(monitors)} monitor(s) found.")
@@ -121,19 +149,34 @@ class DdcVolumePlugin:
 
         def save() -> None:
             index = combo.current()
-            if index < 0 or index >= len(discovered) or discovered[index].selection_key is None:
-                value.set("Select a monitor with a verifiable identity.")
+            if index < 0 or index >= len(discovered):
+                value.set("Select a monitor.")
                 return
-            self._selection = discovered[index].selection_key
-            self._save_selection()
-            host.request_volume_refresh()
+            selected = discovered[index]
+            selection = selected.selection_key
+            if selection is None:
+                if sum(monitor.description == selected.description for monitor in discovered) != 1:
+                    value.set("This monitor description is ambiguous; a stable identity is required.")
+                    return
+                selection = SavedMonitorSelection(
+                    description=selected.description,
+                    legacy_ordinal=selected.description_ordinal,
+                )
+            on_save({"selected_monitor": _selection_to_json(selection)})
             window.destroy()
 
-        ttk.Button(frame, text="Refresh", command=refresh).grid(row=2, column=0, sticky="w", pady=(10, 0))
         ttk.Button(frame, text="Save", command=save).grid(row=2, column=1, sticky="e", pady=(10, 0))
+        ttk.Button(frame, text="Cancel", command=window.destroy).grid(row=2, column=2, sticky="e", padx=(8, 0), pady=(10, 0))
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         window.grab_set()
         refresh()
+
+    def route_output_summary(self, parameters: dict[str, object]) -> str:
+        selection = _selection_from_json(parameters.get("selected_monitor"))
+        return f"Selected monitor: {selection.description}" if selection is not None else "No monitor selected for this route."
+
+    # Retained for callers built against the first route-editor draft API.
+    route_output_status = route_output_summary
 
     def get_hotkey(self) -> HotkeySpec | None:
         return None
@@ -143,7 +186,7 @@ class DdcVolumePlugin:
 
     def is_volume_provider_available(self) -> tuple[bool, str | None]:
         if self._selection is None:
-            return False, "Select a DDC monitor in Configure plugins."
+            return False, "Select a DDC monitor in Routes."
         return True, None
 
     def activate_volume_provider(self) -> None:
@@ -175,15 +218,12 @@ class DdcVolumePlugin:
     def _resolve_selected_monitor(self) -> tuple[MonitorRef, list[MonitorRef]]:
         selection = self._selection
         if selection is None:
-            raise DDCError("Select a DDC monitor in Configure plugins.")
+            raise DDCError("Select a DDC monitor in Routes.")
         monitors = enumerate_monitors()
         match = match_selected_monitor(monitors, selection)
         if match.status != SelectionMatchStatus.FOUND or match.index is None:
             raise DDCError("The selected DDC monitor is unavailable or its identity is ambiguous.")
         monitor = monitors[match.index]
-        if monitor.selection_key is not None and monitor.selection_key != self._selection:
-            self._selection = monitor.selection_key
-            self._save_selection()
         return monitor, monitors
 
     def _schedule_audio_reconciliation(self, monitors: list[MonitorRef], selected: MonitorRef) -> None:
@@ -215,16 +255,6 @@ class DdcVolumePlugin:
         if not isinstance(data, dict) or data.get("schema_version") != CONFIG_SCHEMA_VERSION:
             return None
         return _selection_from_json(data.get("selected_monitor"))
-
-    def _save_selection(self) -> None:
-        host = self._require_host()
-        if self._selection is None:
-            return
-        path = host.config_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"schema_version": CONFIG_SCHEMA_VERSION, "selected_monitor": _selection_to_json(self._selection)}, indent=2), encoding="utf-8")
-        temporary.replace(path)
 
     def _require_host(self) -> PluginHostContext:
         if self._host is None:

@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from gui import MonitorVolumeApp
-from overlay import VolumeOverlay
+from plugins.windows11_overlay_plugin import VolumeOverlay
 from theme import (
     DARK_BG,
     DARK_STATUS_BG,
@@ -130,28 +130,16 @@ class NativeAccessibilityTests(unittest.TestCase):
 
 
 class KeyboardAccessibilityTests(unittest.TestCase):
-    def test_keyboard_shortcuts_cover_every_primary_control(self) -> None:
+    def test_keyboard_shortcuts_only_include_the_remaining_window_action(self) -> None:
         app = MonitorVolumeApp.__new__(MonitorVolumeApp)
         app.root = Mock()
-        app.volume_scale = Mock()
-        app.change_speed_combo = Mock()
-        app.refresh_button = Mock()
-        app.configure_plugins_button = Mock()
 
         app._bind_keyboard_shortcuts()
 
         sequences = {call.args[0] for call in app.root.bind.call_args_list}
         self.assertEqual(
             sequences,
-            {
-                "<Alt-v>",
-                "<Alt-c>",
-                "<Alt-r>",
-                "<Control-r>",
-                "<F5>",
-                "<Alt-p>",
-                "<Escape>",
-            },
+            {"<Escape>"},
         )
 
     def test_focus_and_invoke_helpers_skip_disabled_controls(self) -> None:

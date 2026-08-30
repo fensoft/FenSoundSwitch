@@ -25,13 +25,13 @@ py-modules = [
     "diagnostics",
     "gui",
     "ddc",
-    "ddc_volume_plugin",
-    "discord_output_plugin",
     "settings",
     "theme",
-    "overlay",
     "plugin_api",
     "plugin_hotkeys",
     "plugin_manager",
     "windows_platform",
 ]
+
+[tool.setuptools.packages.find]
+include = ["plugins", "plugins.*"]

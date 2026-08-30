@@ -8,9 +8,9 @@ There is no server-side tier. The project has no HTTP API, listening port, datab
 
 1. The supported entrypoint, `app.py`, first recognizes the strictly validated internal elevated audio-rename request. Ordinary launches acquire a session-local named mutex; a duplicate broadcasts a restore request and exits before creating Tk or application subsystems.
 2. The primary instance configures a rotating per-user diagnostic log, creates one `tk.Tk`, constructs `gui.MonitorVolumeApp`, and enters `root.mainloop()` while retaining the mutex handle.
-3. `MonitorVolumeApp.__init__()` samples the Windows app-theme and High Contrast state, reads the optional current-user autostart value, and loads the saved monitor selection and Change speed preference from `settings.py`.
-4. It builds the keyboard-navigable, DPI-scaled control window, status bar, and hidden, native-no-activate `overlay.VolumeOverlay` on the Tk thread.
-5. It dynamically imports `plugin_manager` only after the mutex/Tk boundary, loads the bundled plugin followed by adjacent and per-user Python files, initializes each in isolation, and starts the shared registered-hotkey loop. The bundled Discord plugin opens its app-owned setup modal only when Credential Manager has no valid configuration, then validates or creates its grant on a worker.
+3. `MonitorVolumeApp.__init__()` samples the Windows app-theme and High Contrast state, reads the optional current-user autostart value, and loads saved monitor selection and route settings from `settings.py`.
+4. It builds the keyboard-navigable, DPI-scaled control window and status bar on the Tk thread.
+5. It dynamically imports `plugin_manager` only after the mutex/Tk boundary, directly imports first-party modules from the bundled `plugins` package, then loads adjacent `external-plugins\*.py` and per-user Python files in isolation, and starts the shared passive shortcut observer. After plugin initialization, the selected renderer-only bundled overlay creates the hidden, native-no-activate overlay on the Tk thread. The bundled package is never dynamically scanned. The bundled Discord plugin opens its app-owned setup modal only when Credential Manager has no valid configuration, then validates or creates its grant on a worker.
 6. It starts a dedicated `DisplayChangeListener` hidden window for topology and live theme/system-color broadcasts. Failure leaves all monitor-volume writes disabled; the app can still enumerate and display status.
 7. It independently starts the tray controller and low-level global Volume Up/Down hook. Tk publishes immutable menu snapshots to the tray, while tray Refresh/selection/restore/exit actions enqueue Tk callbacks. Their failures remain nonfatal to the other subsystems.
 8. It schedules the recurring Tk queue poll and a one-shot initial monitor refresh after 50 ms.
@@ -33,8 +33,8 @@ Source execution uses one interactive process per Windows session, enforced by `
 | `display-change-listener` | Long-lived daemon | Hidden Win32 window, monitor device registration, display/device and theme/system-color message pump | Invalidates the topology generation or enqueues a live-theme refresh in Tk |
 | `tray-icon` | Long-lived daemon | Hidden Win32 window, notification icon, live snapshot menu, message pump | Reads lock-protected immutable state; controller actions enqueue Tk work through `_post_to_ui()` |
 | `volume-key-hook` | Long-lived daemon | `WH_KEYBOARD_LL` hook and message pump | Reads readiness through `should_consume()` and enqueues integer deltas |
-| `plugin-hotkey-loop` | Long-lived daemon | Passive `WH_KEYBOARD_LL` observer | Queues plugin IDs and always forwards keyboard input; never calls plugin or Tk code directly |
-| `plugin-hotkey-dispatch` | Long-lived daemon | Dispatches queued registered-hotkey IDs | Starts one manager-owned trigger worker only when that plugin is not already active |
+| `plugin-hotkey-loop` | Long-lived daemon | Passive `WH_KEYBOARD_LL` observer | Queues manager binding IDs and always forwards keyboard input; never calls plugin or Tk code directly |
+| `plugin-hotkey-dispatch` | Long-lived daemon | Dispatches queued shortcut binding IDs | Starts one manager-owned trigger worker only when that action is not already active |
 | `plugin-<id>` | Short-lived daemon per accepted trigger | Runs trusted plugin trigger code | Reports status through the host context; never calls Tk directly |
 | `discord-output-auth` | Short-lived daemon | Discord named-pipe authentication, consent-code exchange, and token reuse/refresh | Reports privacy-safe status through `_post_to_ui()`; Credential Manager holds secrets |
 | `ddc-gui-worker` | One short-lived daemon per accepted refresh/selection read | Enumeration and selected-monitor volume reads | Enqueues success or failure callable |
@@ -81,11 +81,17 @@ The only path before the guard is the app-generated `--internal-rename-audio-end
 | `diagnostics.py` | Configures and closes the bounded per-user rotating log and provides component loggers. |
 | `gui.py` | Coordinates Tk, monitor selection, readiness, DDC workers, rapid-write coalescing, live theme/DPI reflow, keyboard navigation, overlay targeting, persistence, tray lifecycle, and shutdown. |
 | `ddc.py` | Defines `MonitorRef`, selection identity, monitor discovery, clamping, and DDC read/change/write wrappers. |
-| `ddc_volume_plugin.py` | Bundled generic volume provider that owns DDC target configuration, fresh reads/writes, and active-only monitor audio policy. |
-| `discord_output_plugin.py` | Implements Discord local RPC, OAuth/token refresh, Credential Manager storage/migration, shortcut configuration, and exact temporary output restoration. |
-| `settings.py` | Atomically loads and replaces the selected-monitor and Change speed JSON settings. |
-| `overlay.py` | Calculates work-area/DPI-aware geometry and implements focus-safe, live-themed topmost volume and unavailable/error presentations. |
-| `plugin_api.py` | Defines API version 1, `HotkeySpec`, the plugin protocol, and host context. |
+| `plugins/ddc_volume_plugin.py` | Bundled generic volume provider that owns DDC target configuration, fresh reads/writes, and active-only monitor audio policy. |
+| `plugins/denon_marantz_volume_plugin.py` | Bundled Denon/Marantz AVR main-zone provider using bounded TCP `MV` commands. |
+| `plugins/discord_output_plugin.py` | Implements Discord local RPC, OAuth/token refresh, Credential Manager storage/migration, and exact temporary output restoration. |
+| `plugins/onkyo_volume_plugin.py` | Bundled main-zone Onkyo/Integra eISCP volume provider with bounded outbound TCP transport and plugin-owned receiver configuration. |
+| `plugins/pioneer_elite_volume_plugin.py` | Bundled Pioneer/Elite main-zone provider using bounded TCP IP control. |
+| `plugins/sony_volume_plugin.py` | Bundled Sony network AVR main-zone provider using bounded JSON-RPC HTTP requests. |
+| `plugins/yamaha_volume_plugin.py` | Bundled Yamaha main-zone provider using bounded TCP YNCA commands. |
+| `settings.py` | Atomically loads selected-monitor, legacy Change speed, and ordered route JSON settings. |
+| `plugins/windows11_overlay_plugin.py` | Windows 11 renderer with typed current/all-routed presentation settings and safe migration of the old global setting. |
+| `plugins/macos_overlay_plugin.py` | Distinct macOS-inspired renderer that shares the focus-safe Windows presentation path. |
+| `plugin_api.py` | Defines API version 3, `HotkeySpec`, `ShortcutAction`, optional input, volume-provider, and selectable overlay-renderer capabilities, the plugin protocol, and host context. |
 | `plugin_hotkeys.py` | Owns the native passive multi-plugin keyboard observer and off-thread dispatch queue. |
 | `plugin_manager.py` | Discovers trusted bundled/external plugins, isolates failures, owns configuration UI, suppresses overlapping triggers, and coordinates shutdown. |
 | `theme.py` | Reads Windows theme/High Contrast/DPI state, defines reversible ttk styling, applies DWM chrome, and resolves the icon. |
@@ -96,9 +102,9 @@ The only path before the guard is the app-generated `--internal-rename-audio-end
 
 ## Runtime plugins and Discord OAuth
 
-`plugin_manager.discover_plugins()` loads API-v1 candidates in a fixed precedence order: the direct bundled `discord_output_plugin` registry entry, sorted `plugins\*.py` beside the source/executable, then sorted `%APPDATA%\windows-ddc\plugins\*.py`. Repeated physical directories are collapsed. A candidate module must expose `PLUGIN_API_VERSION = 1` and `create_plugin()`; malformed objects, later duplicate IDs, import exceptions, and initialization exceptions become visible failure records. There is no sandbox, manifest, enable flag, or runtime reload: every discovered external file is deliberately trusted and executes in-process at primary startup.
+`plugin_manager.discover_plugins()` directly imports API-v3 first-party modules from the bundled `plugins` package in a fixed precedence order: Windows 11 overlay, macOS-style overlay, Discord, DDC, Onkyo/Integra, Denon/Marantz, Yamaha, Pioneer/Elite, Sony, and Windows Volume input. It then scans sorted `external-plugins\*.py` beside the source/executable and sorted `%APPDATA%\windows-ddc\plugins\*.py`. The bundled `plugins` package is never scanned as an external directory. Repeated physical external directories are collapsed. A candidate module must expose `PLUGIN_API_VERSION = 3` and `create_plugin()`; malformed objects, later duplicate IDs, import exceptions, and initialization exceptions become visible failure records. There is no sandbox, manifest, enable flag, or runtime reload: every discovered external file is deliberately trusted and executes in-process at primary startup.
 
-The host gives each loaded plugin a status/logging boundary, `_post_to_ui()` bridge, prepared Tk-parent/window callbacks, a volume-refresh callback, and `%APPDATA%\windows-ddc\plugin-settings\<id>.json`. The Discord plugin writes only schema-v1 shortcut data there. A runtime plugin may additionally supply the optional `VolumeProvider` capability: blocking normalized `0`–`100` reads/writes are worker-routed through one user-selected active provider. Provider failure disables control and releases Volume keys; no fallback provider is chosen automatically. The bundled DDC provider owns its monitor-selection migration/configuration and active-only audio policy. `PluginHotkeyController` accepts any nonzero Windows keyboard virtual-key code with optional Ctrl/Alt/Shift/Win modifiers, detects duplicate in-process combinations, suppresses held-key repeats, and always calls the next hook so the foreground application receives the original input. Modifier keys act as capture prefixes rather than standalone trigger keys. It is independent of `GlobalVolumeKeyListener`.
+The host gives each loaded plugin a status/logging boundary, `_post_to_ui()` bridge, prepared Tk-parent/window callbacks, plugin-owned non-secret settings callbacks, and a volume-refresh callback. Plugin API v3 rejects older modules at discovery. The main window embeds shared manager-built Routes and action-only Plugins panels; endpoint editors, shortcut capture, Discord configuration, and typed overlay settings remain prepared modal dialogs. Overlay definitions are excluded from action plugins; the Routes Overlay section persists exactly one active renderer in `%APPDATA%\windows-ddc\plugin-settings\active-overlay.json` and safely hands off the Tk renderer. The Windows 11 renderer owns current/all-routed presentation and migrates the removed global `overlay_mode` into its own settings. Action plugins declare named `ShortcutAction` values; the manager persists bindings in `%APPDATA%\windows-ddc\plugin-settings\shortcuts.json`, captures/configures them, detects conflicts, and dispatches `trigger_shortcut(action_id)` off Tk. Route plugins expose input/output factories: every schema-v6 route has a stable route ID plus independent `{plugin_id, parameters}` input and output endpoints. Parameters remain internal persistence data; the Routes panel uses definition-specific controls rather than raw JSON. The manager constructs a distinct output instance for every route, with no provider-global route configuration file; v4/v5 records are migrated on the next save and old files are retained. Blocking normalized `0`–`100` reads/writes remain worker-routed through the one serialized host lane. Bundled network providers make only bounded outbound requests and have no discovery, listener, or polling loop. `PluginHotkeyController` accepts any nonzero Windows keyboard virtual-key code with optional Ctrl/Alt/Shift/Win modifiers, detects duplicate in-process combinations, suppresses held-key repeats, and always calls the next hook so the foreground application receives the original input. Modifier keys act as capture prefixes rather than standalone trigger keys. It is independent of `GlobalVolumeKeyListener`.
 
 The Discord plugin reads and writes a generic current-user Credential Manager target named `windows-ddc/plugins/discord-output/oauth-rpc`. A valid older `windows-ddc/test-discord/oauth-rpc` value is copied and removed. The blob contains Application ID, client secret, redirect URI, access/refresh tokens, and expiry. With no saved configuration, Tk opens the Developer Portal and one modal that asks for the reset secret before the public Application ID and explains the exact `https://127.0.0.1` redirect and restricted scopes. The worker exchanges the local RPC `AUTHORIZE` code at Discord's HTTPS OAuth endpoint; the first Discord consent cannot be automated away. Valid access tokens authenticate locally, expired tokens refresh silently, and revoked grants fail only this plugin until explicit reauthorization.
 
@@ -251,17 +257,11 @@ Minimizing a visible Tk window schedules an idle check and withdraws it only if 
 
 ## Frontend and overlay
 
-The control window is horizontally resizable with a fixed content-driven height and a DPI-scaled 620-logical-pixel minimum width so serial-bearing monitor labels and descriptive actions remain readable. It contains:
-
-- a read-only monitor combobox;
-- Refresh;
-- a `0`–`100` scale;
-- a persistent Slow/Medium/Fast Change speed selector beside the provider-neutral volume slider;
-- a percentage label and status bar.
+The control window is vertically resizable with a DPI-scaled 620-logical-pixel minimum width. It contains embedded Routes (route list, available outputs, route actions, Overlay renderer selector/settings, and autostart), an action-only Plugins list with Configure and Configure shortcuts actions, and a status bar. Tray Refresh remains the explicit status rediscovery action; the main window has no Refresh, Plugins, or Routes launch buttons.
 
 Widget state derives from `_busy`, monitor availability, confirmed volume, display-listener liveness, and topology validity. During a valid active write the volume controls remain enabled so a new last target can be queued.
 
-All interactive widgets participate explicitly in `Tab`/`Shift+Tab` traversal. Controls expose `Alt+V`, `Alt+C`, `Alt+P`, and `Alt+R`; `Ctrl+R` and `F5` also refresh, and `Escape` minimizes to the tray. The plugin dialog contains the Start with Windows checkbox and opens a selected plugin's configuration on double-click. The slider maps `Home`/`End` to `0`/`100` and `Page Down`/`Page Up` to ten-point changes in addition to normal arrow-key navigation. Disabled shortcut targets are ignored.
+All interactive widgets participate explicitly in `Tab`/`Shift+Tab` traversal. `Escape` minimizes to the tray; removed root actions no longer reserve `Alt+R`, `Ctrl+R`, `F5`, `Alt+P`, or `Alt+U`. The embedded action list opens a selected plugin's configuration on double-click, while the Routes panel exposes its Add, Edit, Duplicate, and Remove actions directly. Disabled shortcut targets are ignored.
 
 `VolumeOverlay` is a borderless tool `Toplevel` with a live palette. Normal mode shows percentage/progress and hides after 1.4 seconds. Error mode shows an `Unavailable` heading plus wrapped reason text, hides the progress bar, and remains for 2.8 seconds. Alpha is `0.7` in dark mode, `0.85` in light mode, and `1.0` in High Contrast; Tk's tool-window attribute remains best-effort.
 
@@ -279,7 +279,7 @@ Only a DWORD value of `0` selects dark mode. `SystemParametersInfoW(SPI_GETHIGHC
 
 `GetDpiForWindow` supplies the restored control window's current DPI with a 96-DPI fallback. Padding, slider length, and minimum width scale from logical values, and a debounced top-level `<Configure>` callback reapplies them only when the window DPI changes. Overlay geometry separately retains its per-destination-screen scale lookup.
 
-The manually maintained screenshots are tracked at `docs/app.png` (452×203) and `docs/overlay.png` (210×122). They predate the wider identity selector, Change speed selector, Start with Windows checkbox, Configure plugins button, descriptive volume buttons, live theme/scaling behavior, and error presentation; there is no automated screenshot workflow, so updates require real scrubbed captures.
+The manually maintained screenshots are tracked at `docs/app.png` (452×203) and `docs/overlay.png` (210×122). They predate the embedded Routes and action Plugins panels, live theme/scaling behavior, and error presentation; there is no automated screenshot workflow, so updates require real scrubbed captures.
 
 ## Persistent data, registry, and filesystem ownership
 
@@ -317,9 +317,11 @@ It inherits the current user's filesystem permissions. The schema is:
 
 The monitor-selection writer emits schema version 2. Its loader accepts the old unversioned description/ordinal shape for safe one-time promotion, rejects boolean ordinals, and treats missing files, I/O failures, invalid JSON, non-object roots, unknown versions, and invalid nested data as no selection. Change speed is an independent top-level preference: missing or invalid values default to `slow`, and valid values are `slow`, `medium`, and `fast`.
 
+Route persistence uses schema version 8. Each ordered `volume_routes` record has a stable `route_id`, a validated user-defined `name`, and JSON input/output endpoints. Schema-v6 records are read safely with a deterministic `<input ID> to <output ID>` name and are upgraded only when routes are next saved, preserving unrelated settings. Route names identify independent output instances in the Routes table, status messages, and all-routed overlay rows.
+
 The monitor's actual volume is external mutable hardware state, not app storage. The app reads it after discovery or selection and never backs it up or restores it on exit.
 
-Plugin-owned non-secret settings live under `%APPDATA%\windows-ddc\plugin-settings`; the Discord file contains only `schema_version` and a nullable modifier/virtual-key pair. External executable code is discovered separately under `plugins` beside the source/executable and `%APPDATA%\windows-ddc\plugins`. OAuth client configuration and tokens never enter either JSON location.
+Plugin-owned non-secret settings live under `%APPDATA%\windows-ddc\plugin-settings`; the Discord file contains only `schema_version` and a nullable modifier/virtual-key pair. First-party executable code lives in the bundled `plugins` package and is imported directly. External executable code is discovered separately under `external-plugins` beside the source/executable and `%APPDATA%\windows-ddc\plugins`. OAuth client configuration and tokens never enter either JSON location.
 
 `diagnostics.LOG_PATH` normally resolves to `%LOCALAPPDATA%\windows-ddc\windows-ddc.log`, falling back to `APPDATA` and then the home directory. `RotatingFileHandler` caps the current log at 512 KiB and retains two backups. Handler creation failure installs a managed `NullHandler`, so an unwritable diagnostic location never blocks application startup. Routine GUI messages log operation classes rather than monitor descriptions, identities, or device paths; unexpected top-level tracebacks can still contain local source paths.
 
@@ -355,18 +357,19 @@ External plugins can use arbitrary network paths. The bundled Discord plugin con
 `pyproject.toml` uses `setuptools.build_meta` as its PEP 517 backend, with unpinned `setuptools` and `wheel` build-system requirements. It declares project version `0.1.0`, Python `>=3.10`, and explicit flat modules:
 
 ```text
-app, audio_outputs, autostart, diagnostics, discord_output_plugin, gui, ddc, settings, theme, overlay, plugin_api, plugin_hotkeys, plugin_manager, windows_platform
+app, audio_outputs, autostart, diagnostics, plugins.discord_output_plugin, plugins.windows11_overlay_plugin, plugins.macos_overlay_plugin, gui, ddc, settings, theme, plugin_api, plugin_hotkeys, plugin_manager, windows_platform
 ```
 
 The direct runtime dependency is pinned to `monitorcontrol==4.2.0`. The `build` extra pins `Nuitka==2.4.8`. There is no lockfile; build-system requirements and transitive build dependencies are not fully pinned.
 
-`gui.py`'s function-local import is still a direct Python import, and `plugin_manager.py` directly imports `discord_output_plugin`, so Nuitka follows and embeds the bundled framework/plugin. Files discovered from either external `plugins` directory are deliberately not build inputs or embedded data; the executable imports them from disk after restart.
+`gui.py`'s function-local import is still a direct Python import, and `plugin_manager.py` directly imports every bundled provider from `plugins`; `build_exe.ps1` also passes `--include-package=plugins`, so Nuitka embeds the bundled framework/plugins. Files discovered from adjacent `external-plugins` or per-user `%APPDATA%\windows-ddc\plugins` are deliberately not build inputs or embedded data; the executable imports them from disk after restart.
 
 `build_exe.ps1` resolves `python`, changes to its own repository directory, checks `app.py` and `windows-ddc.ico`, then invokes Nuitka with:
 
 - `--onefile`
 - `--windows-console-mode=disable`
 - `--enable-plugins=tk-inter`
+- `--include-package=plugins`
 - `--windows-icon-from-ico=windows-ddc.ico`
 - `--include-data-files=windows-ddc.ico=windows-ddc.ico`
 - `--output-dir=dist`
@@ -385,7 +388,7 @@ Ignored `windows_ddc.egg-info\` is setuptools-generated residue, not source of t
 
 ## Background activity and absent subsystems
 
-Display, tray, Volume-key-hook, and plugin-hotkey message pumps are event loops, while DDC, audio reconciliation, and plugin actions use background workers. There is no periodic monitor, volume, or audio-endpoint poll. The Discord configuration window polls in-memory status every 200 ms only while that modal exists. Display notifications schedule a 500 ms debounced refresh and at most three retry timers; manual Refresh and every actual write also perform discovery. Successful selected-monitor reads schedule coalesced audio reconciliation. There are no durable events, job queues, or cron-style tasks.
+Display, tray, Volume-key-hook, and plugin-hotkey message pumps are event loops, while DDC, audio reconciliation, and plugin actions use background workers. There is no periodic monitor, volume, or audio-endpoint poll. The Discord configuration window polls in-memory status every 200 ms only while that modal exists. Display notifications schedule a 500 ms debounced refresh and at most three retry timers; tray Refresh and every actual write also perform discovery. Successful selected-monitor reads schedule coalesced audio reconciliation. There are no durable events, job queues, or cron-style tasks.
 
 There is likewise no web frontend/backend split, database schema, migration command, health endpoint, readiness probe, or liveness probe. Discord OAuth and local RPC are a client integration rather than an operated backend.
 
@@ -428,7 +431,7 @@ An authorized manual Windows/hardware pass is required for changes to plugin dis
 
 - Keep `app.py` as the single supported composition root and `main.py` as an explicit unsupported stub unless compatibility policy changes.
 - Acquire and retain `SingleInstanceGuard` before creating Tk; duplicate launches must remain side-effect-free apart from the best-effort restore broadcast.
-- Keep plugin imports/discovery and Credential Manager reads after the primary-instance/Tk boundary. External plugins remain trusted and auto-loaded in bundled/adjacent/per-user order; isolate each failure.
+- Keep plugin imports/discovery and Credential Manager reads after the primary-instance/Tk boundary. Bundled plugins are direct package imports; trusted external plugins are auto-loaded from adjacent `external-plugins\` and per-user `plugins\`; isolate each failure.
 - Keep passive plugin shortcut observation independent from the low-level Volume hook, always forward input, dispatch away from the native thread, suppress held-key repeats and same-plugin overlap, and stop the observer before plugin shutdown.
 - Keep Discord secrets and tokens out of JSON and diagnostics. Preserve first-consent honesty, silent reuse/refresh, concrete alternative selection, restoration in `finally`, and pipe close as fallback.
 - Keep all Tk access on the main thread; use `_result_queue`, `_hotkey_delta_queue`, and `_post_to_ui()` at cross-thread boundaries.

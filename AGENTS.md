@@ -15,7 +15,7 @@ These instructions apply to the entire repository. Keep this file operational an
 
 1. `app.py` handles only its strictly validated internal elevated audio-rename request before the normal composition boundary. An ordinary launch acquires the session-local `SingleInstanceGuard` before creating Tk; a duplicate broadcasts restore and exits before application initialization.
 2. The primary configures the rotating diagnostic log, creates the single `tk.Tk`, constructs `gui.MonitorVolumeApp`, reads the current-user autostart state, and enters Tk's main loop while retaining the mutex handle.
-3. After Tk exists, `gui.py` dynamically imports the plugin manager, loads the bundled Discord plugin plus trusted adjacent/per-user `plugins\*.py`, initializes them, and starts the shared `plugin-hotkey-loop`/`plugin-hotkey-dispatch`. Duplicate processes exit before that import, discovery, or credential access.
+3. After Tk exists, `gui.py` dynamically imports the plugin manager, directly imports bundled modules from the `plugins` package, then discovers trusted adjacent `external-plugins\*.py` and per-user `plugins\*.py` modules. The bundled package is never dynamically scanned. It initializes plugins and starts the shared `plugin-hotkey-loop`/`plugin-hotkey-dispatch`. Duplicate processes exit before that import, discovery, or credential access.
 4. `display-change-listener`, `tray-icon`, and `volume-key-hook` are long-lived daemon threads with native Win32 message loops. The display listener also relays live theme/system-color broadcasts into Tk. The passive plugin-hotkey observer is independent of the low-level Volume hook.
 5. `ddc-gui-worker` and `ddc-volume-write` are short-lived daemon workers for blocking DDC/CI work. `audio-output-sync`, `plugin-<id>`, and `discord-output-auth` are separate short-lived daemons for audio reconciliation, plugin triggers, and Discord OAuth/RPC respectively.
 6. Worker and native-thread callbacks cross into Tk through `queue.Queue`; `_poll_queues()` drains them every 50 ms. Plugin status uses the same `_post_to_ui()` boundary.
@@ -23,7 +23,7 @@ These instructions apply to the entire repository. Keep this file operational an
 8. A successful exact-identity volume read enables monitor control only while the display-change listener remains live and the topology generation is valid. If the native keyboard hook is also live, Volume Down/Up events are consumed instead of reaching Windows system audio.
 9. Confirmed tray-icon addition makes startup tray-first. Tk publishes immutable active-monitor, confirmed-volume, routing, and selectable-monitor snapshots; tray actions queue back into Tk. Addition or recovery failure keeps/restores the main window; Explorer recreation re-adds a previously visible icon. Closing the restored window exits, while minimizing returns it to the tray after another confirmed add.
 10. A successful exact selected-monitor read schedules audio reconciliation. Exact unique container IDs are preferred; only one remaining same-adapter endpoint with a missing/placeholder container may be inferred. The selected endpoint is made visible before positively matched other-screen endpoints are hidden. Ambiguous selected matching changes nothing. A missing FenSound name launches the fixed-purpose elevated helper at most once per endpoint per primary session.
-11. The Discord plugin has no default shortcut. A configured press captures the current concrete output, switches to the first different concrete device for one second, and restores in `finally`; overlap is ignored. Shutdown stops plugin shortcut observation first and signals restoration within one shared two-second plugin budget.
+11. The Discord plugin declares a host-configured `switch-output` action with no default binding. A configured press captures the current concrete output, switches to the first different concrete device for one second, and restores in `finally`; overlap is ignored. Shutdown stops plugin shortcut observation first and signals restoration within one shared two-second plugin budget.
 
 Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or DDC worker threads; enqueue a callback with `_post_to_ui()`.
 
@@ -38,13 +38,19 @@ Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or 
 | `main.py` | Unsupported launcher stub; prints migration guidance and returns `1`. |
 | `gui.py` | UI state machine, selection, readiness, queues, worker serialization, live theme/DPI reflow, keyboard navigation, overlay targeting, tray snapshots/actions, and window lifecycle. |
 | `ddc.py` | Monitor identity, enumeration, clamping, and DDC read/write wrappers used by the bundled DDC volume provider. |
-| `ddc_volume_plugin.py` | Bundled DDC volume provider, including plugin-owned monitor selection and active-only audio-output policy. |
-| `discord_output_plugin.py` | Discord local RPC, OAuth/token refresh, Credential Manager storage/migration, plugin UI, and temporary output restoration. |
+| `plugins/ddc_volume_plugin.py` | Bundled DDC volume provider, including plugin-owned monitor selection and active-only audio-output policy. |
+| `plugins/denon_marantz_volume_plugin.py` | Bundled Denon/Marantz AVR main-zone provider using bounded outbound LAN TCP. |
+| `plugins/discord_output_plugin.py` | Discord local RPC, OAuth/token refresh, Credential Manager storage/migration, plugin UI, and temporary output restoration. |
+| `plugins/onkyo_volume_plugin.py` | Bundled configurable Onkyo/Integra eISCP main-zone volume provider using bounded outbound LAN TCP. |
+| `plugins/pioneer_elite_volume_plugin.py` | Bundled Pioneer/Elite main-zone provider using bounded outbound LAN TCP. |
+| `plugins/sony_volume_plugin.py` | Bundled Sony network AVR main-zone provider using bounded outbound HTTP. |
+| `plugins/yamaha_volume_plugin.py` | Bundled Yamaha main-zone provider using bounded outbound LAN TCP. |
 | `settings.py` | Per-user selected-monitor and Change speed JSON load/save. |
-| `plugin_api.py` | Runtime plugin API version, `HotkeySpec`, protocol, and host context. |
+| `plugin_api.py` | Runtime plugin API version, `HotkeySpec`, optional input/provider capabilities, protocol, and host context. |
 | `plugin_hotkeys.py` | Shared passive native keyboard observer and off-thread dispatch. |
 | `plugin_manager.py` | Trusted plugin discovery, isolation/status, configuration UI, trigger suppression, and shutdown. |
-| `overlay.py` | Work-area/DPI-aware, live-themed, no-activate, topmost, auto-hiding volume `Toplevel`. |
+| `plugins/windows11_overlay_plugin.py` | Bundled Windows 11 work-area/DPI-aware, live-themed, no-activate, topmost, auto-hiding overlay renderer. |
+| `plugins/macos_overlay_plugin.py` | Bundled macOS-style no-activate overlay renderer sharing the safe Windows presentation path. |
 | `theme.py` | Windows theme/High Contrast/window-DPI reads, reversible ttk styles, DWM chrome, and runtime icon path. |
 | `windows_platform.py` | Win32 ctypes ABI, single-instance mutex/restore signaling, monitor identity/EDID inventory, display work areas/scaling, window DPI/High Contrast reads, no-activate overlay helpers, display/theme notifications, snapshot-driven tray controller, global keyboard hook, and DWM helpers. |
 | `tests/` | Hardware-free plugin/hotkey/Discord, identity, settings, autostart, audio-output, single-instance, topology, fresh-write, overlay, accessibility/scaling, resilience, and tray regressions. |
@@ -61,7 +67,7 @@ Changes to the icon name or location must update `theme.APP_ICON_PATH`, `--windo
 ## Persistent or Sensitive Data
 
 - Live settings normally reside at `%APPDATA%\windows-ddc\settings.json`; if `APPDATA` is empty or unset, the fallback is `<home>\windows-ddc\settings.json`.
-- New settings use schema version 2 and persist `change_speed` plus description, a Windows device path, and optional EDID manufacturer/product/serial identity. Never persist the transient display index.
+- New settings use schema version 8 and persist ordered independent route records (`route_id`, user-defined `name`, input endpoint, output endpoint); each endpoint has a plugin ID and JSON parameters. Schema-v6 routes receive deterministic endpoint-ID names when next saved. Overlay selection and non-secret renderer settings live under `plugin-settings`; legacy global `overlay_mode` migrates to the Windows 11 renderer. Legacy Change speed/active-provider fields remain where present, along with description, a Windows device path, and optional EDID manufacturer/product/serial identity. Never persist the transient display index.
 - Unique EDID serial identity is preferred. Duplicate serials require the saved device path; monitors without a usable serial use the device path. Missing or ambiguous matches fail closed.
 - Saving either monitor selection or Change speed writes `settings.tmp` and then replaces `settings.json` while preserving the other valid setting. There is backward-compatible loading/promotion for unambiguous legacy description/ordinal files and no file lock; the session mutex prevents ordinary same-session project instances from racing but does not coordinate external tools or separate sessions.
 - Missing, unreadable, invalid-JSON, non-object, unknown-version, and invalid nested monitor settings are treated as absent. JSON booleans are rejected as legacy ordinals. Missing or invalid Change speed defaults to `slow`; valid persisted values are `slow`, `medium`, and `fast`.
@@ -70,7 +76,7 @@ Changes to the icon name or location must update `theme.APP_ICON_PATH`, `--windo
 - Start with Windows is represented only by `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\windows-ddc`. Never read, create, change, or delete the live value during automated work; mock `autostart.winreg`. The GUI is the authorized interactive mutation path.
 - Windows persists audio render-endpoint visibility and the selected endpoint's FenSound description outside the app settings. The normal process reads HKLM endpoint/monitor metadata and changes visibility through private Windows audio policy; the administrator-approved helper writes the fixed alias through Core Audio. Never enumerate, rename, hide, show, or otherwise mutate live endpoints during automated work. Mock `audio_outputs.winreg`, `_set_endpoint_visibility`, and `request_elevated_endpoint_rename`.
 - The physical monitor volume is external mutable state. A set can succeed even if the following readback fails, and shutdown does not restore the old value.
-- Plugin non-secret JSON lives under `%APPDATA%\windows-ddc\plugin-settings`; external executable code is discovered beside the source/executable and under `%APPDATA%\windows-ddc\plugins`. Patch these paths to temporary directories in tests and never import untrusted fixtures from a live user directory.
+- Plugin non-secret JSON lives under `%APPDATA%\windows-ddc\plugin-settings`; external executable code is discovered from adjacent `external-plugins\` and `%APPDATA%\windows-ddc\plugins`. Patch these paths to temporary directories in tests and never import untrusted fixtures from a live user directory.
 - Discord client configuration, client secret, access token, and refresh token live only in current-user Windows Credential Manager target `windows-ddc/plugins/discord-output/oauth-rpc`; valid prototype target `windows-ddc/test-discord/oauth-rpc` is migrated. Never read, write, delete, or reset live credentials in automated work. Mock credential, browser, pipe, and HTTPS functions. Never include secrets/tokens in source, screenshots, fixtures, logs, or documentation.
 
 There is no database and no migration command. If the settings schema changes, implement backward-compatible loading or an explicit migration, update README and architecture examples, and test old, missing, malformed, and new formats.
@@ -105,7 +111,7 @@ CI is validation-only. Keep it free of `python app.py`, live controller `start()
 - `audio_outputs.parse_internal_rename_request(...)` and `run_internal_rename_helper(...)`
 - `plugin_manager.discover_plugins(...)`, `PluginManager.start()`, `refresh_hotkey()`, and `stop()`
 - `plugin_hotkeys.PluginHotkeyController` and `plugin_api.HotkeySpec`
-- `discord_output_plugin.DiscordOutputPlugin` plus its mocked RPC/OAuth/credential helpers
+- `plugins.discord_output_plugin.DiscordOutputPlugin` plus its mocked RPC/OAuth/credential helpers
 - `settings.load_selected_monitor_key()` and `settings.save_selected_monitor_key()`
 - `settings.load_change_speed()` and `settings.save_change_speed()`
 - `diagnostics.configure_logging()`, `get_logger()`, and `close_logging()`
@@ -121,7 +127,7 @@ Run these low-risk validation checks from the repository root:
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m compileall -q app.py audio_outputs.py autostart.py ddc.py ddc_volume_plugin.py diagnostics.py discord_output_plugin.py gui.py main.py overlay.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py windows_platform.py
+python -m compileall -q app.py audio_outputs.py autostart.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py windows_platform.py plugins
 python -m pip check
 git diff --check
 git diff --cached --check
@@ -155,7 +161,7 @@ GUI, tray, hook, theme, or DDC changes require an authorized Windows/manual pass
 - Slow/Medium/Fast Change speed behavior for buttons and keys, including restart persistence;
 - Start with Windows enable/disable, checkbox persistence, source command, packaged command after an authorized build, and moved-target behavior;
 - first Discord setup asks for the reset secret before Application ID; exact redirect and restricted-scope guidance; first consent; silent restart reuse/refresh; reset/revocation/missing Discord behavior;
-- Configure plugins contents and access key; shortcut capture/clear/conflict/live rebind/no-repeat; one-second switch/exact restore; repeat suppression; both external plugin folders and restart-only loading;
+- Plugins action-only contents and access key; Routes provider/input assignment, overlay, and autostart controls; shortcut capture/clear/conflict/live rebind/no-repeat; one-second switch/exact restore; repeat suppression; both external plugin folders and restart-only loading;
 - key pass-through before readiness and after exit;
 - rapid-write coalescing and `0`/`100` boundaries;
 - overlay visibility, auto-hide, cursor-screen/selected-display-fallback placement, mixed-DPI work areas, and focus preservation;
@@ -174,7 +180,7 @@ Manual DDC tests can be audible and mutate monitor state. Record what was actual
 - Do not perform blocking DDC work on the Tk thread.
 - Do not mutate Tk state directly from another thread. Keep callbacks small and exception-safe so `_poll_queues()` continues rescheduling itself.
 - Keep all plugin imports/discovery and Credential Manager reads after the primary-instance/Tk boundary; duplicate launches must never execute external plugin code or touch Discord credentials.
-- Treat external plugins as trusted unsandboxed current-user code, auto-load them only in bundled/adjacent/per-user order, reject later duplicate IDs, and isolate each load/initialize/trigger failure from monitor control.
+- Treat external plugins as trusted unsandboxed current-user code, auto-load them only from adjacent `external-plugins\` and per-user `plugins\` after direct bundled-package imports, reject later duplicate IDs, and isolate each load/initialize/trigger failure from monitor control.
 - Keep passive plugin shortcut observation separate from `GlobalVolumeKeyListener`: allow arbitrary Windows keyboard virtual keys with optional supported modifiers, treat modifier keys as capture prefixes, always forward input to the foreground application, queue dispatch away from the native thread, and suppress held-key repeats and overlapping triggers.
 - Never call Tk from Discord/auth/trigger threads. Preserve Credential Manager-only secrets, explicit first consent, silent reuse/refresh, first non-current concrete output selection, restoration in `finally`, and pipe close only as restoration fallback.
 - Keep `audio-output-sync` off Tk and coalesced independently of the serialized DDC slot. Recheck topology before mutations, make the selected output visible first, hide only endpoints positively mapped to other current monitors, and never infer a conflicting/non-placeholder container.

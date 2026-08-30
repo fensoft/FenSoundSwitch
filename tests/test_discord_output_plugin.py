@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-import discord_output_plugin as discord
-from plugin_api import MOD_CONTROL, HotkeySpec, PluginHostContext
+from plugins import discord_output_plugin as discord
+from plugin_api import PluginHostContext
 
 
 class DiscordPureFunctionTests(unittest.TestCase):
@@ -30,30 +30,12 @@ class DiscordPureFunctionTests(unittest.TestCase):
                 {"device_id": "speaker", "available_devices": [{"id": "default"}]}
             )
 
-    def test_plugin_shortcut_round_trip_and_invalid_settings_fail_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "discord-output.json"
-            hotkey = HotkeySpec(MOD_CONTROL, ord("D"))
-            discord._save_hotkey_settings(path, hotkey)
-            self.assertEqual(discord._load_hotkey_settings(path), hotkey)
-            path.write_text('{"schema_version":1,"hotkey":{"modifiers":0}}', encoding="utf-8")
-            self.assertIsNone(discord._load_hotkey_settings(path))
-
-    def test_tk_shortcut_capture_accepts_modified_and_unmodified_arbitrary_keys(self) -> None:
-        event = Mock(state=0x0004, keysym="F12", keycode=0x7B)
-        self.assertEqual(discord._hotkey_from_tk_event(event).label, "Ctrl+F12")
+    def test_plugin_declares_only_its_named_host_owned_shortcut_action(self) -> None:
+        plugin = discord.DiscordOutputPlugin()
         self.assertEqual(
-            discord._hotkey_from_tk_event(Mock(state=0, keysym="space", keycode=0x20)).label,
-            "Space",
+            plugin.get_shortcut_actions()[0].action_id,
+            "switch-output",
         )
-        self.assertEqual(
-            discord._hotkey_from_tk_event(Mock(state=0, keysym="XF86AudioPlay", keycode=0xB3)).label,
-            "Play/Pause",
-        )
-
-    def test_modifier_key_waits_for_the_actual_shortcut_key(self) -> None:
-        with self.assertRaisesRegex(ValueError, "another key"):
-            discord._hotkey_from_tk_event(Mock(state=0x0004, keysym="Control_L", keycode=0x11))
 
 
 class DiscordCredentialTests(unittest.TestCase):
@@ -67,9 +49,9 @@ class DiscordCredentialTests(unittest.TestCase):
             "refresh_token": "refresh",
             "expires_at": 99.0,
         }
-        with patch("discord_output_plugin._read_credential", side_effect=(None, saved)), patch(
-            "discord_output_plugin._write_credential"
-        ) as write, patch("discord_output_plugin._delete_credential") as delete:
+        with patch("plugins.discord_output_plugin._read_credential", side_effect=(None, saved)), patch(
+            "plugins.discord_output_plugin._write_credential"
+        ) as write, patch("plugins.discord_output_plugin._delete_credential") as delete:
             result = discord._load_saved_oauth()
 
         self.assertEqual(result, saved)
@@ -80,7 +62,7 @@ class DiscordCredentialTests(unittest.TestCase):
         configuration = discord._saved_client_configuration(
             "123456789012345", "secret"
         )
-        with patch("discord_output_plugin.time.time", return_value=100.0):
+        with patch("plugins.discord_output_plugin.time.time", return_value=100.0):
             saved = discord._saved_oauth_from_token_response(
                 configuration,
                 {"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 60},
@@ -99,9 +81,9 @@ class DiscordCredentialTests(unittest.TestCase):
             "expires_at": 200.0,
         }
         client = Mock()
-        with patch("discord_output_plugin.time.time", return_value=100.0), patch(
-            "discord_output_plugin._authenticate"
-        ) as authenticate, patch("discord_output_plugin._refresh_saved_oauth") as refresh:
+        with patch("plugins.discord_output_plugin.time.time", return_value=100.0), patch(
+            "plugins.discord_output_plugin._authenticate"
+        ) as authenticate, patch("plugins.discord_output_plugin._refresh_saved_oauth") as refresh:
             self.assertIs(discord._authenticate_saved_oauth(client, saved), saved)
         authenticate.assert_called_once_with(client, "access")
         refresh.assert_not_called()
@@ -118,10 +100,10 @@ class DiscordCredentialTests(unittest.TestCase):
         }
         refreshed = dict(saved, access_token="new-access", refresh_token="new-refresh", expires_at=200.0)
         client = Mock()
-        with patch("discord_output_plugin.time.time", return_value=100.0), patch(
-            "discord_output_plugin._refresh_saved_oauth", return_value=refreshed
-        ), patch("discord_output_plugin._authenticate") as authenticate, patch(
-            "discord_output_plugin._save_oauth"
+        with patch("plugins.discord_output_plugin.time.time", return_value=100.0), patch(
+            "plugins.discord_output_plugin._refresh_saved_oauth", return_value=refreshed
+        ), patch("plugins.discord_output_plugin._authenticate") as authenticate, patch(
+            "plugins.discord_output_plugin._save_oauth"
         ) as save:
             self.assertEqual(discord._authenticate_saved_oauth(client, saved), refreshed)
         authenticate.assert_called_once_with(client, "new-access")
@@ -137,8 +119,8 @@ class DiscordCredentialTests(unittest.TestCase):
             "refresh_token": "revoked",
             "expires_at": 50.0,
         }
-        with patch("discord_output_plugin.time.time", return_value=100.0), patch(
-            "discord_output_plugin._refresh_saved_oauth",
+        with patch("plugins.discord_output_plugin.time.time", return_value=100.0), patch(
+            "plugins.discord_output_plugin._refresh_saved_oauth",
             side_effect=discord.DiscordRpcError("revoked"),
         ):
             with self.assertRaisesRegex(discord.DiscordRpcError, "reset authorization"):
@@ -207,7 +189,6 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
         return PluginHostContext(
             plugin_id="discord-output",
             ui_parent=Mock(),
-            config_path=path,
             logger=Mock(),
             post_to_ui=lambda callback: callback(),
             report_status=Mock(),
@@ -226,7 +207,7 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
         }
         plugin = discord.DiscordOutputPlugin()
         with tempfile.TemporaryDirectory() as temporary_directory, patch(
-            "discord_output_plugin._load_saved_oauth", return_value=saved
+            "plugins.discord_output_plugin._load_saved_oauth", return_value=saved
         ), patch.object(plugin, "_start_worker", return_value=True) as start_worker:
             plugin.initialize(self.make_host(Path(temporary_directory) / "settings.json"))
         start_worker.assert_called_once_with(plugin._validate_authorization, False)
@@ -235,9 +216,9 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
         saved = discord._saved_client_configuration("123456789012345", "secret")
         plugin = discord.DiscordOutputPlugin()
         with tempfile.TemporaryDirectory() as temporary_directory, patch(
-            "discord_output_plugin._load_saved_oauth", return_value=None
+            "plugins.discord_output_plugin._load_saved_oauth", return_value=None
         ), patch.object(plugin, "_show_setup_dialog", return_value=saved), patch(
-            "discord_output_plugin._save_oauth"
+            "plugins.discord_output_plugin._save_oauth"
         ) as save, patch.object(plugin, "_start_worker", return_value=True) as start_worker:
             plugin.initialize(self.make_host(Path(temporary_directory) / "settings.json"))
         save.assert_called_once_with(saved)
@@ -247,8 +228,8 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
         plugin = discord.DiscordOutputPlugin()
         plugin._operation_lock.acquire()
         try:
-            with patch("discord_output_plugin._load_saved_oauth") as load:
-                plugin.trigger()
+            with patch("plugins.discord_output_plugin._load_saved_oauth") as load:
+                plugin.trigger_shortcut("switch-output")
             load.assert_not_called()
         finally:
             plugin._operation_lock.release()
@@ -295,7 +276,6 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
         plugin._host = PluginHostContext(
             plugin_id="discord-output",
             ui_parent=Mock(),
-            config_path=Path("unused"),
             logger=Mock(),
             post_to_ui=lambda callback: callback(),
             report_status=report_status,
@@ -303,8 +283,8 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
         )
         client = Mock()
         client.connect.side_effect = discord.DiscordRpcError("Discord is not running")
-        with patch("discord_output_plugin._load_saved_oauth", return_value=saved), patch(
-            "discord_output_plugin.DiscordRpcClient", return_value=client
+        with patch("plugins.discord_output_plugin._load_saved_oauth", return_value=saved), patch(
+            "plugins.discord_output_plugin.DiscordRpcClient", return_value=client
         ):
             plugin._validate_authorization(False)
         self.assertIn("Authorization failed", plugin._current_status())

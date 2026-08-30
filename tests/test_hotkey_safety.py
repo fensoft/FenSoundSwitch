@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import threading
 import unittest
 from unittest.mock import Mock, patch
@@ -22,6 +23,25 @@ class ListenerState:
         self.is_active = is_active
 
 
+class ImmediateThread:
+    def __init__(self, target, **_kwargs) -> None:
+        self.target = target
+
+    def start(self) -> None:
+        self.target()
+
+
+class CapturedThread:
+    instances: list["CapturedThread"] = []
+
+    def __init__(self, target, **_kwargs) -> None:
+        self.target = target
+        self.__class__.instances.append(self)
+
+    def start(self) -> None:
+        return None
+
+
 class MonitorVolumeAppHotkeyTests(unittest.TestCase):
     def make_ready_app(self, listener: ListenerState | None) -> MonitorVolumeApp:
         app = MonitorVolumeApp.__new__(MonitorVolumeApp)
@@ -37,6 +57,8 @@ class MonitorVolumeAppHotkeyTests(unittest.TestCase):
             identity=MonitorIdentity(device_path="test-path"),
         )
         app.current_volume = 50
+        app._plugin_manager = Mock()
+        app._plugin_manager.volume_providers_for_input.return_value = ((Mock(), Mock()),)
         return app
 
     def test_hotkey_state_requires_every_safety_condition(self) -> None:
@@ -52,8 +74,6 @@ class MonitorVolumeAppHotkeyTests(unittest.TestCase):
             ("display listener failure", "display_listener_active", False),
             ("topology invalid", "topology_valid", False),
             ("refresh in progress", "_hotkeys_ready", False),
-            ("monitor unavailable", "current_volume", None),
-            ("selection cleared", "selected_key", None),
             ("shutdown", "_closing", True),
         )
         for name, attribute, value in safety_conditions:
@@ -90,22 +110,171 @@ class MonitorVolumeAppHotkeyTests(unittest.TestCase):
         listener.is_active = False
         self.assertFalse(app._should_consume_volume_keys())
 
-    def test_change_speed_updates_persistence_and_the_live_listener(self) -> None:
+    def test_windows_volume_keys_require_a_configured_route(self) -> None:
+        app = self.make_ready_app(ListenerState(is_active=True))
+        app._plugin_manager.volume_providers_for_input.return_value = ()
+        app._update_hotkey_state()
+        self.assertFalse(app._should_consume_volume_keys())
+
+    def test_ready_windows_route_dispatches_without_legacy_monitor_selection(self) -> None:
         app = MonitorVolumeApp.__new__(MonitorVolumeApp)
-        app.change_speed = "slow"
-        app.volume_step = 1
-        app.change_speed_var = Mock()
-        app.change_speed_var.get.return_value = "Fast"
-        app._listener = Mock()
+        route = Mock(route_id="windows-route")
+        provider = Mock(provider_name="Test output")
+        provider.is_volume_provider_available.return_value = (True, None)
+        provider.read_volume.return_value = 50
+        provider.write_volume.return_value = 52
+        app._closing = False
+        app._busy = False
+        app._display_listener = ListenerState(is_active=True)
+        app._listener = ListenerState(is_active=True)
+        app._topology_valid = threading.Event()
+        app._topology_generation = 0
+        app._topology_generation_lock = threading.Lock()
+        app._hotkeys_ready = False
+        app._hotkeys_enabled = False
+        app._ready_route_ids = set()
+        app.selected_key = None
+        app._plugin_manager = Mock()
+        app._plugin_manager.volume_providers_for_input.return_value = ((route, provider),)
+        app._plugin_manager.volume_provider_id.return_value = "windows-route"
+        app._plugin_manager.relevant_volume_provider_ids.return_value = ("windows-route",)
+        app._plugin_manager.is_volume_provider_routed.return_value = True
+        app._volume_statuses = {}
+        app._active_ddc_operation_id = None
+        app._active_ddc_operation_kind = None
+        app._ddc_operation_timed_out = False
+        app._ddc_operation_sequence = 0
+        app._ddc_timeout_after_id = None
+        app._refresh_after_id = None
+        app._refresh_requested = False
+        app._refresh_requested_automatic = False
+        app._volume_write_inflight = False
+        app.root = Mock()
+        app.root.after.return_value = "timeout"
+        app._post_to_ui = lambda callback: callback()
+        app._set_busy = Mock(side_effect=lambda busy, _message=None: setattr(app, "_busy", busy))
+        app._set_status = Mock()
+        app._apply_control_state = Mock()
+        app._run_deferred_refresh = Mock()
+        app._show_volume_overlay = Mock()
 
-        with patch("gui.save_change_speed") as save_mock:
-            app.on_change_speed_selected()
+        with patch("gui.threading.Thread", ImmediateThread):
+            app.refresh_configured_routes()
 
-        self.assertEqual(app.change_speed, "fast")
-        self.assertEqual(app.volume_step, 3)
-        app.change_speed_var.set.assert_called_once_with("Fast")
-        app._listener.set_step.assert_called_once_with(3)
-        save_mock.assert_called_once_with("fast")
+            self.assertIsNone(app.selected_key)
+            self.assertTrue(app._hotkeys_enabled)
+            self.assertTrue(app._should_consume_volume_keys())
+            app._route_windows_volume_delta(2)
+
+        provider.write_volume.assert_called_once_with(52)
+
+        provider.read_volume.return_value = 0
+        with patch("gui.threading.Thread", ImmediateThread):
+            app._route_windows_volume_delta(-2)
+
+        provider.write_volume.assert_called_once_with(52)
+
+        provider.read_volume.return_value = 50
+        provider.write_volume.side_effect = RuntimeError("Transient DDC response failure")
+        with patch("gui.threading.Thread", ImmediateThread):
+            app._route_windows_volume_delta(2)
+
+        self.assertTrue(app._hotkeys_enabled)
+        self.assertIn("Transient DDC response failure", app._set_status.call_args.args[0])
+
+    def test_route_probe_before_hook_start_enables_queued_windows_volume_dispatch(self) -> None:
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        route = Mock(route_id="windows-route")
+        provider = Mock(provider_name="Test output")
+        provider.is_volume_provider_available.return_value = (True, None)
+        provider.read_volume.return_value = 50
+        provider.write_volume.return_value = 52
+        app._closing = False
+        app._busy = False
+        app._display_listener = ListenerState(is_active=False)
+        app._listener = None
+        app._topology_valid = threading.Event()
+        app._topology_generation = 0
+        app._topology_generation_lock = threading.Lock()
+        app._hotkeys_ready = False
+        app._hotkeys_enabled = False
+        app._ready_route_ids = set()
+        app.selected_key = None
+        app._plugin_manager = Mock()
+        app._plugin_manager.volume_providers_for_input.return_value = ((route, provider),)
+        app._plugin_manager.volume_provider_id.return_value = "windows-route"
+        app._plugin_manager.relevant_volume_provider_ids.return_value = ("windows-route",)
+        app._plugin_manager.is_volume_provider_routed.return_value = True
+        app._volume_statuses = {}
+        app._active_ddc_operation_id = None
+        app._active_ddc_operation_kind = None
+        app._ddc_operation_timed_out = False
+        app._ddc_operation_sequence = 0
+        app._ddc_timeout_after_id = None
+        app._refresh_after_id = None
+        app._refresh_requested = False
+        app._refresh_requested_automatic = False
+        app._volume_write_inflight = False
+        app._result_queue = queue.Queue()
+        app._hotkey_delta_queue = queue.Queue()
+        app._poll_after_id = None
+        app._tray_icon = None
+        app._overlay = None
+        app._control_unavailable_reason = "Configured routes are not ready."
+        app.root = Mock()
+        app.root.after.return_value = "timer"
+        app._set_busy = Mock(side_effect=lambda busy, _message=None: setattr(app, "_busy", busy))
+        app._set_status = Mock()
+        app._apply_control_state = Mock()
+        app._run_deferred_refresh = Mock()
+        app._show_volume_overlay = Mock()
+
+        CapturedThread.instances = []
+        with patch("gui.threading.Thread", CapturedThread):
+            # Plugin routes start probing before the display listener and hook.
+            app.refresh_configured_routes()
+            self.assertFalse(app._should_consume_volume_keys())
+            probe = CapturedThread.instances.pop(0)
+
+            app._display_listener.is_active = True
+            probe.target()
+            completion = app._result_queue.get_nowait()
+            completion()
+            self.assertTrue(app._hotkeys_ready)
+            self.assertFalse(app._hotkeys_enabled)
+
+            listener = GlobalVolumeKeyListener(
+                on_delta=app._queue_hotkey_delta,
+                should_consume=app._should_consume_volume_keys,
+                on_error=lambda _error: None,
+                step=2,
+            )
+            listener.start = Mock(side_effect=listener._hook_active.set)
+            with patch("gui.GlobalVolumeKeyListener", return_value=listener):
+                app._start_keyboard_listener()
+            self.assertTrue(app._should_consume_volume_keys())
+
+            consume, delta = listener._resolve_volume_key_event(VK_VOLUME_UP, WM_KEYDOWN)
+            self.assertEqual((consume, delta), (True, 2))
+            listener.on_delta(delta)
+            app._poll_queues()
+            write = CapturedThread.instances.pop()
+            write.target()
+            completion = app._result_queue.get_nowait()
+            completion()
+
+        self.assertIsNone(app.selected_key)
+        provider.read_volume.assert_called_with()
+        provider.write_volume.assert_called_once_with(52)
+
+    def test_failed_windows_route_keeps_volume_keys_pass_through(self) -> None:
+        app = self.make_ready_app(ListenerState(is_active=True))
+        app.selected_key = None
+        app._ready_route_ids = set()
+        app._hotkeys_ready = False
+        app._update_hotkey_state()
+
+        self.assertFalse(app._should_consume_volume_keys())
 
     def test_write_failure_marks_volume_unknown_and_releases_hotkeys(self) -> None:
         app = self.make_ready_app(ListenerState(is_active=True))

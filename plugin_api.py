@@ -3,12 +3,15 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
+
+import tkinter as tk
+from tkinter import ttk
 
 
-PLUGIN_API_VERSION = 1
+PLUGIN_API_VERSION = 3
 PLUGIN_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+SHORTCUT_ACTION_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
@@ -135,15 +138,92 @@ class HotkeySpec:
 
 
 @dataclass(frozen=True)
+class ShortcutAction:
+    """A named shortcut action whose binding is owned by the host."""
+
+    action_id: str
+    label: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.action_id, str) or SHORTCUT_ACTION_ID_PATTERN.fullmatch(self.action_id) is None:
+            raise ValueError("Shortcut action ID must match [a-z][a-z0-9-]{0,63}.")
+        if not isinstance(self.label, str) or not self.label.strip():
+            raise ValueError("Shortcut action label must be a non-empty string.")
+        object.__setattr__(self, "label", self.label.strip())
+
+
+@dataclass(frozen=True)
+class VolumeStatus:
+    """An immutable host-published view of a configured volume provider."""
+
+    provider_id: str
+    display_name: str
+    confirmed_volume: int | None
+    active: bool = False
+    routed: bool = False
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.provider_id, str) or PLUGIN_ID_PATTERN.fullmatch(self.provider_id) is None:
+            raise ValueError("Volume status provider ID is invalid.")
+        if not isinstance(self.display_name, str) or not self.display_name.strip():
+            raise ValueError("Volume status display name must be non-empty.")
+        if self.confirmed_volume is not None and (
+            isinstance(self.confirmed_volume, bool)
+            or not isinstance(self.confirmed_volume, int)
+            or not 0 <= self.confirmed_volume <= 100
+        ):
+            raise ValueError("Confirmed volume must be an integer from 0 to 100.")
+        if self.reason is not None and (not isinstance(self.reason, str) or not self.reason.strip()):
+            raise ValueError("Volume status reason must be non-empty when supplied.")
+
+
+@runtime_checkable
+class OverlayRenderer(Protocol):
+    """Host-owned Tk renderer for routed volume status and error feedback."""
+
+    def apply_theme(self, dark_mode: bool, high_contrast: bool = False) -> None:
+        ...
+
+    def show(self, volume: int, preferred_display_device_name: str | None = None) -> None:
+        ...
+
+    def show_error(self, message: str, preferred_display_device_name: str | None = None) -> None:
+        ...
+
+    def show_statuses(self, statuses: tuple[VolumeStatus, ...], current_provider_id: str | None, preferred_display_device_name: str | None = None) -> None:
+        ...
+
+    def select_statuses(self, statuses: tuple[VolumeStatus, ...], current_provider_id: str | None) -> tuple[VolumeStatus, ...]:
+        """Return the host snapshot this renderer wants to present."""
+        ...
+
+    def close(self) -> None:
+        ...
+
+
+@runtime_checkable
+class OverlayRendererDefinition(Protocol):
+    """Optional capability for a plugin that creates one Tk-thread overlay renderer."""
+
+    def create_overlay_renderer(self, dark_mode: bool, high_contrast: bool) -> OverlayRenderer:
+        ...
+
+
+@dataclass(frozen=True)
 class PluginHostContext:
     plugin_id: str
     ui_parent: Any
-    config_path: Path
     logger: logging.Logger
     post_to_ui: Callable[[Callable[[], None]], None]
     report_status: Callable[[str], None]
     prepare_window: Callable[[Any], None]
     request_volume_refresh: Callable[[], None] = lambda: None
+    get_volume_statuses: Callable[[], tuple[VolumeStatus, ...]] = lambda: ()
+    load_plugin_settings: Callable[[], dict[str, object]] = lambda: {}
+    save_plugin_settings: Callable[[dict[str, object]], None] = lambda _settings: None
+    load_legacy_overlay_mode: Callable[[], str | None] = lambda: None
+    clear_legacy_overlay_mode: Callable[[], None] = lambda: None
 
 
 @runtime_checkable
@@ -158,18 +238,14 @@ class RuntimePlugin(Protocol):
     def configure(self, parent: Any) -> None:
         ...
 
-    def get_hotkey(self) -> HotkeySpec | None:
+    def get_shortcut_actions(self) -> list[ShortcutAction]:
         ...
 
-    def trigger(self) -> None:
+    def trigger_shortcut(self, action_id: str) -> None:
         ...
 
     def shutdown(self, timeout: float) -> bool:
         ...
-
-
-# Kept for API-v1 external plugins that imported the original protocol name.
-WindowsDdcPlugin = RuntimePlugin
 
 
 @runtime_checkable
@@ -200,3 +276,106 @@ class VolumeProvider(Protocol):
 
     def on_volume_topology_changed(self) -> None:
         ...
+
+
+@runtime_checkable
+class RouteInputDefinition(Protocol):
+    """A route-scoped input definition. The host owns native input hooks."""
+
+    plugin_id: str
+    input_name: str
+
+    def create_input(self, parameters: Mapping[str, Any]) -> object:
+        ...
+
+
+@runtime_checkable
+class RouteOutputDefinition(Protocol):
+    """A factory for independent route output instances."""
+
+    plugin_id: str
+    provider_name: str
+
+    def create_output(self, parameters: Mapping[str, Any]) -> VolumeProvider:
+        ...
+
+
+@runtime_checkable
+class RouteInputEditor(Protocol):
+    """Optional route-input editor capability.
+
+    ``configure_route_input`` receives an isolated draft and calls ``on_save``
+    only after the endpoint-specific dialog validates it. ``route_input_summary``
+    returns concise text for the route editor.
+    """
+
+    def configure_route_input(self, parent: Any, parameters: dict[str, object], on_save: Callable[[dict[str, object]], None]) -> None:
+        ...
+
+    def route_input_summary(self, parameters: dict[str, object]) -> str:
+        ...
+
+
+@runtime_checkable
+class RouteOutputEditor(Protocol):
+    """Optional route-output editor capability; mirrors RouteInputEditor."""
+
+    def configure_route_output(self, parent: Any, parameters: dict[str, object], on_save: Callable[[dict[str, object]], None]) -> None:
+        ...
+
+    def route_output_summary(self, parameters: dict[str, object]) -> str:
+        ...
+
+
+def show_host_port_route_editor(
+    parent: Any,
+    prepare_window: Callable[[Any], None],
+    title: str,
+    parameters: dict[str, object],
+    form_values: Callable[[dict[str, object]], dict[str, str]],
+    validate: Callable[[str, str], dict[str, object]],
+    on_save: Callable[[dict[str, object]], None],
+) -> None:
+    """Present a route-scoped receiver editor without persisting endpoint state."""
+    window = tk.Toplevel(parent)
+    window.title(title)
+    window.transient(parent)
+    prepare_window(window)
+    frame = ttk.Frame(window, padding=12)
+    frame.grid(sticky="nsew")
+    window.columnconfigure(0, weight=1)
+    frame.columnconfigure(1, weight=1)
+    values = form_values(parameters)
+    host_value = tk.StringVar(value=values["host"])
+    port_value = tk.StringVar(value=values["port"])
+    status = tk.StringVar(value="Enter the receiver hostname or IP address and TCP port.")
+    ttk.Label(frame, text="Host or IP address:").grid(row=0, column=0, sticky="w")
+    ttk.Entry(frame, textvariable=host_value, width=40).grid(row=0, column=1, sticky="ew")
+    ttk.Label(frame, text="TCP port:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+    ttk.Entry(frame, textvariable=port_value, width=8).grid(row=1, column=1, sticky="w", pady=(8, 0))
+    ttk.Label(frame, textvariable=status, wraplength=460).grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+    def save() -> None:
+        try:
+            on_save(validate(host_value.get(), port_value.get()))
+        except ValueError as exc:
+            status.set(str(exc))
+            return
+        window.destroy()
+
+    ttk.Button(frame, text="Save", command=save).grid(row=3, column=0, sticky="w", pady=(12, 0))
+    ttk.Button(frame, text="Cancel", command=window.destroy).grid(row=3, column=1, sticky="e", pady=(12, 0))
+    window.protocol("WM_DELETE_WINDOW", window.destroy)
+    window.grab_set()
+
+
+@runtime_checkable
+class InputPlugin(Protocol):
+    """Optional logical input source routed by the host to a volume provider.
+
+    Input plugins declare sources only. They must not install global Volume Up or
+    Volume Down hooks; the host owns that safety-sensitive native listener.
+    """
+
+    input_id: str
+    input_name: str

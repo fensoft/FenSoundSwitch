@@ -1,6 +1,8 @@
 # Changelog
 
-- Added the generic runtime-plugin API and optional normalized volume-provider capability. The bundled DDC monitor implementation is now a provider selected through **Configure plugins…**; provider failures fail closed and do not silently reroute volume keys.
+- Embedded **Routes** and action-only **Plugins** lists in the main window, removing its Refresh and configuration launch buttons while retaining tray Refresh for status rediscovery.
+
+- Added the generic runtime-plugin API and optional normalized volume-provider capability. The bundled DDC monitor implementation is now a provider selected through **Routes**; provider failures fail closed and do not silently reroute volume keys.
 
 All notable changes to this project are documented in this file. The reconstruction audit covered the complete reachable repository history through `0b4f263`, all local and remote-tracking branches, and the live origin heads and tags before the documentation changes listed under Unreleased.
 
@@ -10,7 +12,16 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Added
 
+- Added selectable bundled Windows 11 and macOS-style overlay renderers. Overlay selection and renderer settings are persisted under plugin settings; the Windows 11 renderer safely migrates the former global `overlay_mode` setting and retains typed current/all-routed configuration.
+- Added persisted, validated route names to route configuration, status reporting, and all-routed overlay rows; schema-v6 routes receive deterministic endpoint-based names on their next save.
+- Moved the bundled volume overlay into the `plugins` package as the renderer-only `volume-overlay` plugin capability. The plugin is initialized by `PluginManager`, constructed on the host Tk thread after manager startup, and remains absent from action and route configuration.
+- Added a logical Windows Volume Up/Down input plugin with per-input volume-provider routing, persisted safely in the main settings file while the host retains the only native Volume-key hook and serialized write boundary.
+- Added immutable host-published multi-provider volume-status snapshots for plugins and a configurable host-owned overlay that can show the current provider or all routed providers.
+- Added host-owned named plugin shortcut actions with isolated manager persistence, generic capture/configuration, conflict handling, and legacy API-v1 shortcut compatibility.
+- Split operational documentation into focused user-guide, configuration, troubleshooting, and development pages while simplifying the root project overview.
 - Added a release workflow that verifies a build on `master` and publishes `windows-ddc.exe` only for pushed Git tags.
+- Added a configurable bundled Onkyo/Integra eISCP main-zone volume provider with bounded TCP transport and hardware-free protocol tests.
+- Added configurable bundled main-zone volume providers for Denon/Marantz, Yamaha, Pioneer/Elite, and Sony network receivers with isolated protocol tests.
 - Reduced GitHub Actions CI to Python 3.10 and made the autostart command test independent of Windows short-path normalization.
 - Added keyboard mnemonics, refresh shortcuts, slider boundary/page navigation, focusable controls, and descriptive volume button labels.
 - Added release-history, architecture, and repository-agent documentation.
@@ -26,12 +37,16 @@ That audited history contains one parentless commit. The audit clone had no loca
 - Added a live tray menu with active monitor, confirmed volume, routing state, Refresh, stable-identity monitor switching, Restore, and Exit actions.
 - Added fail-closed Windows sound-output matching that exposes the selected monitor as **FenSound**, hides only outputs mapped to other connected screens, and leaves unrelated audio devices untouched.
 - Added an administrator-approved, fixed-purpose Core Audio rename helper plus hardware-free matching, topology, mutation-order, and composition-root coverage.
-- Added a versioned, trusted in-process Python plugin framework with deterministic bundled/adjacent/per-user discovery, isolated failures, plugin-owned configuration, and a **Configure plugins…** window.
+- Added a versioned, trusted in-process Python plugin framework with deterministic bundled/adjacent/per-user discovery, isolated failures, plugin-owned configuration, and a **Plugins** window.
 - Added a shared passive keyboard observer for plugin shortcuts, with duplicate-plugin conflict reporting, live rebinding, foreground-key forwarding, held-key repeat suppression, off-native-thread dispatch, overlap suppression, and bounded shutdown.
 - Added a bundled Discord output plugin with app-owned OAuth setup, current-user Credential Manager persistence and prototype migration, silent token reuse/refresh, automatic one-second output switching/restoration, and hardware-free coverage.
 
 ### Changed
 
+- Moved bundled first-party plugins into the `plugins` package and reserved the adjacent `external-plugins\` directory for dynamically discovered trusted external plugins; `%APPDATA%\windows-ddc\plugins\` remains the per-user external location.
+- Replaced the single active volume provider and root volume slider with ordered independent routes. Schema version 5 persists stable route IDs and migrates schema-4 input maps; one input may fan out to several outputs while writes remain serialized.
+- Split configuration into **Plugins** for initialized action-only plugins and **Routes** for volume-provider setup, input assignment, overlay configuration, and Start with Windows.
+- Moved Discord output switching to the host-configured `switch-output` shortcut action and removed Discord-local shortcut storage and key capture UI.
 - Apply Windows light/dark, system-color, and High Contrast changes live, and reflow the control window at its current DPI.
 - Expanded user and operator documentation without changing runtime behavior.
 - Place the volume/error overlay on the cursor's DPI-scaled Windows work area, fall back to the selected display when needed, and enforce native no-activate presentation.

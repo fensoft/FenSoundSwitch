@@ -260,7 +260,7 @@ class MonitorVolumeAppTrayTests(unittest.TestCase):
         app = self.make_app()
         app.app_icon_path = None
         app._post_to_ui = Mock()
-        app.refresh_monitors = Mock()
+        app.refresh_configured_routes = Mock()
         app._select_monitor_from_tray = Mock()
         app._handle_tray_error_from_thread = Mock()
         app._sync_tray_menu_state = Mock()
@@ -271,7 +271,7 @@ class MonitorVolumeAppTrayTests(unittest.TestCase):
 
         callbacks = controller_class.call_args.kwargs
         callbacks["on_refresh"]()
-        app._post_to_ui.assert_called_once_with(app.refresh_monitors)
+        app._post_to_ui.assert_called_once_with(app.refresh_configured_routes)
 
         app._post_to_ui.reset_mock()
         callbacks["on_select_monitor"]("selection")

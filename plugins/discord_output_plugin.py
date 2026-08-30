@@ -18,14 +18,9 @@ from tkinter import messagebox, ttk
 from typing import Any, BinaryIO
 
 from plugin_api import (
-    MOD_ALT,
-    MOD_CONTROL,
-    MODIFIER_VIRTUAL_KEYS,
-    MOD_SHIFT,
-    MOD_WIN,
     PLUGIN_API_VERSION as HOST_PLUGIN_API_VERSION,
-    HotkeySpec,
     PluginHostContext,
+    ShortcutAction,
 )
 
 
@@ -46,7 +41,6 @@ _DEFAULT_REDIRECT_URI = "https://127.0.0.1"
 _CREDENTIAL_TARGET = "windows-ddc/plugins/discord-output/oauth-rpc"
 _PROTOTYPE_CREDENTIAL_TARGET = "windows-ddc/test-discord/oauth-rpc"
 _CREDENTIAL_VERSION = 1
-_SETTINGS_VERSION = 1
 _CRED_TYPE_GENERIC = 1
 _CRED_PERSIST_LOCAL_MACHINE = 2
 _ERROR_NOT_FOUND = 1168
@@ -514,7 +508,7 @@ def _authenticate_saved_oauth(
         _authenticate(client, str(refreshed["access_token"]))
     except DiscordRpcError as exc:
         raise DiscordRpcError(
-            "The saved Discord grant is unusable; reset authorization in Configure plugins"
+            "The saved Discord grant is unusable; reset authorization in Plugins"
         ) from exc
     _save_oauth(refreshed)
     return refreshed
@@ -558,57 +552,6 @@ def _switch_authenticated_output(
                 raise DiscordRpcError("Discord did not confirm restoration of the initial output")
 
 
-def _load_hotkey_settings(path: Path) -> HotkeySpec | None:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
-        return None
-    if not isinstance(payload, dict) or payload.get("schema_version") != _SETTINGS_VERSION:
-        return None
-    try:
-        return HotkeySpec.from_json(payload.get("hotkey"))
-    except ValueError:
-        return None
-
-
-def _save_hotkey_settings(path: Path, hotkey: HotkeySpec | None) -> None:
-    payload = {"schema_version": _SETTINGS_VERSION, "hotkey": hotkey.to_json() if hotkey else None}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(".tmp")
-    temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    temp_path.replace(path)
-
-
-def _hotkey_from_tk_event(event: Any) -> HotkeySpec:
-    state = int(getattr(event, "state", 0))
-    modifiers = 0
-    if state & 0x0004:
-        modifiers |= MOD_CONTROL
-    if state & 0x0001:
-        modifiers |= MOD_SHIFT
-    if state & 0x0008 or state & 0x20000:
-        modifiers |= MOD_ALT
-    if state & 0x0040 or state & 0x0080:
-        modifiers |= MOD_WIN
-    keysym = str(getattr(event, "keysym", "")).upper()
-    keycode = getattr(event, "keycode", None)
-    if len(keysym) == 1 and "A" <= keysym <= "Z":
-        virtual_key = ord(keysym)
-    elif len(keysym) == 1 and "0" <= keysym <= "9":
-        virtual_key = ord(keysym)
-    elif keysym.startswith("F") and keysym[1:].isdigit() and 1 <= int(keysym[1:]) <= 24:
-        virtual_key = 0x6F + int(keysym[1:])
-    elif isinstance(keycode, int) and not isinstance(keycode, bool) and 0x01 <= keycode <= 0xFE:
-        virtual_key = keycode
-    else:
-        raise ValueError("Press any keyboard key supported by Windows.")
-    if virtual_key in MODIFIER_VIRTUAL_KEYS:
-        raise ValueError("Keep holding the modifier and press another key.")
-    return HotkeySpec(modifiers, virtual_key)
-
-
 class DiscordOutputPlugin:
     plugin_id = "discord-output"
     name = "Discord output switch"
@@ -616,7 +559,6 @@ class DiscordOutputPlugin:
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
-        self._hotkey: HotkeySpec | None = None
         self._status = "Not initialized"
         self._state_lock = threading.Lock()
         self._operation_lock = threading.Lock()
@@ -628,7 +570,6 @@ class DiscordOutputPlugin:
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
-        self._hotkey = _load_hotkey_settings(host.config_path)
         saved = _load_saved_oauth()
         if saved is None:
             saved = self._show_setup_dialog(host.ui_parent)
@@ -709,10 +650,12 @@ class DiscordOutputPlugin:
                 self._untrack_client(client)
             self._operation_lock.release()
 
-    def get_hotkey(self) -> HotkeySpec | None:
-        return self._hotkey
+    def get_shortcut_actions(self) -> list[ShortcutAction]:
+        return [ShortcutAction("switch-output", "Switch Discord output")]
 
-    def trigger(self) -> None:
+    def trigger_shortcut(self, action_id: str) -> None:
+        if action_id != "switch-output":
+            raise ValueError(f"Unknown Discord shortcut action {action_id!r}.")
         if self._shutdown.is_set() or not self._operation_lock.acquire(blocking=False):
             return
         client: DiscordRpcClient | None = None
@@ -846,9 +789,6 @@ class DiscordOutputPlugin:
         window.transient(parent)
         window.resizable(False, False)
         self._host.prepare_window(window)
-        pending_hotkey = self._hotkey
-        shortcut_var = tk.StringVar(window, value=pending_hotkey.label if pending_hotkey else "Not set")
-        capture_help_var = tk.StringVar(window, value="")
         status_var = tk.StringVar(window, value=self._current_status())
         frame = ttk.Frame(window, padding=16)
         frame.grid(sticky="nsew")
@@ -859,53 +799,6 @@ class DiscordOutputPlugin:
         ttk.Label(frame, textvariable=status_var, wraplength=430).grid(
             row=1, column=1, columnspan=2, sticky="w", pady=(14, 0)
         )
-        ttk.Label(frame, text="Global shortcut:", underline=7).grid(
-            row=2, column=0, sticky="w", pady=(14, 0)
-        )
-        ttk.Label(frame, textvariable=shortcut_var).grid(
-            row=2, column=1, columnspan=2, sticky="w", pady=(14, 0)
-        )
-
-        capturing = False
-
-        def capture_key(event: Any) -> str | None:
-            nonlocal pending_hotkey, capturing
-            if not capturing:
-                return None
-            try:
-                pending_hotkey = _hotkey_from_tk_event(event)
-            except ValueError as exc:
-                capture_help_var.set(str(exc))
-                return "break"
-            capturing = False
-            shortcut_var.set(pending_hotkey.label)
-            capture_help_var.set("Shortcut captured. Choose Save to apply it.")
-            capture_button.configure(text="Capture shortcut")
-            return "break"
-
-        def begin_capture() -> None:
-            nonlocal capturing
-            capturing = True
-            capture_help_var.set("Press any key, with optional Ctrl, Alt, Shift, or Win modifiers.")
-            capture_button.configure(text="Press shortcut now…")
-            capture_button.focus_set()
-
-        def clear_shortcut() -> None:
-            nonlocal pending_hotkey
-            pending_hotkey = None
-            shortcut_var.set("Not set")
-            capture_help_var.set("Shortcut cleared. Choose Save to apply it.")
-
-        capture_button = ttk.Button(frame, text="Capture shortcut", command=begin_capture)
-        capture_button.grid(row=3, column=0, sticky="w", pady=(8, 0))
-        capture_button.bind("<KeyPress>", capture_key)
-        ttk.Button(frame, text="Clear", command=clear_shortcut).grid(
-            row=3, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
-        )
-        ttk.Label(frame, textvariable=capture_help_var, wraplength=560).grid(
-            row=4, column=0, columnspan=3, sticky="w", pady=(6, 0)
-        )
-
         def setup_authorization() -> None:
             if not self._operation_lock.acquire(blocking=False):
                 self._set_status("Wait for the current Discord operation before reauthorizing")
@@ -954,10 +847,10 @@ class DiscordOutputPlugin:
             self._set_status("Setup required")
 
         ttk.Button(frame, text="Set up / reauthorize…", command=setup_authorization).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(14, 0)
+            row=2, column=0, columnspan=2, sticky="w", pady=(14, 0)
         )
         ttk.Button(frame, text="Reset authorization", command=reset_authorization).grid(
-            row=5, column=2, sticky="e", padx=(8, 0), pady=(14, 0)
+            row=2, column=2, sticky="e", padx=(8, 0), pady=(14, 0)
         )
 
         poll_id: str | None = None
@@ -970,23 +863,7 @@ class DiscordOutputPlugin:
                     pass
             window.destroy()
 
-        def save_and_close() -> None:
-            self._hotkey = pending_hotkey
-            try:
-                _save_hotkey_settings(self._host.config_path, self._hotkey)
-            except OSError as exc:
-                capture_help_var.set(
-                    f"Could not save the shortcut: {str(exc).strip() or exc.__class__.__name__}"
-                )
-                return
-            close()
-
-        ttk.Button(frame, text="Cancel", command=close).grid(
-            row=6, column=1, sticky="e", pady=(16, 0)
-        )
-        ttk.Button(frame, text="Save", command=save_and_close).grid(
-            row=6, column=2, sticky="e", padx=(8, 0), pady=(16, 0)
-        )
+        ttk.Button(frame, text="Close", command=close).grid(row=3, column=2, sticky="e", pady=(16, 0))
         frame.columnconfigure(1, weight=1)
 
         def poll_status() -> None:
@@ -998,7 +875,7 @@ class DiscordOutputPlugin:
         window.protocol("WM_DELETE_WINDOW", close)
         poll_status()
         window.grab_set()
-        capture_button.focus_set()
+        window.focus_set()
         window.wait_window()
 
     def shutdown(self, timeout: float) -> bool:

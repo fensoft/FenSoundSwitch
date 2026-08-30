@@ -172,18 +172,18 @@ def match_selected_monitor(
 
     if selected.is_legacy:
         description_matches = [
-            (index, monitor) for index, monitor in verifiable if monitor.description == selected.description
+            (index, monitor)
+            for index, monitor in enumerate(monitors)
+            if monitor.description == selected.description
         ]
         if len(description_matches) == 1:
             return SelectionMatch(
                 SelectionMatchStatus.FOUND,
                 description_matches[0][0],
-                should_promote_legacy=True,
+                should_promote_legacy=description_matches[0][1].identity is not None,
             )
         if len(description_matches) > 1:
             return SelectionMatch(SelectionMatchStatus.AMBIGUOUS)
-        if any(monitor.description == selected.description for monitor in monitors):
-            return SelectionMatch(SelectionMatchStatus.UNVERIFIABLE)
         return SelectionMatch(SelectionMatchStatus.MISSING)
 
     saved_identity = selected.identity

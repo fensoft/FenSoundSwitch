@@ -5,7 +5,15 @@ from unittest.mock import Mock, patch
 
 from ddc import MonitorIdentity, SavedMonitorSelection
 from gui import MonitorVolumeApp
-from overlay import VolumeOverlay, calculate_overlay_geometry
+from plugins.windows11_overlay_plugin import (
+    StatusRowWidgets,
+    VolumeOverlay,
+    calculate_overlay_geometry,
+    format_volume_status,
+    format_volume_status_rows,
+)
+from plugins.macos_overlay_plugin import MacOSVolumeOverlay
+from plugin_api import VolumeStatus
 from windows_platform import (
     DisplayArea,
     GWL_EXSTYLE,
@@ -46,6 +54,33 @@ def make_display_area(
 
 
 class OverlayPlacementTests(unittest.TestCase):
+    def test_multi_status_rows_prioritize_current_and_preserve_unavailable_reason(self) -> None:
+        rows = format_volume_status_rows(
+            (
+                VolumeStatus("receiver", "Receiver", 31, routed=True),
+                VolumeStatus("monitor", "Monitor", None, active=True, reason="Disconnected"),
+            ),
+            "monitor",
+        )
+
+        self.assertEqual(rows, ("Monitor: Unavailable (Disconnected)", "Receiver: 31%"))
+
+    def test_status_rows_keep_duplicate_output_routes_distinguishable(self) -> None:
+        rows = format_volume_status_rows(
+            (
+                VolumeStatus("route-living-room", "Living room", 31, routed=True),
+                VolumeStatus("route-office", "Office", 42, routed=True),
+            ),
+            "route-office",
+        )
+
+        self.assertEqual(rows, ("Office: 42%", "Living room: 31%"))
+
+    def test_status_formatter_preserves_unavailable_reason(self) -> None:
+        self.assertEqual(
+            format_volume_status(VolumeStatus("route", "Office", None, reason="Offline")),
+            "Unavailable (Offline)",
+        )
     def test_native_display_inventory_captures_bounds_work_area_and_scale(self) -> None:
         def enumerate_monitors(_hdc: object, _clip: object, callback: object, _data: int) -> bool:
             return bool(callback(123, None, None, 0))
@@ -221,11 +256,11 @@ class NoActivateWindowTests(unittest.TestCase):
         volume_overlay._hide_after_id = None
         display_area = make_display_area(r"\\.\DISPLAY1", (0, 0, 1920, 1040))
 
-        with patch("overlay.get_overlay_display_area", return_value=display_area), patch(
-            "overlay.get_toplevel_window_handle",
+        with patch("plugins.windows11_overlay_plugin.get_overlay_display_area", return_value=display_area), patch(
+            "plugins.windows11_overlay_plugin.get_toplevel_window_handle",
             return_value=42,
-        ), patch("overlay.configure_no_activate_window", return_value=False), patch(
-            "overlay.show_window_no_activate"
+        ), patch("plugins.windows11_overlay_plugin.configure_no_activate_window", return_value=False), patch(
+            "plugins.windows11_overlay_plugin.show_window_no_activate"
         ) as show_native:
             volume_overlay._show_window(1400, r"\\.\DISPLAY1")
 
@@ -243,11 +278,11 @@ class NoActivateWindowTests(unittest.TestCase):
         volume_overlay._hide_after_id = None
         display_area = make_display_area(r"\\.\DISPLAY2", (-1920, 0, 0, 1040))
 
-        with patch("overlay.get_overlay_display_area", return_value=display_area), patch(
-            "overlay.get_toplevel_window_handle",
+        with patch("plugins.windows11_overlay_plugin.get_overlay_display_area", return_value=display_area), patch(
+            "plugins.windows11_overlay_plugin.get_toplevel_window_handle",
             return_value=42,
-        ), patch("overlay.configure_no_activate_window", return_value=True), patch(
-            "overlay.show_window_no_activate",
+        ), patch("plugins.windows11_overlay_plugin.configure_no_activate_window", return_value=True), patch(
+            "plugins.windows11_overlay_plugin.show_window_no_activate",
             return_value=True,
         ) as show_native:
             volume_overlay._show_window(1400, r"\\.\DISPLAY2")
@@ -261,11 +296,139 @@ class NoActivateWindowTests(unittest.TestCase):
 
 
 class OverlayGUITests(unittest.TestCase):
+    def test_current_status_shows_centered_volume_header_route_value_and_ttk_bar(self) -> None:
+        overlay = VolumeOverlay.__new__(VolumeOverlay)
+        overlay._palette = Mock(text="text")
+        overlay.title_var = Mock()
+        overlay.route_var = Mock()
+        overlay.value_var = Mock()
+        overlay.error_var = Mock()
+        overlay.route_label = Mock()
+        overlay.route_label.winfo_manager.return_value = ""
+        overlay.value_label = Mock()
+        overlay.value_label.winfo_manager.return_value = ""
+        overlay.error_label = Mock()
+        overlay.progress = Mock()
+        overlay.progress.winfo_manager.return_value = "pack"
+        overlay._hide_status_rows = Mock()
+
+        overlay._show_current_status(VolumeStatus("route", "Office", 42, routed=True))
+
+        overlay.title_var.set.assert_called_once_with("Volume")
+        overlay.route_var.set.assert_called_once_with("Office")
+        overlay.value_var.set.assert_called_once_with("42%")
+        overlay.value_label.pack.assert_called_once_with(anchor="w", pady=(1, 8))
+        overlay.progress.configure.assert_called_once_with(value=42)
+        overlay.error_label.pack.assert_not_called()
+
+    def test_all_routed_statuses_create_ttk_bar_for_each_available_route(self) -> None:
+        overlay = VolumeOverlay.__new__(VolumeOverlay)
+        overlay._palette = Mock(background="bg", subtext="sub", text="text", error="error")
+        overlay.status_rows = Mock()
+        overlay._status_row_widgets = []
+
+        rows = [
+            StatusRowWidgets(Mock(), Mock(), Mock(), None),
+            StatusRowWidgets(Mock(), Mock(), Mock(), None),
+        ]
+        with patch.object(overlay, "_create_status_row", side_effect=rows), patch(
+            "plugins.windows11_overlay_plugin.ttk.Progressbar", side_effect=[Mock(), Mock()]
+        ) as progressbar:
+            overlay._update_status_rows(
+                (
+                    VolumeStatus("one", "Office", 42, routed=True),
+                    VolumeStatus("two", "Living room", 31, routed=True),
+                )
+            )
+
+        self.assertEqual(progressbar.call_count, 2)
+        self.assertEqual(
+            [row.progress.configure.call_args.kwargs["value"] for row in rows], [42, 31]
+        )
+
+    def test_all_routed_statuses_keep_the_volume_header_and_named_rows(self) -> None:
+        overlay = VolumeOverlay.__new__(VolumeOverlay)
+        overlay.title_var = Mock()
+        overlay.route_var = Mock()
+        overlay.error_var = Mock()
+        overlay.route_label = Mock()
+        overlay.value_label = Mock()
+        overlay.error_label = Mock()
+        overlay.progress = Mock()
+        overlay.status_rows = Mock()
+        overlay.status_rows.winfo_manager.return_value = ""
+        overlay._update_status_rows = Mock()
+        statuses = (VolumeStatus("route", "Office", 42, routed=True),)
+
+        overlay._show_all_statuses(statuses)
+
+        overlay.title_var.set.assert_called_once_with("Volume")
+        overlay._update_status_rows.assert_called_once_with(statuses)
+        overlay.status_rows.pack.assert_called_once_with(fill="x")
+
+    def test_unavailable_routed_row_has_no_progress_widget(self) -> None:
+        overlay = VolumeOverlay.__new__(VolumeOverlay)
+        overlay._palette = Mock(background="bg", subtext="sub", text="text", error="error")
+        progress = Mock()
+        row = StatusRowWidgets(Mock(), Mock(), Mock(), progress)
+
+        overlay._configure_status_row(row, VolumeStatus("route", "Office", None, reason="Offline"))
+
+        progress.destroy.assert_called_once_with()
+        self.assertIsNone(row.progress)
+        row.value_label.configure.assert_any_call(text="Unavailable (Offline)")
+
+    def test_renderer_selects_the_provider_from_a_routed_change(self) -> None:
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        provider = Mock()
+        status = VolumeStatus("route-one", "Desk monitor", 42, routed=True)
+        app._closing = False
+        app._overlay = Mock()
+        app.current_volume = None
+        app._overlay.select_statuses.return_value = (status,)
+        app._plugin_manager = Mock()
+        app._plugin_manager.volume_provider_id.return_value = "route-one"
+        app._get_volume_statuses = lambda: (status,)
+        app._selected_display_device_name = Mock(return_value=None)
+        app._render_overlay = Mock()
+
+        app._show_volume_overlay(provider=provider)
+
+        app._render_overlay.assert_called_once_with(
+            "show_statuses",
+            (status,),
+            "route-one",
+            preferred_display_device_name=None,
+        )
+
+    def test_macos_renderer_uses_a_distinct_hud_palette_and_all_routes(self) -> None:
+        palette = MacOSVolumeOverlay._get_palette(dark_mode=True, high_contrast=False)
+        windows_palette = VolumeOverlay._get_palette(dark_mode=True, high_contrast=False)
+        statuses = (VolumeStatus("route-one", "Desk", 42, routed=True),)
+        self.assertNotEqual(palette.accent, windows_palette.accent)
+        self.assertEqual(MacOSVolumeOverlay.__dict__["select_statuses"](Mock(), statuses, "route-one"), statuses)
+
+    def test_renderer_callback_failure_updates_status_without_affecting_routes(self) -> None:
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        overlay = Mock(spec=VolumeOverlay)
+        overlay.show.side_effect = RuntimeError("native show failed")
+        app._overlay = overlay
+        app._set_status = Mock()
+
+        app._render_overlay("show", 42)
+
+        self.assertIsNone(app._overlay)
+        app._set_status.assert_called_once_with(
+            "Volume overlay failed: native show failed. Routes remain available."
+        )
+        overlay.close.assert_called_once_with()
+
     def test_gui_passes_the_selected_windows_display_to_the_overlay(self) -> None:
         app = MonitorVolumeApp.__new__(MonitorVolumeApp)
         app._closing = False
         app._overlay = Mock()
         app.current_volume = 47
+        app._get_volume_statuses = lambda: ()
         app.selected_key = SavedMonitorSelection(
             "Monitor",
             MonitorIdentity("device-path", "DEL", 1, "SERIAL"),

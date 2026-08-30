@@ -32,14 +32,8 @@ from ddc import (
     set_monitor_volume,
 )
 from diagnostics import get_logger
-from overlay import VolumeOverlay
-from settings import (
-    DEFAULT_CHANGE_SPEED,
-    load_change_speed,
-    load_selected_monitor_key,
-    save_change_speed,
-    save_selected_monitor_key,
-)
+from plugin_api import OverlayRenderer, VolumeStatus
+from settings import load_selected_monitor_key, save_selected_monitor_key
 from theme import (
     apply_app_icon,
     apply_color_scheme,
@@ -73,11 +67,7 @@ class DisplayTopologyChanged(RuntimeError):
 
 
 class MonitorVolumeApp:
-    CHANGE_SPEED_STEPS = {
-        "slow": 1,
-        "medium": 2,
-        "fast": 3,
-    }
+    WINDOWS_VOLUME_INPUT_ID = "windows-volume-keys"
     TRAY_TOOLTIP = "windows-ddc"
     DISPLAY_CHANGE_DEBOUNCE_MS = 500
     DDC_OPERATION_TIMEOUT_MS = 10_000
@@ -110,8 +100,7 @@ class MonitorVolumeApp:
         self.selected_key: SavedMonitorSelection | None = None
         self.current_volume: int | None = None
         self.target_volume: int | None = None
-        self.change_speed = load_change_speed()
-        self.volume_step = self.CHANGE_SPEED_STEPS[self.change_speed]
+        self._volume_statuses: dict[str, VolumeStatus] = {}
         try:
             self.start_with_windows = is_start_with_windows_enabled()
         except (OSError, AutostartUnavailableError) as exc:
@@ -128,10 +117,11 @@ class MonitorVolumeApp:
         self._hotkey_delta_queue: queue.Queue[int] = queue.Queue()
         self._hotkeys_ready = False
         self._hotkeys_enabled = False
+        self._ready_route_ids: set[str] = set()
         self._listener: GlobalVolumeKeyListener | None = None
         self._display_listener: DisplayChangeListener | None = None
         self._plugin_manager: Any | None = None
-        self._overlay: VolumeOverlay | None = None
+        self._overlay: OverlayRenderer | None = None
         self._volume_write_inflight = False
         self._pending_target_volume: int | None = None
         self._tray_icon: TrayIconController | None = None
@@ -158,23 +148,14 @@ class MonitorVolumeApp:
         self._topology_generation = 0
         self._topology_generation_lock = threading.Lock()
         self._topology_valid = threading.Event()
-        self._control_unavailable_reason: str | None = "Monitor selection is not ready."
+        self._control_unavailable_reason: str | None = "Configured routes are not ready."
 
         self.monitor_var = tk.StringVar()
-        self.provider_var = tk.StringVar(value="Volume provider: not selected")
-        self.volume_var = tk.DoubleVar(value=0.0)
-        self.volume_text_var = tk.StringVar(value="--")
-        self.change_speed_var = tk.StringVar(value=self.change_speed.title())
         self.start_with_windows_var = tk.BooleanVar(value=self.start_with_windows)
         self.status_var = tk.StringVar(value="Searching for monitors...")
 
         self.app_icon_path = apply_app_icon(self.root)
         self._build_widgets()
-        self._overlay = VolumeOverlay(
-            self.root,
-            dark_mode=self.dark_mode,
-            high_contrast=self.high_contrast,
-        )
         apply_color_scheme(
             self.root,
             self.status_bar,
@@ -192,10 +173,7 @@ class MonitorVolumeApp:
         self._start_minimized()
         self._start_keyboard_listener()
         self._poll_after_id = self.root.after(50, self._poll_queues)
-        self._refresh_after_id = self.root.after(
-            50,
-            lambda: self._run_scheduled_refresh(automatic=False),
-        )
+        self._refresh_after_id = self.root.after(50, self.refresh_configured_routes)
 
     def _build_widgets(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -203,159 +181,27 @@ class MonitorVolumeApp:
 
         self.content_frame = ttk.Frame(self.root, padding=self._scaled_px(12))
         self.content_frame.grid(row=0, column=0, sticky="nsew")
-        self.content_frame.columnconfigure(1, weight=1)
-        self.content_frame.columnconfigure(2, weight=1)
+        self.content_frame.columnconfigure(0, weight=1)
+        self.content_frame.rowconfigure(1, weight=1)
 
-        self.monitor_label = ttk.Label(self.content_frame, textvariable=self.provider_var)
+        self.monitor_label = ttk.Label(self.content_frame, text="Configure input and output routes to use Volume Up/Down.")
         self.monitor_label.grid(
             row=0,
             column=0,
             sticky="w",
         )
-
+        # Retained as the nonvisual stable-identity selection model used by tray actions.
         self.monitor_combo = ttk.Combobox(
             self.content_frame,
             textvariable=self.monitor_var,
             state="readonly",
-            width=44,
-            takefocus=True,
         )
         self.monitor_combo.bind("<<ComboboxSelected>>", self.on_monitor_selected)
 
-        self.refresh_button = ttk.Button(
-            self.content_frame,
-            text="↻",
-            width=3,
-            takefocus=True,
-            command=self.refresh_monitors,
-        )
-        self.refresh_button.grid(
-            row=1,
-            column=3,
-            sticky="e",
-            padx=(self._scaled_px(8), 0),
-            pady=(self._scaled_px(10), 0),
-        )
-
-        self.volume_label = ttk.Label(self.content_frame, text="Volume:", underline=0)
-        self.volume_label.grid(
-            row=1,
-            column=0,
-            sticky="w",
-            pady=(self._scaled_px(10), 0),
-        )
-
-        self.change_speed_label = ttk.Label(
-            self.content_frame,
-            text="Change speed:",
-            underline=0,
-        )
-        self.change_speed_label.grid(
-            row=2,
-            column=0,
-            sticky="w",
-            pady=(self._scaled_px(12), 0),
-        )
-
-        self.change_speed_combo = ttk.Combobox(
-            self.content_frame,
-            textvariable=self.change_speed_var,
-            values=tuple(speed.title() for speed in self.CHANGE_SPEED_STEPS),
-            state="readonly",
-            width=8,
-            takefocus=True,
-        )
-        self.change_speed_combo.grid(
-            row=2,
-            column=1,
-            sticky="w",
-            padx=(self._scaled_px(8), 0),
-            pady=(self._scaled_px(12), 0),
-        )
-        self.change_speed_combo.bind("<<ComboboxSelected>>", self.on_change_speed_selected)
-
-        self.volume_value_label = ttk.Label(
-            self.content_frame,
-            textvariable=self.volume_text_var,
-            width=5,
-            anchor="e",
-        )
-        self.volume_value_label.grid(
-            row=1,
-            column=2,
-            sticky="e",
-            pady=(self._scaled_px(10), 0),
-        )
-
-        self.decrease_button = ttk.Button(
-            self.content_frame,
-            text=self.DECREASE_VOLUME_LABEL,
-            underline=0,
-            takefocus=True,
-            command=lambda: self.adjust_selected_volume(-self.volume_step),
-        )
-
-        self.volume_scale = ttk.Scale(
-            self.content_frame,
-            from_=0,
-            to=100,
-            orient=tk.HORIZONTAL,
-            variable=self.volume_var,
-            command=self.on_scale_moved,
-            length=self._scaled_px(260),
-            takefocus=True,
-        )
-        self.volume_scale.grid(
-            row=1,
-            column=1,
-            columnspan=1,
-            sticky="ew",
-            padx=self._scaled_px(8),
-            pady=(self._scaled_px(10), 0),
-        )
-        self.volume_scale.bind("<ButtonRelease-1>", self.on_scale_released)
-        for sequence in (
-            "<KeyRelease-Left>",
-            "<KeyRelease-Right>",
-            "<KeyRelease-Up>",
-            "<KeyRelease-Down>",
-        ):
-            self.volume_scale.bind(sequence, self.on_scale_released)
-        self.volume_scale.bind("<Home>", lambda _event: self._set_volume_from_keyboard(0))
-        self.volume_scale.bind("<End>", lambda _event: self._set_volume_from_keyboard(100))
-        self.volume_scale.bind("<Prior>", lambda _event: self._adjust_volume_from_keyboard(10))
-        self.volume_scale.bind("<Next>", lambda _event: self._adjust_volume_from_keyboard(-10))
-
-        self.increase_button = ttk.Button(
-            self.content_frame,
-            text=self.INCREASE_VOLUME_LABEL,
-            underline=0,
-            takefocus=True,
-            command=lambda: self.adjust_selected_volume(self.volume_step),
-        )
-
-        self.start_with_windows_check = ttk.Checkbutton(
-            self.content_frame,
-            text="Start with Windows",
-            underline=0,
-            variable=self.start_with_windows_var,
-            takefocus=True,
-            command=self.on_start_with_windows_toggled,
-        )
-
-        self.configure_plugins_button = ttk.Button(
-            self.content_frame,
-            text="Configure",
-            underline=-1,
-            takefocus=True,
-            command=self.configure_plugins,
-        )
-        self.configure_plugins_button.grid(
-            row=0,
-            column=3,
-            sticky="e",
-            pady=0,
-        )
+        self.routes_panel = ttk.Frame(self.content_frame)
+        self.routes_panel.grid(row=1, column=0, sticky="nsew", pady=(self._scaled_px(10), 0))
+        self.plugins_panel = ttk.Frame(self.content_frame)
+        self.plugins_panel.grid(row=2, column=0, sticky="ew", pady=(self._scaled_px(12), 0))
 
         self.status_bar = tk.Label(
             self.root,
@@ -372,28 +218,14 @@ class MonitorVolumeApp:
 
     def _apply_scaled_layout(self) -> None:
         self.content_frame.configure(padding=self._scaled_px(12))
-        self.refresh_button.grid_configure(
-            padx=(self._scaled_px(8), 0),
-            pady=(self._scaled_px(10), 0),
-        )
-        self.volume_label.grid_configure(pady=(self._scaled_px(10), 0))
-        self.change_speed_label.grid_configure(pady=(self._scaled_px(12), 0))
-        self.change_speed_combo.grid_configure(
-            padx=(self._scaled_px(8), 0),
-            pady=(self._scaled_px(12), 0),
-        )
-        self.volume_value_label.grid_configure(pady=(self._scaled_px(10), 0))
-        self.volume_scale.configure(length=self._scaled_px(260))
-        self.volume_scale.grid_configure(
-            padx=self._scaled_px(8),
-            pady=(self._scaled_px(10), 0),
-        )
+        self.routes_panel.grid_configure(pady=(self._scaled_px(10), 0))
+        self.plugins_panel.grid_configure(pady=(self._scaled_px(12), 0))
         self.status_bar.configure(padx=self._scaled_px(6))
 
     def _lock_window_size(self) -> None:
         self._apply_scaled_layout()
         self._resize_for_content(force=True)
-        self.root.resizable(True, False)
+        self.root.resizable(True, True)
 
     def _resize_for_content(self, force: bool = False) -> None:
         self.root.update_idletasks()
@@ -402,8 +234,8 @@ class MonitorVolumeApp:
         self.root.minsize(width, height)
         current_width = self.root.winfo_width()
         current_height = self.root.winfo_height()
-        if force or current_width < width or current_height != height:
-            self.root.geometry(f"{width if force else max(current_width, width)}x{height}")
+        if force or current_width < width or current_height < height:
+            self.root.geometry(f"{width if force else max(current_width, width)}x{height if force else max(current_height, height)}")
 
     def _on_root_configure(self, event: Any) -> None:
         if self._closing or event.widget is not self.root or self._scale_after_id is not None:
@@ -422,15 +254,7 @@ class MonitorVolumeApp:
         self._resize_for_content()
 
     def _bind_keyboard_shortcuts(self) -> None:
-        bindings = {
-            "<Alt-v>": lambda _event: self._focus_control(self.volume_scale),
-            "<Alt-c>": lambda _event: self._focus_control(self.change_speed_combo),
-            "<Alt-r>": lambda _event: self._invoke_control(self.refresh_button),
-            "<Control-r>": lambda _event: self._invoke_control(self.refresh_button),
-            "<F5>": lambda _event: self._invoke_control(self.refresh_button),
-            "<Alt-p>": lambda _event: self._invoke_control(self.configure_plugins_button),
-            "<Escape>": self._minimize_from_keyboard,
-        }
+        bindings = {"<Escape>": self._minimize_from_keyboard}
         for sequence, callback in bindings.items():
             self.root.bind(sequence, callback)
 
@@ -473,6 +297,7 @@ class MonitorVolumeApp:
         )
         try:
             self._display_listener.start()
+            self.refresh_configured_routes()
         except Exception as exc:
             LOGGER.error(
                 "Display-change listener startup failed (%s).",
@@ -493,14 +318,20 @@ class MonitorVolumeApp:
                 self.root,
                 post_to_ui=self._post_to_ui,
                 on_notice=self._set_status,
-                on_volume_provider_changed=self._on_volume_provider_changed,
                 get_start_with_windows=lambda: self.start_with_windows,
                 set_start_with_windows=self.set_start_with_windows_enabled,
+                get_volume_statuses=self._get_volume_statuses,
+                on_overlay_renderer_changed=self._replace_overlay_renderer,
+                on_volume_routes_changed=self._routes_changed,
             )
             self._plugin_manager.start()
-            self.monitor_label.configure(textvariable=self.provider_var, underline=-1)
-            self.monitor_combo.grid_remove()
-            self.refresh_button.configure(text="Refresh volume")
+            self._overlay = self._plugin_manager.create_overlay_renderer(
+                self.dark_mode,
+                self.high_contrast,
+            )
+            self._plugin_manager.build_routes_panel(self.routes_panel)
+            self._plugin_manager.build_action_plugins_panel(self.plugins_panel)
+            self.root.after_idle(self._resize_for_content)
         except Exception as exc:
             LOGGER.error("Plugin system startup failed (%s).", exc.__class__.__name__)
             self._plugin_manager = None
@@ -510,17 +341,8 @@ class MonitorVolumeApp:
         if self._closing or provider is None:
             return
         self.provider_var.set(f"Volume provider: {provider.provider_name}")
+        self._publish_volume_status(provider, None, "Not yet read")
         self._post_to_ui(self.refresh_volume_provider)
-
-    def configure_plugins(self) -> None:
-        if self._plugin_manager is None:
-            self._set_status("Plugin configuration is unavailable.")
-            return
-        try:
-            self._plugin_manager.show_configuration(self.root)
-        except Exception as exc:
-            LOGGER.error("Plugin configuration failed (%s).", exc.__class__.__name__)
-            self._set_status(f"Plugin configuration failed: {self._format_error(exc)}")
 
     def _start_tray_icon(self) -> None:
         try:
@@ -530,7 +352,7 @@ class MonitorVolumeApp:
                 on_exit=lambda: self._post_to_ui(self.on_close),
                 on_error=self._handle_tray_error_from_thread,
                 icon_path=self.app_icon_path,
-                on_refresh=lambda: self._post_to_ui(self.refresh_monitors),
+                on_refresh=lambda: self._post_to_ui(self.refresh_configured_routes),
                 on_select_monitor=lambda selection: self._post_to_ui(
                     lambda target=selection: self._select_monitor_from_tray(target)
                 ),
@@ -553,31 +375,20 @@ class MonitorVolumeApp:
             on_delta=self._queue_hotkey_delta,
             should_consume=self._should_consume_volume_keys,
             on_error=self._handle_listener_error_from_thread,
-            step=self.volume_step,
+            step=1,
             on_unavailable=self._queue_unavailable_hotkey_notice,
             should_report_unavailable=self._should_report_unavailable_hotkey,
         )
         try:
             self._listener.start()
+            # A route probe can complete while the hook is being installed.
+            # Recompute after activation so that readiness is not stranded
+            # until a later route refresh.
+            self._update_hotkey_state()
         except Exception as exc:
             LOGGER.error("Volume-key listener startup failed (%s).", exc.__class__.__name__)
             self._listener = None
             self._set_status(self._format_error(exc))
-
-    def on_change_speed_selected(self, _event: Any = None) -> None:
-        selected_speed = self.change_speed_var.get().strip().lower()
-        if selected_speed not in self.CHANGE_SPEED_STEPS:
-            selected_speed = DEFAULT_CHANGE_SPEED
-
-        self.change_speed = selected_speed
-        self.volume_step = self.CHANGE_SPEED_STEPS[selected_speed]
-        self.change_speed_var.set(selected_speed.title())
-        if self._listener is not None:
-            self._listener.set_step(self.volume_step)
-        try:
-            save_change_speed(selected_speed)
-        except (OSError, ValueError) as exc:
-            LOGGER.warning("Saving Change speed failed (%s).", exc.__class__.__name__)
 
     def on_start_with_windows_toggled(self) -> None:
         enabled = bool(self.start_with_windows_var.get())
@@ -639,7 +450,7 @@ class MonitorVolumeApp:
             self.high_contrast,
         )
         if self._overlay is not None:
-            self._overlay.apply_theme(self.dark_mode, self.high_contrast)
+            self._render_overlay("apply_theme", self.dark_mode, self.high_contrast)
         plugin_manager = getattr(self, "_plugin_manager", None)
         if plugin_manager is not None:
             plugin_manager.apply_theme(self.dark_mode)
@@ -671,15 +482,16 @@ class MonitorVolumeApp:
         if plugin_manager is not None:
             plugin_manager.notify_volume_topology_changed()
         self._hotkeys_ready = False
+        getattr(self, "_ready_route_ids", set()).clear()
         self.current_volume = None
         self.target_volume = None
         self._pending_target_volume = None
-        self._control_unavailable_reason = "Display configuration changed; checking the selected monitor."
+        self._control_unavailable_reason = "Display configuration changed; revalidating configured routes."
         self._update_hotkey_state()
         self._set_displayed_volume(None)
         if self._listener is not None:
             self._listener.reset_unavailable_notice()
-        self._set_status("Display configuration changed. Revalidating the selected monitor...")
+        self._set_status("Display configuration changed. Revalidating configured routes...")
         self._apply_control_state()
         self._refresh_retry_index = 0
         self._schedule_refresh(self.DISPLAY_CHANGE_DEBOUNCE_MS, automatic=True)
@@ -723,18 +535,21 @@ class MonitorVolumeApp:
         return self._display_listener is not None and self._display_listener.is_active
 
     def _control_ready(self) -> bool:
-        active_provider = (
-            getattr(self, "_plugin_manager", None).active_volume_provider()
-            if getattr(self, "_plugin_manager", None) is not None
-            else None
-        )
         return (
             not self._closing
             and self._display_listener_available()
             and self._topology_valid.is_set()
-            and (self.selected_key is not None or active_provider is not None)
-            and self.current_volume is not None
+            and (getattr(self, "_plugin_manager", None) is not None or self.selected_key is not None)
         )
+
+    def _routes_changed(self) -> None:
+        """Rebuild readiness from route instances; never fall back to legacy state."""
+        self._ensure_relevant_volume_statuses()
+        self._ready_route_ids.clear()
+        self._hotkeys_ready = False
+        self._topology_valid.clear()
+        self._update_hotkey_state()
+        self.refresh_configured_routes()
 
     def _queue_hotkey_delta(self, delta: int) -> None:
         if not self._closing:
@@ -751,12 +566,16 @@ class MonitorVolumeApp:
         )
 
     def _should_consume_volume_keys(self) -> bool:
+        manager = getattr(self, "_plugin_manager", None)
+        routed_providers = manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager is not None else ()
+        ready_route_ids = getattr(self, "_ready_route_ids", None)
         return (
             self._hotkeys_enabled
             and self._topology_valid.is_set()
             and not self._closing
             and self._listener is not None
             and self._listener.is_active
+            and any(ready_route_ids is None or route.route_id in ready_route_ids for route, _provider in routed_providers)
         )
 
     def _post_to_ui(self, callback: Callable[[], None]) -> None:
@@ -779,7 +598,7 @@ class MonitorVolumeApp:
                 except Exception as exc:
                     self._report_ui_callback_error(exc)
 
-            if self._hotkeys_enabled and (not self._busy or self._volume_write_inflight):
+            if self._hotkeys_enabled and not self._busy:
                 pending_delta = 0
                 while True:
                     try:
@@ -788,7 +607,10 @@ class MonitorVolumeApp:
                         break
                 if pending_delta:
                     try:
-                        self.adjust_selected_volume(pending_delta)
+                        if getattr(self, "_plugin_manager", None) is None:
+                            self.adjust_selected_volume(pending_delta)
+                        else:
+                            self._route_windows_volume_delta(pending_delta)
                     except Exception as exc:
                         self._report_ui_callback_error(exc)
             elif not self._hotkeys_enabled:
@@ -847,18 +669,8 @@ class MonitorVolumeApp:
             widget.state(["disabled"])
 
     def _apply_control_state(self) -> None:
-        if self._closing:
-            return
-
-        has_monitors = bool(self.monitors) and getattr(self, "_plugin_manager", None) is None
-        self._set_widget_enabled(self.refresh_button, not self._busy)
-        self._set_widget_enabled(self.monitor_combo, has_monitors and not self._busy)
-        volume_controls_enabled = self._control_ready() and (
-            not self._busy or self._volume_write_inflight
-        )
-        self._set_widget_enabled(self.decrease_button, volume_controls_enabled)
-        self._set_widget_enabled(self.increase_button, volume_controls_enabled)
-        self._set_widget_enabled(self.volume_scale, volume_controls_enabled)
+        # Route and action panels own their enabled states.  Main-window refresh is tray-only.
+        return
 
     def _set_busy(self, busy: bool, status_message: str | None = None) -> None:
         self._busy = busy
@@ -1023,35 +835,118 @@ class MonitorVolumeApp:
     def _set_displayed_volume(self, volume: int | None) -> None:
         self._ignore_scale_events = True
         try:
-            self.volume_var.set(0.0 if volume is None else float(clamp(volume, 0, 100)))
+            # The root no longer presents one authoritative volume. Keep this
+            # compatibility helper for monitor/tray state only.
+            if hasattr(self, "volume_var"):
+                self.volume_var.set(0.0 if volume is None else float(clamp(volume, 0, 100)))
         finally:
             self._ignore_scale_events = False
 
         if volume is None:
-            self.volume_text_var.set("--")
+            if hasattr(self, "volume_text_var"): self.volume_text_var.set("--")
         else:
-            self.volume_text_var.set(f"{clamp(volume, 0, 100)}%")
+            if hasattr(self, "volume_text_var"): self.volume_text_var.set(f"{clamp(volume, 0, 100)}%")
         self._sync_tray_menu_state()
 
-    def _show_volume_overlay(self, volume: int | None = None) -> None:
+    def _show_volume_overlay(self, volume: int | None = None, provider: Any | None = None) -> None:
         if self._closing or self._overlay is None:
             return
         if volume is None:
             volume = self.current_volume
-        if volume is not None:
-            self._overlay.show(
-                clamp(volume, 0, 100),
+        provider_id = (
+            self._plugin_manager.volume_provider_id(provider)
+            if provider is not None and self._plugin_manager is not None
+            else self._active_overlay_provider_id()
+        )
+        statuses = self._get_volume_statuses()
+        if statuses or volume is None:
+            statuses = self._overlay.select_statuses(statuses, provider_id)
+            self._render_overlay(
+                "show_statuses",
+                statuses,
+                provider_id,
                 preferred_display_device_name=self._selected_display_device_name(),
             )
+            return
+        self._render_overlay("show", clamp(volume, 0, 100), preferred_display_device_name=self._selected_display_device_name())
+
+    def _replace_overlay_renderer(self) -> None:
+        """Replace a renderer only from the Tk-thread manager callback."""
+        if self._closing or self._plugin_manager is None:
+            return
+        previous = self._overlay
+        self._overlay = self._plugin_manager.create_overlay_renderer(self.dark_mode, self.high_contrast)
+        if previous is not None:
+            previous.close()
+
+    def _active_overlay_provider_id(self) -> str | None:
+        return None
+
+    def _get_volume_statuses(self) -> tuple[VolumeStatus, ...]:
+        return tuple(getattr(self, "_volume_statuses", {}).values())
+
+    def _publish_volume_status(
+        self, provider: Any, confirmed_volume: int | None, reason: str | None = None
+    ) -> None:
+        manager = self._plugin_manager
+        if manager is None:
+            return
+        provider_id = manager.volume_provider_id(provider)
+        if provider_id is None:
+            return
+        relevant = manager.relevant_volume_provider_ids()
+        existing = self._volume_statuses.get(provider_id)
+        route_name = manager.route_name_for_provider(provider)
+        display_name = route_name if isinstance(route_name, str) and route_name.strip() else str(getattr(provider, "provider_name", provider_id))
+        self._volume_statuses[provider_id] = VolumeStatus(
+            provider_id=provider_id,
+            display_name=display_name,
+            confirmed_volume=confirmed_volume,
+            active=False,
+            routed=manager.is_volume_provider_routed(provider_id),
+            reason=reason,
+        )
+        # Retain only configured providers relevant to active control or an input route.
+        self._volume_statuses = {
+            status_id: status
+            for status_id, status in self._volume_statuses.items()
+            if status_id in relevant
+        }
+
+    def _ensure_relevant_volume_statuses(self) -> None:
+        manager = getattr(self, "_plugin_manager", None)
+        if manager is None:
+            return
+        for provider_id, provider in manager.relevant_volume_providers():
+            existing = self._volume_statuses.get(provider_id)
+            if existing is None:
+                self._publish_volume_status(provider, None, "Not yet read")
 
     def _show_unavailable_error(self, message: str | None = None) -> None:
         reason = message or self._control_unavailable_reason or "Selected monitor is unavailable."
         self._set_status(reason)
         if not self._closing and self._overlay is not None:
-            self._overlay.show_error(
+            self._render_overlay(
+                "show_error",
                 reason,
                 preferred_display_device_name=self._selected_display_device_name(),
             )
+
+    def _render_overlay(self, method_name: str, *args: Any, **kwargs: Any) -> None:
+        """Disable a failed optional renderer without interrupting route control."""
+        overlay = self._overlay
+        if overlay is None:
+            return
+        try:
+            getattr(overlay, method_name)(*args, **kwargs)
+        except Exception as exc:
+            LOGGER.error("Volume overlay %s failed (%s).", method_name, exc.__class__.__name__)
+            self._overlay = None
+            self._set_status(f"Volume overlay failed: {self._format_error(exc)}. Routes remain available.")
+            try:
+                overlay.close()
+            except Exception:
+                pass
 
     def _selected_display_device_name(self) -> str | None:
         if self.selected_key is None:
@@ -1141,6 +1036,83 @@ class MonitorVolumeApp:
             return "Select a monitor before monitor-volume control can start."
         return "Selected monitor was not found. Reconnect it or select another monitor."
 
+    def refresh_configured_routes(self, automatic: bool = False) -> None:
+        """Probe routed outputs on the one operation lane without touching Tk off-thread."""
+        if self._refresh_after_id is not None:
+            self.root.after_cancel(self._refresh_after_id)
+            self._refresh_after_id = None
+        if self._busy or self._closing:
+            self._refresh_requested = True
+            self._refresh_requested_automatic = self._refresh_requested_automatic or automatic
+            return
+        manager = getattr(self, "_plugin_manager", None)
+        routes = manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ()
+        self._ready_route_ids.clear()
+        self._hotkeys_ready = False
+        self._topology_valid.clear()
+        self._update_hotkey_state()
+        if not routes:
+            self._control_unavailable_reason = "Configure a Windows volume-key route."
+            self._set_status(self._control_unavailable_reason)
+            return
+        generation = self._current_topology_generation()
+        self._set_busy(True, "Checking configured routes...")
+        operation_id = self._begin_ddc_operation("Route status refresh")
+
+        def runner() -> None:
+            results: list[tuple[str, Any, int | None, str | None]] = []
+            for route, provider in routes:
+                try:
+                    activate = getattr(provider, "activate_volume_provider", None)
+                    if callable(activate):
+                        activate()
+                    ready, reason = provider.is_volume_provider_available()
+                    if not ready:
+                        raise RuntimeError(reason or "Provider is unavailable")
+                    results.append((route.route_id, provider, clamp(int(provider.read_volume()), 0, 100), None))
+                except Exception as exc:
+                    results.append((route.route_id, provider, None, self._format_error(exc)))
+            self._post_to_ui(
+                lambda values=tuple(results), token=generation, operation=operation_id:
+                self._finish_configured_route_refresh(values, token, operation)
+            )
+
+        threading.Thread(target=runner, name="routed-volume-refresh", daemon=True).start()
+
+    def _finish_configured_route_refresh(
+        self, results: tuple[tuple[str, Any, int | None, str | None], ...], generation: int, operation_id: int
+    ) -> None:
+        if self._closing or not self._accept_ddc_completion(operation_id):
+            return
+        self._busy = False
+        if not self._is_topology_generation_current(generation):
+            self._schedule_refresh(self.DISPLAY_CHANGE_DEBOUNCE_MS, automatic=True)
+            return
+        manager = self._plugin_manager
+        self._ready_route_ids = {route_id for route_id, _provider, volume, reason in results if volume is not None and reason is None}
+        for route_id, provider, volume, reason in results:
+            self._publish_volume_status(provider, volume, reason)
+        if self._display_listener_available():
+            self._topology_valid.set()
+        self._hotkeys_ready = bool(self._ready_route_ids and self._topology_valid.is_set())
+        if self._hotkeys_ready:
+            self._control_unavailable_reason = None
+        else:
+            failures = [
+                f"{manager.route_name(route_id) or 'Route'}: {reason}"
+                for route_id, _provider, _volume, reason in results
+                if reason
+            ]
+            detail = " ".join(failures)
+            self._control_unavailable_reason = (
+                "No configured Windows volume-key route is ready."
+                + (f" {detail}" if detail else "")
+            )
+        self._update_hotkey_state()
+        self._set_status("Ready. Configured volume routes are active." if self._hotkeys_ready else self._control_unavailable_reason)
+        self._apply_control_state()
+        self._run_deferred_refresh()
+
     def _schedule_refresh(self, delay_ms: int, automatic: bool) -> None:
         if self._closing:
             return
@@ -1153,7 +1125,7 @@ class MonitorVolumeApp:
 
     def _run_scheduled_refresh(self, automatic: bool) -> None:
         self._refresh_after_id = None
-        self.refresh_monitors(automatic=automatic)
+        self.refresh_configured_routes(automatic=automatic)
 
     def _schedule_next_refresh_retry(self) -> None:
         if self._refresh_retry_index >= len(self.REFRESH_RETRY_DELAYS_MS):
@@ -1171,7 +1143,7 @@ class MonitorVolumeApp:
         if self._refresh_after_id is not None:
             self.root.after_cancel(self._refresh_after_id)
             self._refresh_after_id = None
-        self.refresh_monitors(automatic=automatic)
+        self.refresh_configured_routes(automatic=automatic)
 
     def _begin_ddc_operation(self, kind: str) -> int:
         if self._active_ddc_operation_id is not None:
@@ -1252,7 +1224,7 @@ class MonitorVolumeApp:
         manager = self._plugin_manager
         provider = manager.active_volume_provider() if manager is not None else None
         if provider is None:
-            self._control_unavailable_reason = "Select a volume provider in Configure plugins."
+            self._control_unavailable_reason = "Select a volume provider in Routes."
             self._set_status(self._control_unavailable_reason)
             self._apply_control_state()
             return
@@ -1287,6 +1259,7 @@ class MonitorVolumeApp:
             self._schedule_refresh(self.DISPLAY_CHANGE_DEBOUNCE_MS, automatic=True)
             return
         self.current_volume = clamp(volume, 0, 100)
+        self._publish_volume_status(provider, self.current_volume)
         self.target_volume = self.current_volume
         self._set_displayed_volume(self.current_volume)
         if self._display_listener_available():
@@ -1311,6 +1284,9 @@ class MonitorVolumeApp:
         self._update_hotkey_state()
         self._set_displayed_volume(None)
         self._control_unavailable_reason = self._format_error(exc)
+        provider = self._plugin_manager.active_volume_provider() if self._plugin_manager is not None else None
+        if provider is not None:
+            self._publish_volume_status(provider, None, self._control_unavailable_reason)
         self._set_status(self._control_unavailable_reason)
         self._apply_control_state()
         if automatic:
@@ -1339,6 +1315,7 @@ class MonitorVolumeApp:
             return
         next_target = self._pending_target_volume
         self.current_volume = clamp(volume, 0, 100)
+        self._publish_volume_status(provider, self.current_volume)
         self._volume_write_inflight = False
         self._busy = False
         if next_target is not None and next_target != self.current_volume:
@@ -1369,6 +1346,9 @@ class MonitorVolumeApp:
         self._update_hotkey_state()
         self._set_displayed_volume(None)
         self._control_unavailable_reason = f"{self._format_error(exc).rstrip('.')}. Volume control is disabled."
+        provider = self._plugin_manager.active_volume_provider() if self._plugin_manager is not None else None
+        if provider is not None:
+            self._publish_volume_status(provider, None, self._control_unavailable_reason)
         self._show_unavailable_error(self._control_unavailable_reason)
         self._apply_control_state()
 
@@ -1377,9 +1357,6 @@ class MonitorVolumeApp:
         automatic: bool = False,
         selection_target: SavedMonitorSelection | None = None,
     ) -> None:
-        if selection_target is None and getattr(self, "_plugin_manager", None) is not None:
-            self.refresh_volume_provider(automatic=automatic)
-            return
         if self._refresh_after_id is not None:
             self.root.after_cancel(self._refresh_after_id)
             self._refresh_after_id = None
@@ -1536,7 +1513,7 @@ class MonitorVolumeApp:
             )
         if self._control_ready():
             plugin_manager = getattr(self, "_plugin_manager", None)
-            if plugin_manager is not None and plugin_manager.active_volume_provider() is not None:
+            if plugin_manager is not None:
                 self._apply_control_state()
                 self._run_deferred_refresh()
                 return
@@ -1610,6 +1587,71 @@ class MonitorVolumeApp:
             self._start_provider_volume_write(provider, target_volume)
         elif self.selected_key is not None:
             self._start_volume_write(self.selected_key, target_volume)
+
+    def _route_windows_volume_delta(self, delta: int) -> None:
+        """Apply one host input to every configured output on the sole worker slot."""
+        manager = self._plugin_manager
+        routes = tuple(
+            (route, provider)
+            for route, provider in (manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ())
+            if route.route_id in self._ready_route_ids
+        )
+        if not routes or not self._control_ready() or self._busy:
+            return
+        generation = self._current_topology_generation()
+        self._volume_write_inflight = True
+        self._set_busy(True, "Applying routed volume change...")
+        operation_id = self._begin_ddc_operation("Routed volume change")
+
+        def runner() -> None:
+            results: list[tuple[str, Any, int | None, str | None]] = []
+            for route, provider in routes:
+                try:
+                    ready, reason = provider.is_volume_provider_available()
+                    if not ready:
+                        raise RuntimeError(reason or "Provider is unavailable")
+                    current = clamp(int(provider.read_volume()), 0, 100)
+                    target = clamp(current + delta, 0, 100)
+                    # Do not send redundant physical writes at the volume bounds.
+                    # Some DDC implementations reject an otherwise harmless set.
+                    if target == current:
+                        results.append((route.route_id, provider, current, None))
+                    else:
+                        results.append((route.route_id, provider, clamp(int(provider.write_volume(target)), 0, 100), None))
+                except Exception as exc:
+                    results.append((route.route_id, provider, None, self._format_error(exc)))
+            self._post_to_ui(lambda values=tuple(results), token=generation, operation=operation_id: self._finish_routed_volume_change(values, token, operation))
+
+        threading.Thread(target=runner, name="routed-volume-change", daemon=True).start()
+
+    def _finish_routed_volume_change(self, results: tuple[tuple[str, Any, int | None, str | None], ...], generation: int, operation_id: int) -> None:
+        if self._closing or not self._accept_ddc_completion(operation_id):
+            return
+        self._volume_write_inflight = False
+        self._busy = False
+        if not self._is_topology_generation_current(generation):
+            self._set_status("Display changed while applying routed volume changes.")
+            self._apply_control_state()
+            return
+        failures: list[str] = []
+        manager = self._plugin_manager
+        for route_id, provider, volume, reason in results:
+            self._publish_volume_status(provider, volume, reason)
+            if reason is not None:
+                failures.append(
+                    f"{manager.route_name(route_id) or 'Route'}: {reason}"
+                )
+        # A route write can fail after the physical device accepted the command
+        # or because of a transient DDC/CI response. Keep the last successful
+        # probe result so the next key press can re-read and retry the route.
+        self._set_status(
+            "Routed volume change completed."
+            if not failures
+            else "Routed volume change completed with "
+            f"{len(failures)} failure(s). {' '.join(failures)}"
+        )
+        self._show_volume_overlay(provider=results[-1][1] if results else None)
+        self._apply_control_state()
 
     def _start_volume_write(
         self,
