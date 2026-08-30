@@ -9,7 +9,7 @@ These instructions apply to the entire repository. Keep this file operational an
 - Runtime dependency: `monitorcontrol==4.2.0`. Optional executable builder: `Nuitka==2.4.8`.
 - The app is an interactive current-user process, not a service. It has no HTTP/API server, listening port, database, application account system, external broker/job queue, cron, or telemetry. The bundled Discord plugin is an OAuth client for Discord's HTTPS token endpoint and local named pipe.
 - The global Volume Down/Up hook, passive plugin shortcut observer, Discord voice-output changes, physical DDC writes, audio endpoint visibility changes, and elevated FenSound rename are safety-sensitive. Do not launch the app or call live monitor/audio/Discord operations as routine automated validation.
-- There is a standard-library unit-test suite for fail-safe and registered hotkeys, plugin discovery/isolation, mocked Discord credentials/OAuth/restoration, stable identity/settings, Change speed persistence, autostart, diagnostics, display invalidation, revalidation, fail-closed audio-output matching, single-instance behavior, overlay focus safety, live theme/accessibility/scaling, resilience, CI safety, and tray recovery. GitHub Actions runs hardware-free checks on Windows for Python 3.10 and 3.14. There is no lint, format, type-check, or third-party test-framework configuration. State those limitations accurately.
+- There is a standard-library unit-test suite for fail-safe and registered hotkeys, plugin discovery/isolation, mocked Discord credentials/OAuth/restoration, stable identity/settings, Change speed persistence, autostart, diagnostics, display invalidation, revalidation, fail-closed audio-output matching, single-instance behavior, overlay focus safety, live theme/accessibility/scaling, resilience, CI safety, and tray recovery. GitHub Actions runs hardware-free checks on Windows for Python 3.10. There is no lint, format, type-check, or third-party test-framework configuration. State those limitations accurately.
 
 ## Runtime Shape
 
@@ -48,7 +48,7 @@ Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or 
 | `theme.py` | Windows theme/High Contrast/window-DPI reads, reversible ttk styles, DWM chrome, and runtime icon path. |
 | `windows_platform.py` | Win32 ctypes ABI, single-instance mutex/restore signaling, monitor identity/EDID inventory, display work areas/scaling, window DPI/High Contrast reads, no-activate overlay helpers, display/theme notifications, snapshot-driven tray controller, global keyboard hook, and DWM helpers. |
 | `tests/` | Hardware-free plugin/hotkey/Discord, identity, settings, autostart, audio-output, single-instance, topology, fresh-write, overlay, accessibility/scaling, resilience, and tray regressions. |
-| `.github/workflows/ci.yml` | Windows Python 3.10/3.14 hardware-free unit and low-risk validation workflow. |
+| `.github/workflows/ci.yml` | Windows Python 3.10 hardware-free unit and low-risk validation workflow. |
 | `pyproject.toml` | Python requirement, dependency pins, and installed flat modules. |
 | `build_exe.ps1` | One-file Nuitka build for `dist\windows-ddc.exe`. |
 | `windows-ddc.ico` | Tracked executable, window, and tray icon source. |

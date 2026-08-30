@@ -55,11 +55,11 @@ class AutostartCommandTests(unittest.TestCase):
                 str(python_executable),
             ), patch.object(autostart, "SOURCE_ENTRYPOINT", source_entrypoint):
                 command = autostart.current_autostart_command()
+                expected = subprocess.list2cmdline(
+                    [str(pythonw_executable.resolve()), str(source_entrypoint.resolve())]
+                )
 
-        self.assertEqual(
-            command,
-            subprocess.list2cmdline([str(pythonw_executable), str(source_entrypoint)]),
-        )
+            self.assertEqual(command, expected)
 
     def test_current_packaged_command_uses_the_original_argv_path(self) -> None:
         executable = Path(r"C:\Program Files\windows-ddc\windows-ddc.exe")

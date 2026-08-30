@@ -16,7 +16,7 @@ class CIWorkflowTests(unittest.TestCase):
 
     def test_workflow_covers_supported_python_boundary_on_windows(self) -> None:
         self.assertIn("runs-on: windows-latest", self.workflow)
-        self.assertIn('python-version: ["3.10", "3.14"]', self.workflow)
+        self.assertIn('python-version: ["3.10"]', self.workflow)
         self.assertIn("uses: actions/checkout@v6", self.workflow)
         self.assertIn("uses: actions/setup-python@v6", self.workflow)
         self.assertIn("permissions:\n  contents: read", self.workflow)

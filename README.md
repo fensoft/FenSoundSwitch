@@ -49,7 +49,7 @@ These manually maintained captures predate the provider-first layout, Change spe
 | Windows integration | `ctypes` calls to User32, Kernel32, Shell32, Ole32/Core Audio, Dxva2, SetupAPI, Advapi32, and optional DWM APIs |
 | Source packaging | setuptools with flat `py-modules` |
 | Executable build | `Nuitka==2.4.8`, one-file Windows executable |
-| Continuous integration | GitHub Actions on `windows-latest`, Python 3.10 and 3.14 |
+| Continuous integration | GitHub Actions on `windows-latest`, Python 3.10 |
 | Persistent app data | Per-user JSON settings, plugin settings, optional Windows Run value, Windows Credential Manager OAuth data, and rotating diagnostic logs |
 
 The runtime is one interactive user-session process. It is not a Windows service and does not open a port, expose an HTTP API, or use a database. The bundled Discord plugin uses Discord's local named-pipe RPC interface and Discord's HTTPS OAuth token endpoint when it is configured. See [Architecture](docs/ARCHITECTURE.md) for the process, thread, and event flows.
@@ -344,7 +344,7 @@ Install the editable runtime environment before developing:
 python -m pip install -e .
 ```
 
-The repository has a standard-library unit-test suite for hotkey safety, stable identity, isolated selection/change-speed settings, autostart command/registry behavior, diagnostics rotation, topology generations, fresh-handle revalidation, fail-closed audio-output matching/reconciliation, single-instance behavior, resilience, rich tray-menu snapshots/commands, multi-screen overlay placement/no-activate behavior, live theme/High Contrast behavior, keyboard accessibility, DPI scaling, CI safety, and tray recovery. It has no lint/type/format configuration. `.github/workflows/ci.yml` runs the following checks on `windows-latest` with Python 3.10 and 3.14 for pushes, pull requests, and manual dispatches. The workflow never launches the UI, executes the Nuitka build, installs native listeners, changes live audio endpoints or the Run key, or contacts monitor hardware:
+The repository has a standard-library unit-test suite for hotkey safety, stable identity, isolated selection/change-speed settings, autostart command/registry behavior, diagnostics rotation, topology generations, fresh-handle revalidation, fail-closed audio-output matching/reconciliation, single-instance behavior, resilience, rich tray-menu snapshots/commands, multi-screen overlay placement/no-activate behavior, live theme/High Contrast behavior, keyboard accessibility, DPI scaling, CI safety, and tray recovery. It has no lint/type/format configuration. `.github/workflows/ci.yml` runs the following checks on `windows-latest` with Python 3.10 for pushes, pull requests, and manual dispatches. The workflow never launches the UI, executes the Nuitka build, installs native listeners, changes live audio endpoints or the Run key, or contacts monitor hardware:
 
 ```powershell
 python -m unittest discover -s tests -v
