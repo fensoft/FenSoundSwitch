@@ -1,16 +1,5 @@
 # Development
 
-## Build
-
-Install the optional build tools, then run the one-file Nuitka build:
-
-```powershell
-python -m pip install -e .[build]
-.\build_exe.ps1
-```
-
-The output is `dist\windows-ddc.exe`. The build may download Nuitka tooling and overwrite the ignored output. GitHub Actions builds and verifies this executable on `master`, but publishes it only for pushed Git tags.
-
 ## Validation
 
 Run hardware-free checks from the repository root:
@@ -24,10 +13,10 @@ git diff --cached --check
 git status --short
 ```
 
-CI runs the same hardware-free checks on Windows with Python 3.10. It never starts the application, invokes the build, discovers live monitors/receivers, changes audio endpoints, or accesses Discord credentials.
+CI runs these hardware-free checks on Windows with Python 3.10. It does not start the application, invoke the build, discover live monitors or receivers, change audio endpoints, or access Discord credentials.
 
 ## Manual Validation
 
-GUI, DDC, tray, global-hook, audio-routing, Discord, and network-receiver changes require an authorized manual Windows test. Such tests can change monitor or receiver volume, user audio routing, credentials, and keyboard behavior. Do not treat application startup as a generic smoke test.
+GUI, DDC, tray, global-hook, audio-routing, Discord, and network-receiver changes require an authorized manual Windows test. These tests can change monitor or receiver volume, user audio routing, credentials, and keyboard behavior. Do not treat application startup as a generic smoke test.
 
-See [Architecture](ARCHITECTURE.md) for component and thread boundaries, and [AGENTS.md](../AGENTS.md) for repository-specific maintenance rules.
+See [BUILD.md](../BUILD.md) for executable build instructions, [Architecture](ARCHITECTURE.md) for component boundaries, and [AGENTS.md](../AGENTS.md) for repository-specific maintenance rules.

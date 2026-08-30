@@ -12,6 +12,7 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Added
 
+- Added `BUILD.md`, a complete user manual, and a technical documentation index while simplifying the root README into a product overview and brief setup guide.
 - Added selectable bundled Windows 11 and macOS-style overlay renderers. Overlay selection and renderer settings are persisted under plugin settings; the Windows 11 renderer safely migrates the former global `overlay_mode` setting and retains typed current/all-routed configuration.
 - Added persisted, validated route names to route configuration, status reporting, and all-routed overlay rows; schema-v6 routes receive deterministic endpoint-based names on their next save.
 - Moved the bundled volume overlay into the `plugins` package as the renderer-only `volume-overlay` plugin capability. The plugin is initialized by `PluginManager`, constructed on the host Tk thread after manager startup, and remains absent from action and route configuration.
