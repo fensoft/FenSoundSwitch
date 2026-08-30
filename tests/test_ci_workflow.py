@@ -33,7 +33,13 @@ class CIWorkflowTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn(command, self.workflow)
         self.assertIn("autostart.py", self.workflow)
+        self.assertIn("audio_outputs.py", self.workflow)
         self.assertIn("diagnostics.py", self.workflow)
+        self.assertIn("ddc_volume_plugin.py", self.workflow)
+        self.assertIn("discord_output_plugin.py", self.workflow)
+        self.assertIn("plugin_api.py", self.workflow)
+        self.assertIn("plugin_hotkeys.py", self.workflow)
+        self.assertIn("plugin_manager.py", self.workflow)
 
     def test_workflow_never_launches_the_app_or_hardware_tools(self) -> None:
         forbidden_commands = (
@@ -42,6 +48,8 @@ class CIWorkflowTests(unittest.TestCase):
             "run: .\\build_exe.ps1",
             "enumerate_monitors(",
             "set_monitor_volume(",
+            "enumerate_audio_render_endpoints(",
+            "reconcile_monitor_audio_outputs(",
         )
         for command in forbidden_commands:
             with self.subTest(command=command):

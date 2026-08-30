@@ -40,6 +40,14 @@ class WindowsThemeTests(unittest.TestCase):
         style.theme_use.assert_called_once_with("vista")
         style.theme_create.assert_not_called()
 
+    def test_dark_theme_styles_the_plugin_treeview(self) -> None:
+        style = Mock()
+        style.theme_names.return_value = ("clam",)
+        apply_theme(style, True, False)
+        settings = style.theme_create.call_args.kwargs["settings"]
+        self.assertIn("Treeview", settings)
+        self.assertIn("Treeview.Heading", settings)
+
     def test_color_scheme_can_return_from_dark_to_system_colors(self) -> None:
         root = Mock()
         status_bar = Mock()
@@ -70,6 +78,7 @@ class WindowsThemeTests(unittest.TestCase):
         app.root = Mock()
         app.status_bar = Mock()
         app._overlay = Mock()
+        app._plugin_manager = Mock()
         app._apply_scaled_layout = Mock()
         app._resize_for_content = Mock()
         state = WindowsThemeState(dark_mode=False, high_contrast=True)
@@ -89,6 +98,7 @@ class WindowsThemeTests(unittest.TestCase):
         apply_ttk_theme.assert_called_once_with(app.style, False, True)
         apply_colors.assert_called_once_with(app.root, app.status_bar, False, True)
         app._overlay.apply_theme.assert_called_once_with(False, True)
+        app._plugin_manager.apply_theme.assert_called_once_with(False)
         apply_chrome.assert_called_once_with(app.root, False)
         app._apply_scaled_layout.assert_called_once_with()
         app._resize_for_content.assert_called_once_with()
@@ -120,20 +130,13 @@ class NativeAccessibilityTests(unittest.TestCase):
 
 
 class KeyboardAccessibilityTests(unittest.TestCase):
-    def test_volume_buttons_have_meaningful_accessible_text(self) -> None:
-        self.assertEqual(MonitorVolumeApp.DECREASE_VOLUME_LABEL, "Decrease volume")
-        self.assertEqual(MonitorVolumeApp.INCREASE_VOLUME_LABEL, "Increase volume")
-
     def test_keyboard_shortcuts_cover_every_primary_control(self) -> None:
         app = MonitorVolumeApp.__new__(MonitorVolumeApp)
         app.root = Mock()
-        app.monitor_combo = Mock()
         app.volume_scale = Mock()
         app.change_speed_combo = Mock()
         app.refresh_button = Mock()
-        app.decrease_button = Mock()
-        app.increase_button = Mock()
-        app.start_with_windows_check = Mock()
+        app.configure_plugins_button = Mock()
 
         app._bind_keyboard_shortcuts()
 
@@ -141,15 +144,12 @@ class KeyboardAccessibilityTests(unittest.TestCase):
         self.assertEqual(
             sequences,
             {
-                "<Alt-m>",
                 "<Alt-v>",
                 "<Alt-c>",
                 "<Alt-r>",
                 "<Control-r>",
                 "<F5>",
-                "<Alt-d>",
-                "<Alt-i>",
-                "<Alt-s>",
+                "<Alt-p>",
                 "<Escape>",
             },
         )

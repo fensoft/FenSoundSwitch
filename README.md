@@ -14,17 +14,18 @@ It controls the monitor's DDC/CI audio-volume value, not the Windows audio mixer
 
 ![On-screen monitor volume overlay](docs/overlay.png)
 
-These manually maintained captures predate the wider serial-bearing monitor selector, Change speed selector, Start with Windows checkbox, descriptive volume buttons, live theme/scaling behavior, and unavailable/error overlay. Update them only from a real application capture on compatible hardware.
+These manually maintained captures predate the provider-first layout, Change speed selector, plugin configuration dialog, live theme/scaling behavior, and unavailable/error overlay. Update them only from a real scrubbed application capture on compatible hardware.
 
 ## Features
 
 - Discovers DDC/CI monitors and lets the user select one target.
 - Reads and writes the selected monitor's volume in the `0`–`100` range.
-- Provides a slider and descriptive Decrease volume/Increase volume buttons with a persistent Slow, Medium, or Fast change speed.
+- Provides a slider with a persistent Slow, Medium, or Fast change speed.
 - Intercepts the global Windows Volume Down and Volume Up keys only while the native hook is live and a target is ready.
 - Shows volume and fail-closed monitor errors in a bottom-centered overlay on the cursor's DPI-scaled screen work area, falling back to the selected screen without taking focus.
 - Starts in the Windows notification area only after Windows confirms the icon was added, with live monitor/volume/routing status, Refresh, quick monitor switching, Restore, Exit, and Explorer-restart recovery.
 - Remembers the selected physical monitor by EDID manufacturer/product/serial when available, with a Windows device-path fallback.
+- Matches that monitor to its Windows sound output, makes the selected output visible as **FenSound**, and hides outputs positively matched to the other connected screens.
 - Invalidates monitor control on Windows display/device notifications and reacquires fresh DDC handles before every actual write.
 - Reacts to Windows light/dark and High Contrast changes while running and reflows controls for the window's current DPI.
 - Supports full keyboard traversal, labeled access keys, refresh shortcuts, and explicit slider boundary/page navigation.
@@ -33,6 +34,8 @@ These manually maintained captures predate the wider serial-bearing monitor sele
 - Allows one instance per Windows session; launching it again restores the existing control window instead of starting competing hooks or DDC workers.
 - Keeps a small rotating per-user diagnostic log for the console-free executable.
 - Can opt the current user into launching the same source entrypoint or packaged executable at Windows sign-in.
+- Loads trusted Python plugins from the application and per-user plugin folders, with plugin-owned configuration, passive global shortcuts, and one selected volume provider.
+- Includes an optional Discord output plugin that switches to another concrete Discord voice output for one second and restores the initial output.
 
 > [!IMPORTANT]
 > Once a monitor has been selected and its volume read successfully, Volume Up and Volume Down are consumed globally by this application. They no longer change Windows system volume until the application is exited or loses readiness. The mute key is not intercepted.
@@ -43,13 +46,13 @@ These manually maintained captures predate the wider serial-bearing monitor sele
 | --- | --- |
 | User interface | Python `tkinter` / `ttk` |
 | Monitor control | `monitorcontrol==4.2.0` over DDC/CI |
-| Windows integration | `ctypes` calls to User32, Kernel32, Shell32, Dxva2, SetupAPI, Advapi32, and optional DWM APIs |
+| Windows integration | `ctypes` calls to User32, Kernel32, Shell32, Ole32/Core Audio, Dxva2, SetupAPI, Advapi32, and optional DWM APIs |
 | Source packaging | setuptools with flat `py-modules` |
 | Executable build | `Nuitka==2.4.8`, one-file Windows executable |
 | Continuous integration | GitHub Actions on `windows-latest`, Python 3.10 and 3.14 |
-| Persistent app data | Per-user JSON settings, optional Windows Run value, and rotating diagnostic logs |
+| Persistent app data | Per-user JSON settings, plugin settings, optional Windows Run value, Windows Credential Manager OAuth data, and rotating diagnostic logs |
 
-The runtime is one interactive user-session process. It is not a Windows service and does not open a port, expose an HTTP API, use a database, or contact a runtime network service. See [Architecture](docs/ARCHITECTURE.md) for the process, thread, and event flows.
+The runtime is one interactive user-session process. It is not a Windows service and does not open a port, expose an HTTP API, or use a database. The bundled Discord plugin uses Discord's local named-pipe RPC interface and Discord's HTTPS OAuth token endpoint when it is configured. See [Architecture](docs/ARCHITECTURE.md) for the process, thread, and event flows.
 
 ## Requirements
 
@@ -58,13 +61,13 @@ The runtime is one interactive user-session process. It is not a Windows service
 - For source execution: Python 3.10 or newer with Tkinter available.
 - For local executable builds: the optional build dependencies described below.
 
-No administrator workflow is implemented or requested by the application. Run it in the interactive Windows user session whose volume keys and monitor should be controlled.
+Run the app in the interactive Windows user session whose volume keys, monitor, and sound-output list should be controlled. Normal operation is unelevated. Windows asks for administrator approval only when the selected sound output still needs its one-time **FenSound** rename; denying that prompt leaves volume control usable and suppresses another rename request until the app restarts.
 
 ## Install and first run
 
 ### Use the release executable
 
-The [0.1.0 release](https://github.com/fensoft/windows-ddc/releases/tag/0.1.0) contains the prebuilt `windows-ddc.exe` asset. Download the executable, place it in a user-controlled location, and run it. It is a standalone one-file application with no installer. That tagged asset predates Start with Windows; an executable built from the current sources can register itself from the control window.
+The [0.1.0 release](https://github.com/fensoft/windows-ddc/releases/tag/0.1.0) contains the prebuilt `windows-ddc.exe` asset. Download the executable, place it in a user-controlled location, and run it. It is a standalone one-file application with no installer. That tagged asset predates Start with Windows and runtime plugins; build the current sources to use those features.
 
 The working tree's ignored `dist\` directory is not the distribution source and may be empty. The repository also does not define executable signing or publishing automation.
 
@@ -93,10 +96,12 @@ and exits with status `1`. `windows-ddc` itself defines no console entry point o
 
 1. Enable DDC/CI in the monitor's on-screen settings before starting the application.
 2. Start `windows-ddc.exe` or run `python app.py`.
-3. Look in the notification area, including its overflow menu. The control window hides only after Windows confirms that the tray icon was added; otherwise it remains available with an error in the status bar.
-4. Double-click the tray icon to restore the window, or right-click it for live status, Refresh, monitor switching, Restore, and Exit.
-5. Choose the intended monitor and wait for the status bar to report a successful volume read.
-6. Test at a safe listening level with the buttons or slider before relying on the global volume keys.
+3. On the first launch, the bundled Discord plugin opens the Developer Portal and shows a windows-ddc setup window. Under OAuth2 > Client Information choose **Reset Secret** (**Réinitialiser le secret**) and paste the new client secret first, then paste General Information > Application ID. Add `https://127.0.0.1` exactly under OAuth2 > Redirects. Cancel if Discord integration is not wanted yet.
+4. Discord applications need the restricted `rpc`, `rpc.voice.read`, and `rpc.voice.write` scopes, either through Discord approval or an RPC tester account. Discord's first consent prompt cannot be skipped; saved grants are reused or refreshed silently afterward.
+5. Look in the notification area, including its overflow menu. The control window hides only after Windows confirms that the tray icon was added; otherwise it remains available with an error in the status bar.
+6. Double-click the tray icon to restore the window, or right-click it for live status, Refresh, monitor switching, Restore, and Exit.
+7. Choose the intended monitor and wait for the status bar to report a successful volume read.
+8. Test at a safe listening level with the buttons or slider before relying on the global volume keys.
 
 With no saved selection, the app selects automatically only when exactly one verifiable monitor exists. Multiple monitors require an explicit choice. A saved monitor that is missing or ambiguous is never replaced with the first enumerated monitor. The application enforces one instance per Windows session; a duplicate launch exits before Tk, settings, hooks, tray state, or DDC work and requests that the existing instance restore its window.
 
@@ -104,12 +109,15 @@ With no saved selection, the app selects automatically only when exactly one ver
 
 | Action | Behavior |
 | --- | --- |
-| Start | Acquires the session-local single-instance guard, creates display-change, tray, and keyboard-hook threads with two-second startup deadlines, waits up to two seconds for confirmed tray-icon addition before hiding, then discovers monitors in the background. A duplicate launch restores the existing window and exits. |
+| Start | Acquires the session-local single-instance guard, creates Tk, discovers and initializes plugins, then creates display-change, tray, and keyboard-hook threads with two-second startup deadlines. The Discord plugin asks for missing setup data and validates OAuth on a worker. A duplicate launch restores the existing window and exits before importing or discovering plugins. |
 | Restore | Double-click the tray icon or use **Restore**. The tray icon is hidden while the control window is visible. |
 | Select a monitor | Choose it in the read-only list. The stable identity is saved only after a successful volume read. |
-| Change volume | Choose a Slow (`+1`), Medium (`+2`), or Fast (`+3`) change speed, then use **Decrease volume**, **Increase volume**, release the slider, or press Volume Down/Up. Slider `Home`/`End` select `0`/`100`; `Page Down`/`Page Up` change by `10`. Before each actual write, the app reacquires monitor wrappers and exact-matches the saved identity; writes are followed by a readback. |
-| Keyboard | Use `Tab`/`Shift+Tab` to traverse interactive controls. `Alt+M`, `Alt+V`, and `Alt+C` focus Monitor, Volume, and Change speed; `Alt+D`/`Alt+I` activate the volume buttons; `Alt+S` toggles Start with Windows; `Alt+R`, `Ctrl+R`, or `F5` refreshes; `Escape` minimizes to the tray. |
-| Start with Windows | Select the checkbox to write a current-user Run entry for the present source or executable path. Clear it to remove that entry. No administrator access is required. |
+| Configure sound outputs | After the selected monitor is safely revalidated, the app makes its matched Windows output visible, hides outputs matched to the other currently connected monitors, and requests administrator approval only if the selected output still needs the **FenSound** name. Headphones, speakers, and unmatched outputs are left alone. |
+| Change volume | Choose a Slow (`+1`), Medium (`+2`), or Fast (`+3`) change speed, then release the slider or press Volume Down/Up. Slider `Home`/`End` select `0`/`100`; `Page Down`/`Page Up` change by `10`. |
+| Keyboard | Use `Tab`/`Shift+Tab` to traverse interactive controls. `Alt+V` and `Alt+C` focus Volume and Change speed; `Alt+P` opens plugin configuration; `Alt+R`, `Ctrl+R`, or `F5` refreshes; `Escape` minimizes to the tray. |
+| Start with Windows | Toggle it in **Configure plugins…** to write or remove the current-user Run entry. No administrator access is required. |
+| Configure plugins | Lists loaded and failed bundled/external plugins, their source, status, active shortcut, and volume-provider state. Configure DDC monitor selection here, then choose **Use for volume**. New, changed, or removed plugin files take effect after restart. |
+| Discord shortcut | With a configured shortcut and usable OAuth grant, captures the current Discord output, selects the first non-current concrete output, waits one second, and restores the captured output in `finally`. Repeated presses are ignored until restoration completes. |
 | Tray menu | Right-click the icon to see the active monitor, last confirmed volume, and whether global volume-key routing is enabled. Use **Refresh**, choose a verified monitor for exact-match revalidation, or use **Restore**/**Exit**. |
 | Overlay | Volume and unavailable notices appear on the screen containing the cursor. If the cursor screen cannot be resolved, the selected monitor's display is used; taskbars, negative screen coordinates, and Windows display scaling are accounted for without activating the overlay. |
 | Theme and scaling | Windows theme, system-color, and High Contrast changes are applied without restarting. Control spacing and minimum width follow the current top-level window DPI, including after moving between differently scaled screens. |
@@ -120,11 +128,15 @@ With no saved selection, the app selects automatically only when exactly one ver
 
 Monitor discovery is event-driven rather than periodic. Windows display and monitor-device notifications immediately suspend control and schedule a debounced refresh with bounded retries. The displayed volume is not polled for changes made by another program or the monitor's OSD.
 
+Sound-output matching is also event-driven. The app first matches monitor and render-endpoint container IDs. If exactly one monitor and one same-adapter endpoint remain after exact matches, it can infer that final pair only when the endpoint exposes no usable container ID. Any ambiguous selected-output match fails closed without changing output visibility. The selected output is made visible before other positively matched monitor outputs are hidden. Switching the selected monitor therefore re-enables the new target and hides the old one; these Windows visibility and name changes persist after the app exits.
+
+Windows exposes endpoint visibility only through a private audio-policy COM interface rather than a supported public API, so hiding is best-effort and may need adjustment for future Windows versions. The app does not directly choose a default output, change Windows mixer volume, or touch non-display devices; Windows can nevertheless reroute sound when a previously selected output becomes hidden. Renaming uses an elevated internal helper because Windows opens an endpoint property store read-only for an unelevated process; the helper receives only the validated endpoint ID and the fixed `FenSound` alias, writes through Core Audio, and exits without starting Tk, logging, hooks, tray state, DDC work, or a second primary instance.
+
 The tray menu is built from a thread-safe immutable snapshot supplied by Tk. A monitor click retains the stable selection identity represented when that menu opened, even if discovery updates concurrently, and all actions are queued back to Tk. Switching is refused while another monitor operation is active; Refresh retains the existing deferred-refresh behavior. The menu's volume is the last confirmed read/readback, not an optimistic pending slider target.
 
 Overlay placement samples the cursor and Windows monitor bounds, work area, and scale factor each time the overlay appears, so cursor movement, a moved taskbar, or a changed display layout is reflected immediately. The cursor's screen is preferred, followed by the selected monitor's Windows display name and then the primary screen. This does not perform another DDC lookup. The window carries `WS_EX_NOACTIVATE` and is shown with `SWP_NOACTIVATE`; if that protection cannot be applied, the overlay remains hidden rather than risking a focus change.
 
-Change speed defaults to Slow (`+1`) when no valid preference is saved. Medium changes by `2` and Fast changes by `3`. The selected speed applies to both the on-screen Decrease volume/Increase volume buttons and the global Volume Down/Up keys, updates the live hook immediately, and is saved in `settings.json`.
+Change speed defaults to Slow (`+1`) when no valid preference is saved. Medium changes by `2` and Fast changes by `3`. The selected speed applies to slider keyboard adjustments and global Volume Down/Up keys, updates the live hook immediately, and is saved in `settings.json`.
 
 Theme and system-color broadcasts are relayed from the native display-listener thread into Tk's queue and debounced before restyling. High Contrast suppresses custom dark colors in favor of Windows system colors and an opaque overlay. The control window reads its current HWND DPI and reapplies DPI-scaled spacing, slider length, and minimum width when it moves between screens.
 
@@ -142,6 +154,8 @@ There is no separate health command, readiness endpoint, or console in the packa
 | --- | --- |
 | `Searching for monitors...` | DDC/CI enumeration and the initial read are running. |
 | `Ready. N monitor(s) detected...` | A selected monitor volume was read; controls and global key interception are enabled. |
+| `Ready. FenSound is matched...` | Windows sound-output reconciliation succeeded; matched outputs for other screens are hidden. |
+| `Ready. The matching Windows sound output could not be identified safely...` | Audio matching was ambiguous; no sound outputs were changed. Monitor-volume control remains available. |
 | `No DDC/CI monitors found.` | Enumeration returned no monitor wrappers. |
 | `Display configuration changed...` | Control was disabled immediately and automatic revalidation is pending. |
 | `Selected monitor ... ambiguous/not found` | No substitute target was chosen; select the monitor again or reconnect it. |
@@ -152,12 +166,13 @@ There is no separate health command, readiness endpoint, or console in the packa
 | A read/write/detection error | The underlying operation failed; the status contains the formatted exception text. |
 | `Volume-key listener failed: ...` | The global hook failed. The GUI may still control the monitor. |
 | `Could not enable/disable Start with Windows: ...` | The current-user Run entry could not be updated; the checkbox returns to its previous state. |
+| `Plugin ... is unavailable` / `Plugin shortcuts ...` | A plugin, its OAuth setup, or its registered shortcut failed. Monitor-volume control continues; use **Configure plugins…** for per-plugin details. |
 
 Volume controls remain disabled until the display-change listener is live and the exact selected monitor has a readable volume. Global key interception additionally requires the keyboard listener to be installed and live. During an unavailable period, physical Volume Down/Up presses pass through to Windows and the app shows one error overlay per period. If the keyboard hook fails, the GUI can continue controlling the monitor; if display-change protection fails, all writes remain disabled.
 
 ## Configuration and persistent data
 
-There are no application-specific environment variables, CLI flags, environment templates, or administrative settings. Standard Windows `APPDATA` and `LOCALAPPDATA` locations determine where the settings and diagnostic files are stored. Start with Windows is a separate opt-in current-user registry value.
+There are no supported application CLI flags, application-specific environment variables, environment templates, or administrative settings. Standard Windows `APPDATA` and `LOCALAPPDATA` locations determine where the settings and diagnostic files are stored. Start with Windows is a separate opt-in current-user registry value. `app.py` also recognizes one strictly validated internal rename-helper argument used only for the administrator-approved Core Audio operation; it is not a user interface or installed command.
 
 | Input or field | Default | Effect |
 | --- | --- | --- |
@@ -169,6 +184,8 @@ There are no application-specific environment variables, CLI flags, environment 
 | `selected_monitor.identity.device_path` | No saved value | Case-insensitive Windows monitor interface path and fallback identity. |
 | Optional EDID identity fields | Omitted when unavailable | Manufacturer ID, product code, and normalized serial used as the preferred identity. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\windows-ddc` | Absent | When present, launches windows-ddc for the current user at sign-in. |
+| `%APPDATA%\windows-ddc\plugin-settings\<plugin-id>.json` | Plugin-specific | Stores non-secret plugin configuration. The Discord plugin stores only its shortcut here. |
+| `%APPDATA%\windows-ddc\plugins\*.py` | Empty | Per-user trusted external plugins loaded at the next application start. |
 
 The normal settings path is:
 
@@ -206,7 +223,46 @@ Legacy description/ordinal files remain readable. A legacy selection is promoted
 
 Missing, unreadable, syntactically invalid, non-object, unknown-version, or invalid nested monitor settings are treated as no selection. JSON booleans are not accepted as legacy ordinals. A missing or invalid `change_speed` independently defaults to `slow`.
 
-The settings file contains monitor selection and change-speed preference, not volume, credentials, or secrets. The actual volume is monitor hardware state and is read again at startup.
+The main settings file contains Change speed and the selected volume-provider ID, not volume, credentials, or secrets. The bundled DDC provider migrates a valid older monitor selection into its plugin-owned configuration without deleting the legacy value. The Discord plugin keeps its Application ID, client secret, access token, and refresh token in the current user's Windows Credential Manager under `windows-ddc/plugins/discord-output/oauth-rpc`; it migrates the earlier `windows-ddc/test-discord/oauth-rpc` prototype credential. The actual provider volume is read again at startup.
+
+### Plugins and Discord OAuth
+
+Bundled plugins load first: Discord is an ordinary action plugin and DDC monitor volume is the bundled volume provider. External `*.py` files then load in filename order from `plugins` beside the source tree or executable, followed by `%APPDATA%\windows-ddc\plugins` (or the documented home-directory fallback). Each external module must set `PLUGIN_API_VERSION = 1` and export `create_plugin()`. A plugin may additionally implement the optional normalized `0`–`100` volume-provider capability. Later duplicate plugin IDs and individual import/initialization failures are shown in **Configure plugins…** without stopping the app.
+
+External plugins are fully trusted, unsandboxed, in-process Python code. Merely placing a file in either discovery folder authorizes it to execute at the next primary-instance startup with the current user's permissions. Review its source and origin first. There is no runtime reload or enable/disable manifest.
+
+A minimal external plugin has this shape:
+
+```python
+from plugin_api import PLUGIN_API_VERSION, HotkeySpec
+
+class ExamplePlugin:
+    plugin_id = "example"
+    name = "Example"
+    description = "Example trusted plugin"
+
+    def initialize(self, host):
+        self.host = host
+
+    def configure(self, parent):
+        pass  # Build and own a Tk Toplevel here; persist to host.config_path.
+
+    def get_hotkey(self) -> HotkeySpec | None:
+        return None
+
+    def trigger(self):
+        pass  # Runs off Tk; use host.post_to_ui for UI work.
+
+    def shutdown(self, timeout: float) -> bool:
+        return True
+
+def create_plugin():
+    return ExamplePlugin()
+```
+
+IDs must match `[a-z][a-z0-9-]{0,63}`. `initialize` and `configure` run on Tk's thread; `trigger` and `shutdown` do not. Plugin code must honor the supplied shutdown timeout and must use `host.post_to_ui` rather than touching Tk from a worker.
+
+The Discord plugin has no shortcut by default. Its configuration window captures or clears any Windows keyboard virtual key, optionally combined with Ctrl, Alt, Shift, or Win, reports duplicate plugin combinations, and applies a saved change immediately. Modifier keys remain prefixes during capture, so press another key to complete those combinations. Plugin shortcuts are passive observers: they invoke the plugin while still forwarding the original key to the foreground application. The independent fail-safe Volume Up/Down hook remains unchanged. **Reset authorization** removes the Discord credential; **Set up / reauthorize…** repeats the Developer Portal and first-consent flow.
 
 ### Start with Windows
 
@@ -243,11 +299,14 @@ Choose another user-controlled backup location outside the checkout if Documents
 
 - `windows-ddc` has no supported application CLI, subcommands, or flags beyond launching `app.py` or the executable.
 - Installing the dependency also installs the upstream `monitorcontrol` console command. It is not a `windows-ddc` interface and can directly change monitor volume, brightness, power, mute, or input; do not use it unless that hardware operation is intentional.
-- There are no HTTP routes, ports, realtime sockets, external runtime services, accounts, authentication, or authorization roles.
+- There are no HTTP routes, listening ports, server sockets, or application accounts. The Discord plugin is an OAuth client: it connects to the local Discord named pipe and sends token/refresh requests to Discord over HTTPS.
+- External Python plugins are trusted and unsandboxed. They have the same filesystem, network, native-library, and user-session access as windows-ddc.
 - The process loads native Windows libraries and installs a desktop-wide low-level keyboard hook. Unrelated keys are passed onward; Volume Down and Volume Up are swallowed only when the hook is live and the application's readiness flag is active. Each physical press keeps its initial consume/pass-through decision through the matching release.
 - DDC/CI writes cross the process boundary into physical monitor hardware and may have an audible effect.
-- The application reads the current user's Windows theme, High Contrast state, system colors, and current window DPI. It writes only its named current-user Run value, and only when the user toggles Start with Windows.
-- Runtime settings contain no secrets. Do not add credentials or tokens to the tracked repository or the settings schema without an explicit security design.
+- The application reads Windows monitor/audio endpoint metadata, theme, High Contrast state, system colors, and current window DPI. After a successful monitor read it can persistently change display-audio endpoint visibility through Windows audio policy. It never hides an unmatched endpoint.
+- Renaming the selected endpoint to **FenSound** uses a fixed-purpose helper launched through the Windows administrator-consent dialog. The helper performs no registry write; it opens only the validated endpoint's Core Audio property store, commits the fixed alias, and exits. A cancelled or failed request is nonfatal.
+- The only direct registry write is the named current-user Run value, and only when the user toggles Start with Windows. Audio endpoint metadata is read from the registry, while visibility and naming changes go through Windows COM interfaces.
+- Runtime JSON settings contain no secrets. Discord OAuth client data and tokens are stored only in current-user Windows Credential Manager and are never deliberately logged. Never commit credentials, token dumps, or machine-specific plugin data.
 
 ## Build the executable
 
@@ -285,11 +344,11 @@ Install the editable runtime environment before developing:
 python -m pip install -e .
 ```
 
-The repository has a standard-library unit-test suite for hotkey safety, stable identity, isolated selection/change-speed settings, autostart command/registry behavior, diagnostics rotation, topology generations, fresh-handle revalidation, single-instance behavior, resilience, rich tray-menu snapshots/commands, multi-screen overlay placement/no-activate behavior, live theme/High Contrast behavior, keyboard accessibility, DPI scaling, CI safety, and tray recovery. It has no lint/type/format configuration. `.github/workflows/ci.yml` runs the following checks on `windows-latest` with Python 3.10 and 3.14 for pushes, pull requests, and manual dispatches. The workflow never launches the UI, executes the Nuitka build, installs native listeners, changes the live Run key, or contacts monitor hardware:
+The repository has a standard-library unit-test suite for hotkey safety, stable identity, isolated selection/change-speed settings, autostart command/registry behavior, diagnostics rotation, topology generations, fresh-handle revalidation, fail-closed audio-output matching/reconciliation, single-instance behavior, resilience, rich tray-menu snapshots/commands, multi-screen overlay placement/no-activate behavior, live theme/High Contrast behavior, keyboard accessibility, DPI scaling, CI safety, and tray recovery. It has no lint/type/format configuration. `.github/workflows/ci.yml` runs the following checks on `windows-latest` with Python 3.10 and 3.14 for pushes, pull requests, and manual dispatches. The workflow never launches the UI, executes the Nuitka build, installs native listeners, changes live audio endpoints or the Run key, or contacts monitor hardware:
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m compileall -q app.py autostart.py ddc.py diagnostics.py gui.py main.py overlay.py settings.py theme.py windows_platform.py
+python -m compileall -q app.py audio_outputs.py autostart.py ddc.py ddc_volume_plugin.py diagnostics.py discord_output_plugin.py gui.py main.py overlay.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py windows_platform.py
 python -m pip check
 git diff --check
 git diff --cached --check
@@ -311,7 +370,7 @@ if ($parseErrors.Count -ne 0) { $parseErrors; exit 1 }
 
 CI installs only the runtime project with `python -m pip install -e .`; it does not install the optional Nuitka build extra or publish artifacts. A workflow contract test keeps the supported Python boundary, low-risk commands, and prohibited hardware/runtime commands explicit.
 
-Changes to GUI, autostart, tray, hook, display notifications, or DDC behavior still require an authorized manual test on Windows with a compatible monitor. Back up live settings first. At minimum, verify primary startup, duplicate-launch restoration without a second process remaining, Start with Windows enable/disable and restart persistence, unique/no-serial/duplicate identity behavior, Change speed behavior and persistence, descriptive button names, `Tab`/`Shift+Tab` traversal and access keys, slider keyboard boundaries/pages, live light/dark/High Contrast transitions, moving the restored window between differently scaled screens, driver reset, resolution/orientation change, disconnect/reconnect, exact-match recovery, fresh writes/readback, rapid coalescing, overlay volume/errors on the cursor screen and selected-display fallback at mixed DPI without focus loss, key pass-through while invalid, hook/listener failure, rich tray status/Refresh/monitor switching, confirmed tray-first startup, failed icon-add fallback, minimize/restore, Explorer restart recovery, and clean exit. These tests can change the current-user Run key, physical monitor volume, and user-session keyboard behavior.
+Changes to GUI, plugins, Discord RPC/OAuth, audio-output policy, autostart, tray, hook, display notifications, or DDC behavior still require an authorized manual test on Windows with compatible monitors. Back up live settings first. At minimum, verify primary startup; duplicate launch exits before plugin setup; first Discord authorization and silent restart reuse; shortcut capture/conflict/rebind, one-second output restoration, repeated presses, Discord absence/restart, both external plugin folders, and shutdown during a switch; Start with Windows enable/disable and restart persistence; unique/no-serial/duplicate identity behavior; Change speed behavior and persistence; accessibility/theme/mixed-DPI behavior; exact/inferred/ambiguous audio-output matching; driver/topology changes; fresh writes/readback and coalescing; focus-safe overlay behavior; key pass-through and native failures; tray recovery; and clean exit. These tests can change Discord voice routing, OAuth credentials, audio endpoint visibility/name, the current-user Run key, physical monitor volume, and user-session keyboard behavior.
 
 For repository-specific maintainer rules, read [AGENTS.md](AGENTS.md).
 
@@ -339,6 +398,9 @@ For repository-specific maintainer rules, read [AGENTS.md](AGENTS.md).
 | Change speed is not remembered | Ensure the per-user settings directory is writable and only one instance is running. Invalid values safely fall back to Slow; save failures are logged. |
 | Start with Windows cannot be enabled | Read the status/log, confirm the current user can write their Run key, and check that the absolute command is no longer than 260 characters. Move the app to a shorter stable path if needed. |
 | Start with Windows points to an old location | Run the app from the old location if available and clear the checkbox, or remove the `windows-ddc` value from the current-user Run key, then enable it from the new location. |
+| Discord setup keeps failing | Confirm Discord is running; the Application ID is the decimal ID, not a bot token; the newly reset client secret was pasted before it disappeared; `https://127.0.0.1` is saved as a redirect; and the application/account is approved for all three restricted RPC scopes. Use **Configure plugins…** to reset and reauthorize. |
+| Discord asks for consent | The first consent, or consent after reset/revocation, is controlled by Discord and cannot be skipped. A valid saved grant is reused or refreshed without setup dialogs. |
+| A plugin shortcut is unavailable | Choose **Configure plugins…** and inspect its status. The passive shortcut observer could not start, or another plugin uses the same combination. Save another shortcut; new plugin files themselves require restart. |
 | Selection is lost after moving a no-serial monitor | Its Windows device path changed. Select it again so schema version 2 records the new path. |
 | Build fails before compilation | Install `.[build]`, ensure `python` resolves on `PATH`, and keep `app.py` and `windows-ddc.ico` at the repository root. |
 

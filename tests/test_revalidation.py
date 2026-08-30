@@ -198,6 +198,7 @@ class RevalidationTests(unittest.TestCase):
         app._apply_control_state = Mock()
         app._run_deferred_refresh = Mock()
         app._remember_selected_monitor = Mock()
+        app._schedule_audio_output_reconciliation = Mock()
 
         app._finish_refresh(
             ([monitor], SelectionMatch(SelectionMatchStatus.FOUND, 0), 42, None),
@@ -210,6 +211,11 @@ class RevalidationTests(unittest.TestCase):
         self.assertIsNone(app._control_unavailable_reason)
         self.assertEqual(app.current_volume, 42)
         app._remember_selected_monitor.assert_called_once_with(monitor.selection_key)
+        app._schedule_audio_output_reconciliation.assert_called_once_with(
+            0,
+            [monitor],
+            monitor,
+        )
 
 
 class DisplayChangeListenerTests(unittest.TestCase):

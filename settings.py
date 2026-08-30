@@ -7,7 +7,7 @@ from pathlib import Path
 from ddc import MonitorIdentity, SavedMonitorSelection
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_CHANGE_SPEED = "slow"
 CHANGE_SPEEDS = frozenset(("slow", "medium", "fast"))
 SETTINGS_PATH = Path(os.environ.get("APPDATA") or Path.home()) / "windows-ddc" / "settings.json"
@@ -67,6 +67,24 @@ def save_change_speed(change_speed: str) -> None:
     _write_settings_object(payload)
 
 
+def load_active_volume_provider_id() -> str | None:
+    data = _read_settings_object()
+    if data is None:
+        return None
+    return _optional_string(data.get("active_volume_provider_id"))
+
+
+def save_active_volume_provider_id(plugin_id: str) -> None:
+    normalized = _optional_string(plugin_id)
+    if normalized is None:
+        raise ValueError("Active volume provider ID must be a non-empty string.")
+    existing = _read_settings_object()
+    payload = dict(existing) if existing is not None else {"schema_version": SCHEMA_VERSION}
+    payload["schema_version"] = SCHEMA_VERSION
+    payload["active_volume_provider_id"] = normalized
+    _write_settings_object(payload)
+
+
 def load_selected_monitor_key() -> SavedMonitorSelection | None:
     data = _read_settings_object()
     if data is None:
@@ -81,7 +99,7 @@ def load_selected_monitor_key() -> SavedMonitorSelection | None:
         return None
 
     schema_version = data.get("schema_version")
-    if schema_version == SCHEMA_VERSION:
+    if schema_version in (2, SCHEMA_VERSION):
         identity_data = selected_monitor.get("identity")
         if not isinstance(identity_data, dict):
             return None

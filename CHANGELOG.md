@@ -1,5 +1,7 @@
 # Changelog
 
+- Added the generic runtime-plugin API and optional normalized volume-provider capability. The bundled DDC monitor implementation is now a provider selected through **Configure plugins…**; provider failures fail closed and do not silently reroute volume keys.
+
 All notable changes to this project are documented in this file. The reconstruction audit covered the complete reachable repository history through `0b4f263`, all local and remote-tracking branches, and the live origin heads and tags before the documentation changes listed under Unreleased.
 
 That audited history contains one parentless commit. The audit clone had no local tag ref, but origin advertised a lightweight `0.1.0` tag at the same commit as the then-current `master` and `origin/master`. Because a lightweight tag has no independent tagger timestamp, the version date below uses the tagged commit's committer date; the GitHub release was published shortly afterward on the same calendar date. There is no earlier release boundary or separate untagged development period to reconstruct.
@@ -20,6 +22,11 @@ That audited history contains one parentless commit. The audit clone had no loca
 - Added bounded per-user rotating diagnostics for lifecycle, settings, native-subsystem, DDC, UI-callback, and shutdown failures, with isolated hardware-free coverage.
 - Added an opt-in **Start with Windows** checkbox backed by the current-user Run key, with safe source/one-file command quoting, nonfatal error handling, and mocked registry coverage.
 - Added a live tray menu with active monitor, confirmed volume, routing state, Refresh, stable-identity monitor switching, Restore, and Exit actions.
+- Added fail-closed Windows sound-output matching that exposes the selected monitor as **FenSound**, hides only outputs mapped to other connected screens, and leaves unrelated audio devices untouched.
+- Added an administrator-approved, fixed-purpose Core Audio rename helper plus hardware-free matching, topology, mutation-order, and composition-root coverage.
+- Added a versioned, trusted in-process Python plugin framework with deterministic bundled/adjacent/per-user discovery, isolated failures, plugin-owned configuration, and a **Configure plugins…** window.
+- Added a shared passive keyboard observer for plugin shortcuts, with duplicate-plugin conflict reporting, live rebinding, foreground-key forwarding, held-key repeat suppression, off-native-thread dispatch, overlap suppression, and bounded shutdown.
+- Added a bundled Discord output plugin with app-owned OAuth setup, current-user Credential Manager persistence and prototype migration, silent token reuse/refresh, automatic one-second output switching/restoration, and hardware-free coverage.
 
 ### Changed
 
@@ -34,6 +41,7 @@ That audited history contains one parentless commit. The audit clone had no loca
 - Bound native listener startup and shutdown waits, keep Tk queue polling alive after individual callback failures, and report native threads that miss the shutdown deadline.
 - Disable monitor control after a 10-second DDC watchdog timeout, retain the single-worker serialization slot until the native call returns, ignore its late result, and then perform read-only rediscovery.
 - Reject duplicate launches before Tk or native initialization and ask the existing tray instance to restore its control window.
+- Keep plugin imports, discovery, and credential access beyond the single-instance/Tk boundary so duplicate launches remain side-effect-free.
 
 ## [0.1.0] - 2026-03-22
 

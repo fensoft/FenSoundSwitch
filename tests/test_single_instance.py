@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import app
+from audio_outputs import INTERNAL_RENAME_ARGUMENT
 from windows_platform import (
     ERROR_ALREADY_EXISTS,
     HWND_BROADCAST,
@@ -77,6 +78,25 @@ class SingleInstanceGuardTests(unittest.TestCase):
 
 
 class CompositionRootTests(unittest.TestCase):
+    def test_internal_audio_rename_helper_bypasses_the_primary_instance(self) -> None:
+        endpoint_id = "{0.0.0.00000000}.{11111111-1111-1111-1111-111111111111}"
+        with patch.object(
+            app.sys,
+            "argv",
+            ["app.py", INTERNAL_RENAME_ARGUMENT, endpoint_id],
+        ), patch(
+            "app.run_internal_rename_helper",
+            return_value=0,
+        ) as helper, patch("app.SingleInstanceGuard") as guard, patch(
+            "app.tk.Tk"
+        ) as tk_mock:
+            result = app.main()
+
+        self.assertEqual(result, 0)
+        helper.assert_called_once_with(endpoint_id)
+        guard.assert_not_called()
+        tk_mock.assert_not_called()
+
     def test_primary_instance_holds_guard_for_the_tk_lifetime(self) -> None:
         guard = Mock()
         root = Mock()

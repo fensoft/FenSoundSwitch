@@ -193,7 +193,7 @@ class SettingsTests(unittest.TestCase):
         settings.save_selected_monitor_key(selection)
         self.assertEqual(settings.load_selected_monitor_key(), selection)
         payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], 3)
         self.assertEqual(payload["change_speed"], "slow")
 
     def test_change_speed_round_trip_preserves_monitor_selection(self) -> None:
@@ -218,7 +218,13 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.load_change_speed(), "medium")
         self.assertIsNone(settings.load_selected_monitor_key())
         payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
-        self.assertEqual(payload, {"schema_version": 2, "change_speed": "medium"})
+        self.assertEqual(payload, {"schema_version": 3, "change_speed": "medium"})
+
+    def test_active_volume_provider_round_trip_preserves_legacy_selection(self) -> None:
+        self.write_json({"schema_version": 2, "selected_monitor": {"description": "Monitor", "identity": {"device_path": "path"}}})
+        settings.save_active_volume_provider_id("ddc-volume")
+        self.assertEqual(settings.load_active_volume_provider_id(), "ddc-volume")
+        self.assertIsNotNone(settings.load_selected_monitor_key())
 
     def test_change_speed_preserves_legacy_selection(self) -> None:
         self.write_json({"selected_monitor": {"description": "Monitor", "ordinal": 2}})

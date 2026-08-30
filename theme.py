@@ -146,6 +146,26 @@ def ensure_dark_theme(style: ttk.Style) -> None:
                     "arrowcolor": [("disabled", DARK_DISABLED_TEXT)],
                 },
             },
+            "Treeview": {
+                "configure": {
+                    "background": DARK_SURFACE,
+                    "fieldbackground": DARK_SURFACE,
+                    "foreground": DARK_TEXT,
+                    "bordercolor": DARK_BORDER,
+                    "rowheight": 24,
+                },
+                "map": {
+                    "background": [("selected", DARK_ACCENT)],
+                    "foreground": [("selected", DARK_TEXT)],
+                },
+            },
+            "Treeview.Heading": {
+                "configure": {
+                    "background": DARK_BG,
+                    "foreground": DARK_TEXT,
+                    "bordercolor": DARK_BORDER,
+                },
+            },
             "Horizontal.TScale": {
                 "configure": {
                     "background": DARK_BG,

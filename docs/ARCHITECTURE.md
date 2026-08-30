@@ -2,24 +2,26 @@
 
 This document describes the tagged `0.1.0` release and the current repository sources. `windows-ddc` is a small Windows desktop process: Tk owns the UI, native Win32 message loops provide display-change protection, the tray icon, and the global volume-key hook, and short-lived workers perform DDC/CI operations against physical monitors.
 
-There is no server-side tier. The project has no HTTP API, listening port, database, container, service, authentication system, broker, cron process, telemetry client, or runtime network dependency.
+There is no server-side tier. The project has no HTTP API, listening port, database, container, service, application account system, broker, cron process, or telemetry client. The bundled Discord plugin is an OAuth client that can use Discord's local named pipe and HTTPS token endpoint.
 
 ## High-level flow
 
-1. The supported entrypoint, `app.py`, acquires a session-local named mutex. A duplicate broadcasts a restore request and exits before creating Tk or application subsystems.
+1. The supported entrypoint, `app.py`, first recognizes the strictly validated internal elevated audio-rename request. Ordinary launches acquire a session-local named mutex; a duplicate broadcasts a restore request and exits before creating Tk or application subsystems.
 2. The primary instance configures a rotating per-user diagnostic log, creates one `tk.Tk`, constructs `gui.MonitorVolumeApp`, and enters `root.mainloop()` while retaining the mutex handle.
 3. `MonitorVolumeApp.__init__()` samples the Windows app-theme and High Contrast state, reads the optional current-user autostart value, and loads the saved monitor selection and Change speed preference from `settings.py`.
 4. It builds the keyboard-navigable, DPI-scaled control window, status bar, and hidden, native-no-activate `overlay.VolumeOverlay` on the Tk thread.
-5. It starts a dedicated `DisplayChangeListener` hidden window for topology and live theme/system-color broadcasts. Failure leaves all monitor-volume writes disabled; the app can still enumerate and display status.
-6. It independently starts the tray controller and global keyboard hook. Tk publishes immutable menu snapshots to the tray, while tray Refresh/selection/restore/exit actions enqueue Tk callbacks. Their failures remain nonfatal to the other subsystems.
-7. It schedules the recurring Tk queue poll and a one-shot initial monitor refresh after 50 ms.
-8. The refresh worker enumerates DDC wrappers and Windows monitor identities, exact-matches the saved target, and reads its volume. With no saved selection, automatic selection occurs only when exactly one verifiable monitor exists.
-9. The worker enqueues a tokened completion callback. The Tk queue poll applies the monitor list, selection, displayed volume, readiness, and status text.
-10. A volume request updates the UI optimistically, resolves the cursor's Windows display work area for the overlay with selected-display fallback, then a serialized worker reacquires all wrappers and exact-matches the identity before set/readback.
-11. The readback becomes authoritative. A coalesced follow-up starts another worker and therefore performs another fresh discovery/match.
-12. Display/device notifications invalidate a thread-safe topology generation immediately, release key consumption, clear pending writes, and schedule debounced discovery with bounded retries.
-13. A 10-second watchdog fails a stalled DDC operation closed without releasing its serialization slot; when the worker eventually returns, its result is ignored and read-only rediscovery follows.
-14. Shutdown disables key consumption, cancels Tk timers, stops display/hook/tray loops, reports missed stop deadlines, closes the overlay, destroys Tk, closes the diagnostic handler, and releases the mutex handle.
+5. It dynamically imports `plugin_manager` only after the mutex/Tk boundary, loads the bundled plugin followed by adjacent and per-user Python files, initializes each in isolation, and starts the shared registered-hotkey loop. The bundled Discord plugin opens its app-owned setup modal only when Credential Manager has no valid configuration, then validates or creates its grant on a worker.
+6. It starts a dedicated `DisplayChangeListener` hidden window for topology and live theme/system-color broadcasts. Failure leaves all monitor-volume writes disabled; the app can still enumerate and display status.
+7. It independently starts the tray controller and low-level global Volume Up/Down hook. Tk publishes immutable menu snapshots to the tray, while tray Refresh/selection/restore/exit actions enqueue Tk callbacks. Their failures remain nonfatal to the other subsystems.
+8. It schedules the recurring Tk queue poll and a one-shot initial monitor refresh after 50 ms.
+9. The refresh worker enumerates DDC wrappers and Windows monitor identities, exact-matches the saved target, and reads its volume. With no saved selection, automatic selection occurs only when exactly one verifiable monitor exists.
+10. The worker enqueues a tokened completion callback. The Tk queue poll applies the monitor list, selection, displayed volume, readiness, and status text.
+11. After a successful exact selected-monitor read, a separate coalesced worker matches Windows render endpoints to the current monitor paths, makes the selected endpoint visible, hides positively matched other-screen endpoints, and requests the fixed FenSound rename when needed.
+12. A volume request updates the UI optimistically, resolves the cursor's Windows display work area for the overlay with selected-display fallback, then a serialized worker reacquires all wrappers and exact-matches the identity before set/readback.
+13. The readback becomes authoritative. A coalesced follow-up starts another worker and therefore performs another fresh discovery/match.
+14. Display/device notifications invalidate a thread-safe topology generation immediately, release key consumption, clear pending writes and audio reconciliation, and schedule debounced discovery with bounded retries.
+15. A 10-second watchdog fails a stalled DDC operation closed without releasing its serialization slot; when the worker eventually returns, its result is ignored and read-only rediscovery follows.
+16. Shutdown stops plugin shortcut observation first, rejects new plugin triggers, signals Discord's one-second wait so restoration can finish within the shared two-second plugin budget, then stops display/hook/tray loops, reports missed deadlines, closes the overlay, destroys Tk, closes diagnostics, and releases the mutex.
 
 ## Runtime process and thread ownership
 
@@ -31,14 +33,19 @@ Source execution uses one interactive process per Windows session, enforced by `
 | `display-change-listener` | Long-lived daemon | Hidden Win32 window, monitor device registration, display/device and theme/system-color message pump | Invalidates the topology generation or enqueues a live-theme refresh in Tk |
 | `tray-icon` | Long-lived daemon | Hidden Win32 window, notification icon, live snapshot menu, message pump | Reads lock-protected immutable state; controller actions enqueue Tk work through `_post_to_ui()` |
 | `volume-key-hook` | Long-lived daemon | `WH_KEYBOARD_LL` hook and message pump | Reads readiness through `should_consume()` and enqueues integer deltas |
+| `plugin-hotkey-loop` | Long-lived daemon | Passive `WH_KEYBOARD_LL` observer | Queues plugin IDs and always forwards keyboard input; never calls plugin or Tk code directly |
+| `plugin-hotkey-dispatch` | Long-lived daemon | Dispatches queued registered-hotkey IDs | Starts one manager-owned trigger worker only when that plugin is not already active |
+| `plugin-<id>` | Short-lived daemon per accepted trigger | Runs trusted plugin trigger code | Reports status through the host context; never calls Tk directly |
+| `discord-output-auth` | Short-lived daemon | Discord named-pipe authentication, consent-code exchange, and token reuse/refresh | Reports privacy-safe status through `_post_to_ui()`; Credential Manager holds secrets |
 | `ddc-gui-worker` | One short-lived daemon per accepted refresh/selection read | Enumeration and selected-monitor volume reads | Enqueues success or failure callable |
 | `ddc-volume-write` | One short-lived daemon at a time | Selected-monitor set followed by readback | Enqueues write success or failure callable |
+| `audio-output-sync` | One short-lived daemon at a time | Monitor/endpoint metadata reads, fail-closed matching, endpoint visibility updates, and optional administrator-consent request | Enqueues a result/status callback; reads topology validity but never calls Tk |
 
 `MonitorVolumeApp._result_queue` carries zero-argument callbacks into Tk. `_hotkey_delta_queue` carries signed step changes. `_poll_queues()` drains all result callbacks first, combines key deltas accumulated during the poll interval, then schedules itself again after 50 ms. Each callback and the combined adjustment are caught independently; a failure is reported through Tk's callback reporter, fails monitor control closed, and the next poll is scheduled from `finally`.
 
 The `_busy` flag prevents a new refresh/selection worker while another general operation is active. Volume controls remain usable during a valid active volume write, but they update `_pending_target_volume` rather than starting another DDC worker. A token identifies the one application-issued DDC operation, and a Tk watchdog tracks it. A timeout disables controls and interception but deliberately retains the token and busy/write flags until the uncancellable worker returns. This is the application's serialization boundary; there is no separate DDC lock.
 
-Display, tray, and hook startup readiness waits and shutdown joins each have two-second deadlines. Stop methods report whether their native thread exited; shutdown writes missed deadlines or stop exceptions to the diagnostic log, standard error, and the status bar before destroying Tk. DDC workers are daemon threads and are not cancelled or joined; `_closing` drops their eventual callbacks.
+Display, tray, Volume-key hook, and plugin-hotkey startup readiness waits are bounded. Plugin shutdown has one shared two-second budget; registered shortcuts stop before plugin resources, and Discord receives an early stop signal so an active temporary route restores before pipe closure is used as fallback. Other native controllers retain their two-second joins. DDC and audio-output workers are daemon threads and are not cancelled or joined; `_closing` drops their callbacks, and topology invalidation blocks subsequent audio mutations at the next safety check. A native call already entered cannot be cancelled.
 
 All Tk calls must remain on the Tk thread. A native or DDC thread must enqueue work rather than touching widgets. Queued callbacks must remain small and exception-safe even though the polling boundary now contains and reports their failures.
 
@@ -46,38 +53,56 @@ All Tk calls must remain on the Tk thread. A native or DDC thread must enqueue w
 
 ### Supported entrypoint: `app.py`
 
-`app.main()` is intentionally small:
+`app.main()` keeps the ordinary composition path small:
 
 ```text
 SingleInstanceGuard -> configure logging -> tk.Tk -> MonitorVolumeApp -> Tk mainloop -> close logging -> release guard
 ```
 
-The guard is acquired before logging or Tk and always closed in `finally`. This keeps a duplicate from opening the rotating log concurrently with the primary. `ERROR_ALREADY_EXISTS` makes the duplicate register and broadcast the restore message, then return `0` without reading settings or creating hooks, tray state, or DDC workers. Keeping composition here makes `gui.py` responsible for application behavior without creating a second root or hidden launcher layer. Both source execution and `build_exe.ps1` use `app.py` and therefore share the same mutex.
+The guard is acquired before logging or Tk and always closed in `finally`. This keeps a duplicate from opening the rotating log concurrently with the primary. `ERROR_ALREADY_EXISTS` makes the duplicate register and broadcast the restore message, then return `0` without reading settings, importing or discovering plugin code, reading credentials, or creating hooks, tray state, or DDC workers. `gui.py` deliberately imports `plugin_manager` inside post-Tk initialization so the module boundary preserves that rule. Both source execution and `build_exe.ps1` use `app.py` and therefore share the same mutex.
+
+The only path before the guard is the app-generated `--internal-rename-audio-endpoint <validated-id>` execution mode. Shell32 launches it through `runas`; it writes the fixed `FenSound` alias through Core Audio and exits without logging, Tk, settings, hooks, tray state, or DDC work. It is deliberately not an installed or supported user CLI.
 
 ### Unsupported entrypoint: `main.py`
 
 `main.py` prints `This launcher is no longer supported. Run: python app.py` to standard error and returns `1`. It is not listed in `[tool.setuptools].py-modules`. It is a compatibility signal, not an alternate composition root.
 
-### No command or HTTP entrypoint
+### No installed command or HTTP entrypoint
 
-`pyproject.toml` has no `[project.scripts]` or `[project.gui-scripts]` entry, and the code has no argument parser. There are no HTTP handlers, routes, sockets, or method/route semantics. The only user entry is process launch. Principal runtime inputs include GUI/native events, DDC results, Windows theme and system metrics, the current-user Run value, settings-path/environment resolution, settings contents, and tracked icon-file availability.
+`pyproject.toml` has no `[project.scripts]` or `[project.gui-scripts]` entry and there is no supported command surface. The strict internal rename execution mode described above is not a general argument parser. There are no HTTP handlers, routes, sockets, or method/route semantics. The only user entry is process launch. Principal runtime inputs include GUI/native events, DDC results, monitor/audio endpoint metadata, Windows theme and system metrics, the current-user Run value, settings-path/environment resolution, settings contents, and tracked icon-file availability.
 
 ## Module responsibilities
 
 | Module | Responsibility |
 | --- | --- |
 | `app.py` | Enforces the single-instance boundary, then creates and runs the application. |
+| `audio_outputs.py` | Reads monitor/render endpoint identity, matches fail-closed, changes matched endpoint visibility, and implements the fixed-purpose FenSound rename helper. |
 | `autostart.py` | Quotes source/packaged launch commands and reads/writes the named current-user Run value. |
 | `diagnostics.py` | Configures and closes the bounded per-user rotating log and provides component loggers. |
 | `gui.py` | Coordinates Tk, monitor selection, readiness, DDC workers, rapid-write coalescing, live theme/DPI reflow, keyboard navigation, overlay targeting, persistence, tray lifecycle, and shutdown. |
 | `ddc.py` | Defines `MonitorRef`, selection identity, monitor discovery, clamping, and DDC read/change/write wrappers. |
+| `ddc_volume_plugin.py` | Bundled generic volume provider that owns DDC target configuration, fresh reads/writes, and active-only monitor audio policy. |
+| `discord_output_plugin.py` | Implements Discord local RPC, OAuth/token refresh, Credential Manager storage/migration, shortcut configuration, and exact temporary output restoration. |
 | `settings.py` | Atomically loads and replaces the selected-monitor and Change speed JSON settings. |
 | `overlay.py` | Calculates work-area/DPI-aware geometry and implements focus-safe, live-themed topmost volume and unavailable/error presentations. |
+| `plugin_api.py` | Defines API version 1, `HotkeySpec`, the plugin protocol, and host context. |
+| `plugin_hotkeys.py` | Owns the native passive multi-plugin keyboard observer and off-thread dispatch queue. |
+| `plugin_manager.py` | Discovers trusted bundled/external plugins, isolates failures, owns configuration UI, suppresses overlapping triggers, and coordinates shutdown. |
 | `theme.py` | Reads Windows theme/High Contrast/DPI state, defines reversible ttk styling, applies DWM chrome, and resolves the icon. |
 | `windows_platform.py` | Declares the Win32 ctypes ABI and implements the single-instance mutex/restore signal, monitor identity/EDID inventory, display work-area/window-DPI lookup, High Contrast query, no-activate overlay operations, display/theme notifications, snapshot-driven tray menu, keyboard hook, and DWM helpers. |
 | `main.py` | Rejects the old launch path. |
 
 `ddc.change_monitor_volume()` is an internal helper but is not used by the GUI. The GUI uses its own cached-target and serialized-write flow so rapid key events can be coalesced.
+
+## Runtime plugins and Discord OAuth
+
+`plugin_manager.discover_plugins()` loads API-v1 candidates in a fixed precedence order: the direct bundled `discord_output_plugin` registry entry, sorted `plugins\*.py` beside the source/executable, then sorted `%APPDATA%\windows-ddc\plugins\*.py`. Repeated physical directories are collapsed. A candidate module must expose `PLUGIN_API_VERSION = 1` and `create_plugin()`; malformed objects, later duplicate IDs, import exceptions, and initialization exceptions become visible failure records. There is no sandbox, manifest, enable flag, or runtime reload: every discovered external file is deliberately trusted and executes in-process at primary startup.
+
+The host gives each loaded plugin a status/logging boundary, `_post_to_ui()` bridge, prepared Tk-parent/window callbacks, a volume-refresh callback, and `%APPDATA%\windows-ddc\plugin-settings\<id>.json`. The Discord plugin writes only schema-v1 shortcut data there. A runtime plugin may additionally supply the optional `VolumeProvider` capability: blocking normalized `0`–`100` reads/writes are worker-routed through one user-selected active provider. Provider failure disables control and releases Volume keys; no fallback provider is chosen automatically. The bundled DDC provider owns its monitor-selection migration/configuration and active-only audio policy. `PluginHotkeyController` accepts any nonzero Windows keyboard virtual-key code with optional Ctrl/Alt/Shift/Win modifiers, detects duplicate in-process combinations, suppresses held-key repeats, and always calls the next hook so the foreground application receives the original input. Modifier keys act as capture prefixes rather than standalone trigger keys. It is independent of `GlobalVolumeKeyListener`.
+
+The Discord plugin reads and writes a generic current-user Credential Manager target named `windows-ddc/plugins/discord-output/oauth-rpc`. A valid older `windows-ddc/test-discord/oauth-rpc` value is copied and removed. The blob contains Application ID, client secret, redirect URI, access/refresh tokens, and expiry. With no saved configuration, Tk opens the Developer Portal and one modal that asks for the reset secret before the public Application ID and explains the exact `https://127.0.0.1` redirect and restricted scopes. The worker exchanges the local RPC `AUTHORIZE` code at Discord's HTTPS OAuth endpoint; the first Discord consent cannot be automated away. Valid access tokens authenticate locally, expired tokens refresh silently, and revoked grants fail only this plugin until explicit reauthorization.
+
+On a registered press, the manager rejects overlap and starts `plugin-discord-output`. It authenticates a fresh named-pipe client, captures `GET_VOICE_SETTINGS.output.device_id`, chooses the first different available ID other than Discord's dynamic `default`, verifies the temporary `SET_VOICE_SETTINGS`, waits one second, and verifies restoration in `finally`. Closing the pipe is the last restoration fallback. No Discord or RPC worker calls Tk.
 
 ## Monitor model and DDC/CI boundary
 
@@ -185,6 +210,23 @@ There is no user preference to disable the hook while leaving the app running. D
 
 The same listener routes `WM_SETTINGCHANGE`, `WM_SYSCOLORCHANGE`, and `WM_THEMECHANGED` through `_post_to_ui()`. Tk debounces those broadcasts for 100 ms, rereads app-theme and High Contrast state, reapplies reversible widget/overlay palettes and DWM chrome, and reflows the control window. Native callbacks do no blocking discovery or Tk work on the listener thread.
 
+## Windows sound-output reconciliation
+
+The selected DDC monitor and its Windows render endpoint come from separate inventories. `audio_outputs.py` joins them without persisting endpoint IDs:
+
+1. The successful DDC refresh supplies every current monitor interface path and the exact selected path.
+2. Read-only `HKLM\SYSTEM\CurrentControlSet\Enum` lookups resolve each monitor's container ID.
+3. Read-only `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render` and endpoint-PnP lookups enumerate only currently active or audio-policy-hidden render endpoints, their descriptions, adapter names, container IDs, and visibility.
+4. Unique container IDs produce direct monitor/endpoint matches. Duplicate containers are not accepted.
+5. After direct matches, exactly one unmatched monitor may be paired with exactly one unmatched same-adapter endpoint only when that endpoint has no usable container ID. More than one candidate, or a conflicting non-placeholder container ID, is never guessed.
+6. If the selected path is still unmatched, reconciliation raises `AudioOutputMatchError` before any output mutation. Non-display endpoints and unmatched endpoints are never included in the hide plan.
+
+`gui.py` coalesces requests into at most one `audio-output-sync` worker plus the latest pending topology. The worker checks the generation and thread-safe topology-valid event before its first mutation and between endpoint changes. It first re-enables the selected endpoint through private `IPolicyConfig::SetEndpointVisibility`, then hides only visible endpoints mapped to other current monitors. These Windows policy changes outlive the application. The interface is not a documented public Windows contract, so failures are nonfatal and surfaced in the status bar while DDC control remains ready.
+
+If the selected endpoint's device description is not `FenSound`, the worker asks Shell32 to start the strict internal helper with administrator consent. The helper validates the render endpoint ID again, accepts no caller-supplied alias, opens that endpoint with `IMMDevice::OpenPropertyStore(STGM_READWRITE)`, writes `PKEY_Device_DeviceDesc`, commits, and exits. A successful launch is asynchronous; the primary does not assume the property write completed. Each endpoint is attempted at most once per primary-process session, including cancellation/failure, to prevent repeated consent prompts. Once the persisted alias is visible on a later refresh or restart, no helper is requested.
+
+The public Core Audio endpoint-property contract supports reading but makes the non-administrator property store read-only; that is why the normal process never attempts the rename directly. The app does not call a default-endpoint setter or change mixer/application-session volumes, although Windows may reroute sound when hiding makes a former output unavailable. Relevant Microsoft contracts are [audio endpoint properties](https://learn.microsoft.com/en-us/windows/win32/coreaudio/device-properties), [`IMMDevice::OpenPropertyStore`](https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-openpropertystore), and [audio endpoint container IDs](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/audio-endpoint-container-id).
+
 ## Tray and window event flow
 
 `TrayIconController` creates a per-process hidden Win32 window named with the process ID and controller identity. Its message loop handles private show/hide/exit messages, the registered `TaskbarCreated` broadcast, `Shell_NotifyIconW` callbacks, and a native popup menu.
@@ -214,12 +256,12 @@ The control window is horizontally resizable with a fixed content-driven height 
 - a read-only monitor combobox;
 - Refresh;
 - a `0`–`100` scale;
-- a persistent Slow/Medium/Fast Change speed selector and focusable **Decrease volume**/**Increase volume** buttons;
+- a persistent Slow/Medium/Fast Change speed selector beside the provider-neutral volume slider;
 - a percentage label and status bar.
 
 Widget state derives from `_busy`, monitor availability, confirmed volume, display-listener liveness, and topology validity. During a valid active write the volume controls remain enabled so a new last target can be queued.
 
-All interactive widgets participate explicitly in `Tab`/`Shift+Tab` traversal. Underlined labels and controls expose `Alt+M`, `Alt+V`, `Alt+C`, `Alt+D`, `Alt+I`, `Alt+S`, and `Alt+R`; `Ctrl+R` and `F5` also refresh, and `Escape` minimizes to the tray. The slider maps `Home`/`End` to `0`/`100` and `Page Down`/`Page Up` to ten-point changes in addition to normal arrow-key navigation. Disabled shortcut targets are ignored.
+All interactive widgets participate explicitly in `Tab`/`Shift+Tab` traversal. Controls expose `Alt+V`, `Alt+C`, `Alt+P`, and `Alt+R`; `Ctrl+R` and `F5` also refresh, and `Escape` minimizes to the tray. The plugin dialog contains the Start with Windows checkbox and opens a selected plugin's configuration on double-click. The slider maps `Home`/`End` to `0`/`100` and `Page Down`/`Page Up` to ten-point changes in addition to normal arrow-key navigation. Disabled shortcut targets are ignored.
 
 `VolumeOverlay` is a borderless tool `Toplevel` with a live palette. Normal mode shows percentage/progress and hides after 1.4 seconds. Error mode shows an `Unavailable` heading plus wrapped reason text, hides the progress bar, and remains for 2.8 seconds. Alpha is `0.7` in dark mode, `0.85` in light mode, and `1.0` in High Contrast; Tk's tool-window attribute remains best-effort.
 
@@ -237,11 +279,11 @@ Only a DWORD value of `0` selects dark mode. `SystemParametersInfoW(SPI_GETHIGHC
 
 `GetDpiForWindow` supplies the restored control window's current DPI with a 96-DPI fallback. Padding, slider length, and minimum width scale from logical values, and a debounced top-level `<Configure>` callback reapplies them only when the window DPI changes. Overlay geometry separately retains its per-destination-screen scale lookup.
 
-The manually maintained screenshots are tracked at `docs/app.png` (452×203) and `docs/overlay.png` (210×122). They predate the wider identity selector, Change speed selector, Start with Windows checkbox, descriptive volume buttons, live theme/scaling behavior, and error presentation; there is no automated screenshot workflow, so updates require real scrubbed captures.
+The manually maintained screenshots are tracked at `docs/app.png` (452×203) and `docs/overlay.png` (210×122). They predate the wider identity selector, Change speed selector, Start with Windows checkbox, Configure plugins button, descriptive volume buttons, live theme/scaling behavior, and error presentation; there is no automated screenshot workflow, so updates require real scrubbed captures.
 
 ## Persistent data, registry, and filesystem ownership
 
-The intended durable state is the settings file, bounded diagnostic logs, and an optional named current-user Run value. The normal settings path is:
+The intended app-owned durable state is the main settings file, plugin-settings JSON, bounded diagnostic logs, an optional named current-user Run value, and Discord OAuth data in current-user Credential Manager. Windows separately persists the render-endpoint visibility and FenSound description changed through Core Audio; the app does not copy endpoint IDs into its JSON. The normal settings path is:
 
 ```text
 %APPDATA%\windows-ddc\settings.json
@@ -277,6 +319,8 @@ The monitor-selection writer emits schema version 2. Its loader accepts the old 
 
 The monitor's actual volume is external mutable hardware state, not app storage. The app reads it after discovery or selection and never backs it up or restores it on exit.
 
+Plugin-owned non-secret settings live under `%APPDATA%\windows-ddc\plugin-settings`; the Discord file contains only `schema_version` and a nullable modifier/virtual-key pair. External executable code is discovered separately under `plugins` beside the source/executable and `%APPDATA%\windows-ddc\plugins`. OAuth client configuration and tokens never enter either JSON location.
+
 `diagnostics.LOG_PATH` normally resolves to `%LOCALAPPDATA%\windows-ddc\windows-ddc.log`, falling back to `APPDATA` and then the home directory. `RotatingFileHandler` caps the current log at 512 KiB and retains two backups. Handler creation failure installs a managed `NullHandler`, so an unwritable diagnostic location never blocks application startup. Routine GUI messages log operation classes rather than monitor descriptions, identities, or device paths; unexpected top-level tracebacks can still contain local source paths.
 
 `autostart.py` treats `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\windows-ddc` as the Start with Windows source of truth. Reading occurs during Tk construction; writes and deletion occur only from the checkbox callback. A packaged launch quotes the absolute original one-file path from `sys.argv[0]`; a source launch quotes a sibling `pythonw.exe` when available plus the repository `app.py`. The helper rejects commands longer than the Windows Run-key limit of 260 characters. Registry errors restore the prior checkbox value, update status, and emit a privacy-safe diagnostic. Moving the registered target can leave a stale value until the user disables or replaces it.
@@ -285,11 +329,11 @@ The monitor's actual volume is external mutable hardware state, not app storage.
 
 Backup is a plain copy of `settings.json` while all instances are stopped. Restore is replacement with a UTF-8 JSON object matching the schema above. Moving the file aside resets saved selection and Change speed. There is no archive, database dump, encryption, integrity marker, or built-in backup command.
 
-Tests must replace `settings.SETTINGS_PATH` and diagnostic destinations with unique temporary paths and mock `autostart.winreg`. They must not read, redirect, mutate, or delete a user's live app-data files or Run value.
+Tests must replace settings/plugin paths and diagnostic destinations with unique temporary paths and mock `autostart.winreg`. Audio-output tests mock registry enumeration, COM visibility, and elevation. Discord tests mock Credential Manager, browser, named-pipe, and HTTPS boundaries. Automated tests must not read, redirect, mutate, or delete live app-data, credentials, Run values, audio endpoints, Discord settings, or grants.
 
 ## Authentication and security boundaries
 
-There is no account or administrative model because there is no remote or multi-user application interface. The process runs in the launching user's interactive session and the repository contains no elevation manifest or privileged helper.
+There is no windows-ddc account model because there is no remote or multi-user application interface. The primary process runs unelevated in the launching user's interactive session. There is no elevation manifest; a narrowly scoped helper process is launched through `runas` only when the selected endpoint needs the fixed FenSound description. Discord independently controls its OAuth consent and restricted RPC scopes.
 
 The security-relevant boundaries are local:
 
@@ -299,18 +343,24 @@ The security-relevant boundaries are local:
 4. **Cross-thread UI.** Tk is not thread-safe; queues are the required ownership boundary.
 5. **Per-user files.** Settings and diagnostics are user-writable and unencrypted. Settings contain monitor identity metadata; routine diagnostics avoid it, although unexpected tracebacks can contain local paths. A device-interface path is machine-specific but is not a credential.
 6. **Current-user autostart.** The opt-in Run value stores an absolute local command and executes it at sign-in. It requires no administrator access, but moving the target can leave stale machine-specific path data.
+7. **Windows audio policy.** The primary reads machine endpoint metadata and uses a private Windows COM interface to persist visibility for positively matched display-audio endpoints. A topology race can occur after a validity check; the next successful refresh repairs the selected endpoint first. Unmatched outputs are never hidden.
+8. **Elevated rename helper.** The helper accepts only a syntactically valid render endpoint ID and a code-fixed alias, performs one endpoint property write, and exits before ordinary app initialization. Windows administrator consent remains the authority boundary, and cancellation is nonfatal.
+9. **Trusted external plugins.** Every discovered Python file executes unsandboxed in the primary process with current-user access. Folder placement is the opt-in boundary; there is no permissions mediation.
+10. **Discord credentials and network.** Client configuration and tokens stay in current-user Credential Manager and are excluded from deliberate logs. OAuth token/refresh exchanges use Discord HTTPS; voice-setting commands use Discord's local named pipe. The app does not host a callback server.
 
-Runtime code has no network path. Dependency installation and Nuitka's `--assume-yes-for-downloads` build can contact external package/toolchain servers; these are development/build effects, not application runtime behavior.
+External plugins can use arbitrary network paths. The bundled Discord plugin contacts Discord's OAuth token endpoint and local RPC pipe. Dependency installation and Nuitka's `--assume-yes-for-downloads` can also contact package/toolchain servers during development or build.
 
 ## Build and deployment architecture
 
 `pyproject.toml` uses `setuptools.build_meta` as its PEP 517 backend, with unpinned `setuptools` and `wheel` build-system requirements. It declares project version `0.1.0`, Python `>=3.10`, and explicit flat modules:
 
 ```text
-app, autostart, diagnostics, gui, ddc, settings, theme, overlay, windows_platform
+app, audio_outputs, autostart, diagnostics, discord_output_plugin, gui, ddc, settings, theme, overlay, plugin_api, plugin_hotkeys, plugin_manager, windows_platform
 ```
 
 The direct runtime dependency is pinned to `monitorcontrol==4.2.0`. The `build` extra pins `Nuitka==2.4.8`. There is no lockfile; build-system requirements and transitive build dependencies are not fully pinned.
+
+`gui.py`'s function-local import is still a direct Python import, and `plugin_manager.py` directly imports `discord_output_plugin`, so Nuitka follows and embeds the bundled framework/plugin. Files discovered from either external `plugins` directory are deliberately not build inputs or embedded data; the executable imports them from disk after restart.
 
 `build_exe.ps1` resolves `python`, changes to its own repository directory, checks `app.py` and `windows-ddc.ico`, then invokes Nuitka with:
 
@@ -335,9 +385,9 @@ Ignored `windows_ddc.egg-info\` is setuptools-generated residue, not source of t
 
 ## Background activity and absent subsystems
 
-Display, tray, and hook message pumps are event loops, and DDC workers are background threads. There is no periodic monitor or volume poll. Display notifications schedule a 500 ms debounced refresh and at most three retry timers; manual Refresh and every actual write also perform discovery. There are no durable events, job queues, or cron-style tasks.
+Display, tray, Volume-key-hook, and plugin-hotkey message pumps are event loops, while DDC, audio reconciliation, and plugin actions use background workers. There is no periodic monitor, volume, or audio-endpoint poll. The Discord configuration window polls in-memory status every 200 ms only while that modal exists. Display notifications schedule a 500 ms debounced refresh and at most three retry timers; manual Refresh and every actual write also perform discovery. Successful selected-monitor reads schedule coalesced audio reconciliation. There are no durable events, job queues, or cron-style tasks.
 
-There is likewise no web frontend/backend split, API request flow, database schema, migration procedure, realtime protocol, authentication provider, health endpoint, readiness probe, liveness probe, or external service integration to operate.
+There is likewise no web frontend/backend split, database schema, migration command, health endpoint, readiness probe, or liveness probe. Discord OAuth and local RPC are a client integration rather than an operated backend.
 
 ## Health and failure behavior
 
@@ -347,6 +397,7 @@ The status bar is the immediate health surface:
 - successful initial read reports Ready, monitor count, and selected description;
 - empty discovery reports `No DDC/CI monitors found.`;
 - monitor, hook, tray, and autostart-update exceptions are formatted into status text.
+- inconclusive or failed sound-output matching is reported without disabling otherwise-ready monitor-volume control.
 
 The packaged executable disables its console. `diagnostics.py` retains lifecycle, thread/component, native-subsystem, settings-save, autostart-update, DDC watchdog, refresh/write, queued-callback, shutdown, and top-level failure records in a bounded per-user log. Tray failures still restore the main window so an immediate status remains visible.
 
@@ -360,24 +411,31 @@ Known failure-state caveats include:
 - a set may succeed before its readback fails;
 - duplicate restoration is a best-effort broadcast and can be missed during the primary instance's very early startup or shutdown;
 - diagnostic-handler creation is deliberately nonfatal, so an unwritable log location leaves only the status bar (and standard error in source runs).
+- the private endpoint-visibility interface is Windows-version dependent, and an elevated rename request can be cancelled; both failures leave DDC volume control available;
+- a topology event can race with an already-entered endpoint-policy call, so a newly selected endpoint may remain hidden until the next successful revalidation makes it visible first.
 
 ## Development and testing
 
-The standard-library test suite covers fail-safe hotkeys, EDID parsing, unique/duplicate/path identity matching, schema migration, Change speed persistence, source/packaged autostart command quoting and mocked registry behavior, diagnostic writing/rotation/setup failure, topology generations, display/theme-message routing, fresh-wrapper writes, single-instance composition and signaling, rich tray rendering/snapshot command stability/Tk queue routing, multi-screen/work-area/DPI overlay placement, native no-activate behavior, live dark/light/High Contrast palettes, keyboard bindings, window-DPI reflow, acknowledged tray addition, visible-window fallback, Explorer restart recovery, queue-callback containment, DDC watchdog state, bounded native lifecycle waits, CI workflow safety, and shutdown diagnostics. It has no third-party test framework, linter, formatter, or type checker.
+The standard-library test suite covers fail-safe Volume hotkeys, passive forwarding plugin shortcuts, deterministic discovery/failure isolation, Discord credential migration/OAuth helpers/output restoration, EDID parsing, stable identity/settings, Change speed, autostart and diagnostics, topology generations, display/theme routing, fresh-wrapper writes, fail-closed audio endpoint matching, strict helper dispatch, single-instance composition, tray snapshots, overlay placement/no-activate behavior, live accessibility/scaling, queue containment, DDC watchdogs, native lifecycle waits, CI safety, and shutdown diagnostics. It has no third-party test framework, linter, formatter, or type checker.
 
-`.github/workflows/ci.yml` runs on `windows-latest` for pushes, pull requests, and manual dispatches with a Python 3.10/3.14 matrix. It installs the runtime project, runs the unit suite, compiles runtime modules, checks installed dependencies, parses `build_exe.ps1` without executing it, checks tracked/staged whitespace, and requires a clean repository state. It neither starts `app.py` nor invokes hardware tools, monitor enumeration, the Nuitka build, publishing, or deployment. `tests/test_ci_workflow.py` locks down that hardware-free contract.
+`.github/workflows/ci.yml` runs on `windows-latest` for pushes, pull requests, and manual dispatches with a Python 3.10/3.14 matrix. It installs the runtime project, runs the unit suite, compiles runtime modules, checks installed dependencies, parses `build_exe.ps1` without executing it, checks tracked/staged whitespace, and requires a clean repository state. It neither starts `app.py` nor invokes hardware tools, live audio enumeration/mutation, monitor enumeration, the Nuitka build, publishing, or deployment. `tests/test_ci_workflow.py` locks down that hardware-free contract.
 
 Do not use application launch as a routine smoke test. It reads and writes user settings, starts a global hook, creates native tray state, and contacts physical monitor hardware. `build_exe.ps1` also writes ignored artifacts and may download tooling.
 
-An authorized manual Windows/hardware pass is required for changes to discovery, selection, DDC I/O, key interception, Change speed, autostart, tray lifecycle, theme/chrome, accessibility/scaling, overlay, or shutdown. Tests of settings code must patch `SETTINGS_PATH` to a temporary location; autostart tests must mock the registry. Pure DDC wrapper tests should use fake context-manager monitor objects.
+An authorized manual Windows/hardware pass is required for changes to plugin discovery/shortcuts, Discord RPC/OAuth, monitor discovery/selection/DDC, audio endpoint policy/rename, key interception, autostart, tray lifecycle, theme/accessibility/scaling, overlay, or shutdown. Settings use temporary paths; autostart/audio/Discord tests mock registry, native, credential, and network boundaries. Pure DDC wrapper tests use fake context-manager monitor objects.
 
 ## Things to preserve
 
 - Keep `app.py` as the single supported composition root and `main.py` as an explicit unsupported stub unless compatibility policy changes.
 - Acquire and retain `SingleInstanceGuard` before creating Tk; duplicate launches must remain side-effect-free apart from the best-effort restore broadcast.
+- Keep plugin imports/discovery and Credential Manager reads after the primary-instance/Tk boundary. External plugins remain trusted and auto-loaded in bundled/adjacent/per-user order; isolate each failure.
+- Keep passive plugin shortcut observation independent from the low-level Volume hook, always forward input, dispatch away from the native thread, suppress held-key repeats and same-plugin overlap, and stop the observer before plugin shutdown.
+- Keep Discord secrets and tokens out of JSON and diagnostics. Preserve first-consent honesty, silent reuse/refresh, concrete alternative selection, restoration in `finally`, and pipe close as fallback.
 - Keep all Tk access on the main thread; use `_result_queue`, `_hotkey_delta_queue`, and `_post_to_ui()` at cross-thread boundaries.
 - Route live theme broadcasts through `_post_to_ui()` and preserve debouncing, reversible light/dark chrome, Windows system colors in High Contrast, and current-window DPI reflow.
 - Keep DDC work off Tk and serialize/coalesce writes. Do not start one hardware worker per key event.
+- Keep audio-output work off Tk and coalesced. Preserve exact container matching, the single placeholder-container inference, selected-visible-first order, topology checks, non-display/unmatched exclusion, and one rename attempt per endpoint per process session.
+- Keep the internal elevated helper before the mutex/logging boundary, strictly validate its endpoint ID, keep the alias code-fixed, and do not broaden it into a general privileged command surface.
 - Keep monitorcontrol operations inside the monitor context manager and clamp all public volume results/targets to `0`–`100`.
 - Preserve system key pass-through until a selected monitor has a successful volume read, and clear/pass through safely on loss of readiness.
 - Keep native ctypes callbacks strongly referenced and stop display/hook/tray loops before destroying Tk.
@@ -385,6 +443,7 @@ An authorized manual Windows/hardware pass is required for changes to discovery,
 - Do not use the displayed index or description ordinal as current persistent identity. Preserve version-2 matching and backward-compatible legacy loading.
 - Never touch live per-user settings or diagnostics in automated work; use temporary paths.
 - Never touch the live Run value in automated work. Preserve current-user-only opt-in writes, Windows quoting, the command-length check, source `pythonw.exe` preference, and original one-file executable path.
+- Never enumerate or mutate live audio endpoint state during automated work; mock registry/COM/ShellExecute boundaries. Manual audio validation must identify the exact endpoints and preserve unrelated outputs.
 - Treat physical monitor volume and global keyboard handling as safety-sensitive side effects.
 - Keep `[tool.setuptools].py-modules` synchronized when distributable runtime modules are added, renamed, or removed.
 - Keep `windows-ddc.ico`, `theme.APP_ICON_PATH`, and both Nuitka icon flags synchronized.

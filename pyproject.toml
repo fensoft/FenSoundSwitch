@@ -20,12 +20,18 @@ build = [
 [tool.setuptools]
 py-modules = [
     "app",
+    "audio_outputs",
     "autostart",
     "diagnostics",
     "gui",
     "ddc",
+    "ddc_volume_plugin",
+    "discord_output_plugin",
     "settings",
     "theme",
     "overlay",
+    "plugin_api",
+    "plugin_hotkeys",
+    "plugin_manager",
     "windows_platform",
 ]
