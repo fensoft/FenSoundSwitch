@@ -24,7 +24,9 @@ from plugins import (
     windows11_overlay_plugin,
     pioneer_elite_volume_plugin,
     sony_volume_plugin,
+    keyboard_input_plugin,
     windows_volume_input_plugin,
+    windows_soundcard_volume_plugin,
     yamaha_volume_plugin,
 )
 from diagnostics import get_logger
@@ -305,6 +307,8 @@ def discover_plugins(
         (pioneer_elite_volume_plugin, "Bundled Pioneer/Elite volume plugin"),
         (sony_volume_plugin, "Bundled Sony volume plugin"),
         (windows_volume_input_plugin, "Bundled Windows Volume input plugin"),
+        (keyboard_input_plugin, "Bundled keyboard input plugin"),
+        (windows_soundcard_volume_plugin, "Bundled Windows soundcard volume plugin"),
     ):
         try:
             if module.PLUGIN_API_VERSION != PLUGIN_API_VERSION:
@@ -381,6 +385,8 @@ class PluginManager:
         get_volume_statuses: Callable[[], tuple[Any, ...]] | None = None,
         on_overlay_renderer_changed: Callable[[], None] | None = None,
         on_volume_routes_changed: Callable[[], None] | None = None,
+        on_route_input: Callable[[str, int], None] | None = None,
+        on_route_key: Callable[[str, int, bool], None] | None = None,
         *,
         hotkey_factory: Callable[..., PluginHotkeyController] = PluginHotkeyController,
         external_directories: Iterable[Path] | None = None,
@@ -395,6 +401,8 @@ class PluginManager:
         self._get_volume_statuses = get_volume_statuses or (lambda: ())
         self._on_overlay_renderer_changed = on_overlay_renderer_changed or (lambda: None)
         self._on_volume_routes_changed = on_volume_routes_changed or (lambda: None)
+        self._on_route_input = on_route_input or (lambda _route_id, _delta: None)
+        self._on_route_key = on_route_key or (lambda _route_id, _delta, _pressed: None)
         self._hotkey_factory = hotkey_factory
         self._external_directories = external_directories
         self._shortcut_path = shortcut_path or shortcut_settings_path()
@@ -411,6 +419,7 @@ class PluginManager:
         self._started = False
         self._input_routes: tuple[VolumeRoute, ...] = ()
         self._route_instances: dict[str, VolumeProvider] = {}
+        self._route_hotkeys: dict[str, int] = {}
         self._active_overlay_plugin_id = DEFAULT_OVERLAY_PLUGIN_ID
 
     @property
@@ -450,8 +459,9 @@ class PluginManager:
     def is_volume_provider_routed(self, provider_id: str) -> bool:
         return any(route.route_id == provider_id for route in self._input_routes)
 
-    def relevant_volume_providers(self) -> tuple[tuple[str, VolumeProvider], ...]:
-        return tuple((route.route_id, provider) for route, provider in self._all_route_providers())
+    def relevant_volume_providers(self) -> tuple[tuple[VolumeRoute, VolumeProvider], ...]:
+        """Return all route instances with their route metadata."""
+        return self._all_route_providers()
 
     def create_overlay_renderer(self, dark_mode: bool, high_contrast: bool) -> OverlayRenderer | None:
         record = self._records_by_id.get(self._active_overlay_plugin_id)
@@ -550,6 +560,11 @@ class PluginManager:
 
     def _save_routes(self, routes: tuple[VolumeRoute, ...]) -> bool:
         try:
+            self._validate_route_hotkeys(routes)
+        except ValueError as exc:
+            self._notice(str(exc))
+            return False
+        try:
             save_input_routes(routes)
         except (OSError, ValueError) as exc:
             LOGGER.warning("Saving input routes failed (%s).", exc.__class__.__name__)
@@ -579,10 +594,19 @@ class PluginManager:
         self._active_overlay_plugin_id = self._load_active_overlay_plugin_id()
 
         try:
-            self._hotkeys = self._hotkey_factory(
-                on_hotkey=self._dispatch_trigger,
-                on_error=self._hotkey_error_from_thread,
-            )
+            try:
+                self._hotkeys = self._hotkey_factory(
+                    on_hotkey=self._dispatch_trigger,
+                    on_error=self._hotkey_error_from_thread,
+                    on_route_key=self._dispatch_route_key,
+                )
+            except TypeError:
+                # Test doubles and API-v1 host adapters can still observe route
+                # presses, albeit without held-key lifecycle notifications.
+                self._hotkeys = self._hotkey_factory(
+                    on_hotkey=self._dispatch_trigger,
+                    on_error=self._hotkey_error_from_thread,
+                )
             self._hotkeys.start()
         except Exception as exc:
             self._hotkeys = None
@@ -628,6 +652,10 @@ class PluginManager:
             default_record = self._records_by_id.get(DEFAULT_OVERLAY_PLUGIN_ID)
             if default_record is not None and default_record.initialized and default_record.is_overlay_renderer:
                 self._active_overlay_plugin_id = DEFAULT_OVERLAY_PLUGIN_ID
+        try:
+            self._validate_route_hotkeys(self._input_routes)
+        except ValueError as exc:
+            self._notice(f"Saved keyboard routes are unavailable: {exc}")
         self._rebuild_route_instances()
         self._on_volume_routes_changed()
 
@@ -644,6 +672,13 @@ class PluginManager:
 
     def _rebuild_route_instances(self) -> None:
         """Construct fresh providers for every route; definitions are never shared."""
+        if self._hotkeys is not None:
+            for binding_id in tuple(self._route_hotkeys):
+                try:
+                    self._set_route_hotkey(binding_id, None)
+                except Exception:
+                    pass
+        self._route_hotkeys = {}
         previous = self._route_instances
         self._route_instances = {}
         for route in self._input_routes:
@@ -665,7 +700,14 @@ class PluginManager:
                 input_record.plugin.create_input(route.input.parameters)
                 provider = output_record.plugin.create_output(route.output.parameters)
                 self._route_instances[route.route_id] = provider
+                for direction, hotkey in self._route_hotkey_bindings(input_record, route.input.parameters):
+                    binding_id = f"route/{route.route_id}/{direction}"
+                    if self._hotkeys is None:
+                        raise ValueError("Passive keyboard service is unavailable.")
+                    self._set_route_hotkey(binding_id, hotkey)
+                    self._route_hotkeys[binding_id] = -1 if direction == "down" else 1
             except Exception as exc:
+                self._route_instances.pop(route.route_id, None)
                 self._notice(f"Route {route.name} is unavailable: {self._format_error(exc)}")
         for route_id, provider in previous.items():
             if provider is self._route_instances.get(route_id):
@@ -674,6 +716,36 @@ class PluginManager:
                 provider.shutdown(0.0)
             except Exception:
                 pass
+
+    def _validate_route_hotkeys(self, routes: tuple[VolumeRoute, ...]) -> None:
+        """Reject duplicate keyboard route combinations rather than broadcasting."""
+        seen: dict[HotkeySpec, str] = {}
+        for route in routes:
+            record = next((item for item in self._records if item.initialized and item.input_id == route.input_id), None)
+            for _direction, hotkey in self._route_hotkey_bindings(record, route.input.parameters):
+                previous = seen.get(hotkey)
+                if previous is not None:
+                    raise ValueError(f"{hotkey.label} is already used by keyboard route {previous}; identical keyboard route keys are not broadcast.")
+                seen[hotkey] = route.name
+
+    @staticmethod
+    def _route_hotkey_bindings(record: PluginRecord | None, parameters: object) -> tuple[tuple[str, HotkeySpec], ...]:
+        """Validate plugin-owned passive bindings before using them as dict keys."""
+        bindings = getattr(record.plugin, "route_hotkeys", None) if record is not None else None
+        if not callable(bindings):
+            return ()
+        try:
+            values = bindings(parameters)
+        except Exception as exc:
+            raise ValueError(f"Keyboard route parameters are invalid: {PluginManager._format_error(exc)}") from exc
+        if not isinstance(values, dict):
+            raise ValueError("Route input returned invalid passive key bindings.")
+        result: list[tuple[str, HotkeySpec]] = []
+        for direction, hotkey in values.items():
+            if not isinstance(direction, str) or direction not in {"down", "up"} or not isinstance(hotkey, HotkeySpec):
+                raise ValueError("Route input returned invalid passive key bindings.")
+            result.append((direction, hotkey))
+        return tuple(result)
 
     def _notice(self, message: str) -> None:
         if self._closing.is_set():
@@ -865,6 +937,12 @@ class PluginManager:
     def _dispatch_trigger(self, binding_id: str) -> None:
         if self._closing.is_set():
             return
+        delta = self._route_hotkeys.get(binding_id)
+        if delta is not None:
+            parts = binding_id.split("/")
+            if len(parts) == 3:
+                self._on_route_input(parts[1], delta)
+            return
         plugin_id, separator, action_id = binding_id.partition("/")
         if not separator:
             return
@@ -883,6 +961,22 @@ class PluginManager:
             )
             self._inflight[binding_id] = worker
             worker.start()
+
+    def _dispatch_route_key(self, binding_id: str, pressed: bool) -> None:
+        if self._closing.is_set():
+            return
+        delta = self._route_hotkeys.get(binding_id)
+        parts = binding_id.split("/")
+        if delta is not None and len(parts) == 3:
+            self._on_route_key(parts[1], delta, pressed)
+
+    def _set_route_hotkey(self, binding_id: str, hotkey: HotkeySpec | None) -> None:
+        assert self._hotkeys is not None
+        setter = getattr(self._hotkeys, "set_route_binding", None)
+        if callable(setter):
+            setter(binding_id, hotkey)
+        else:
+            self._hotkeys.set_binding(binding_id, hotkey)
 
     def _run_trigger(self, record: PluginRecord, action_id: str, binding_id: str) -> None:
         try:

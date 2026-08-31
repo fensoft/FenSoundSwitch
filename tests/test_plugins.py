@@ -71,6 +71,8 @@ class PluginDiscoveryTests(unittest.TestCase):
                 "pioneer-elite-volume",
                 "sony-volume",
                 "windows-volume-input",
+                "keyboard-input",
+                "windows-soundcard-volume",
                 "alpha",
                 "zeta",
                 "beta",
@@ -323,7 +325,7 @@ class PluginManagerTests(unittest.TestCase):
         self.assertIs(result, renderer)
         self.assertTrue(record.initialized)
         self.assertIs(plugin._host.ui_parent, parent)
-        create_overlay.assert_called_once_with(parent, dark_mode=True, high_contrast=False, mode="all-routed")
+        create_overlay.assert_called_once_with(parent, dark_mode=True, high_contrast=False, mode="all")
 
     def test_windows_overlay_migrates_legacy_mode_to_plugin_owned_settings(self) -> None:
         from plugins.windows11_overlay_plugin import OverlayPlugin
@@ -429,6 +431,24 @@ class PluginManagerTests(unittest.TestCase):
         self.assertTrue(manager.add_route("input-fake-source", "volume-fake"))
         self.assertFalse(manager.add_route("input-fake-source", "missing"))
         self.assertEqual(manager.volume_providers_for_input("missing"), ())
+
+    def test_keyboard_route_conflicts_are_rejected_not_broadcast(self) -> None:
+        from plugins.keyboard_input_plugin import KeyboardInputPlugin
+        keyboard = KeyboardInputPlugin()
+        provider = _FakeVolumePlugin()
+        records = [_record(keyboard), _record(provider)]
+        records[1].key = "plugin-volume-fake"
+        manager, notices = self.make_manager(keyboard)
+        with patch("plugin_manager.discover_plugins", return_value=records), patch("plugin_manager.load_input_routes", return_value=()):
+            manager.start()
+        keys = {"volume_down": HotkeySpec(0, ord("J")).to_json(), "volume_up": HotkeySpec(0, ord("K")).to_json()}
+        self.assertTrue(manager.add_route("keyboard-keys", "volume-fake", input_parameters=keys))
+        dispatched: list[tuple[str, int]] = []
+        manager._on_route_input = lambda route_id, delta: dispatched.append((route_id, delta))
+        manager._dispatch_trigger(f"route/{manager.input_routes[0].route_id}/down")
+        self.assertEqual(dispatched, [(manager.input_routes[0].route_id, -1)])
+        self.assertFalse(manager.add_route("keyboard-keys", "volume-fake", input_parameters=keys))
+        self.assertTrue(any("not broadcast" in message for message in notices))
 
     def test_initialization_failure_isolated_and_visible(self) -> None:
         plugin = _FakePlugin(fail_initialize=True)
@@ -561,6 +581,116 @@ class PluginManagerTests(unittest.TestCase):
         manager.notify_volume_topology_changed()
         self.assertEqual(plugin.topology_notifications, 1)
 
+    def test_bundled_route_fixtures_start_with_isolated_settings(self) -> None:
+        """Every bundled input/output shape must construct without live I/O."""
+        from plugins.ddc_volume_plugin import DdcVolumePlugin
+        from plugins.denon_marantz_volume_plugin import DenonMarantzVolumePlugin
+        from plugins.keyboard_input_plugin import KeyboardInputPlugin
+        from plugins.macos_overlay_plugin import MacOSOverlayPlugin
+        from plugins.onkyo_volume_plugin import OnkyoVolumePlugin
+        from plugins.pioneer_elite_volume_plugin import PioneerEliteVolumePlugin
+        from plugins.sony_volume_plugin import SonyVolumePlugin
+        from plugins.windows11_overlay_plugin import OverlayPlugin
+        from plugins.windows_soundcard_volume_plugin import WindowsSoundcardVolumePlugin
+        from plugins.windows_volume_input_plugin import WindowsVolumeInputPlugin
+        from plugins.yamaha_volume_plugin import YamahaVolumePlugin
+
+        def record(plugin: object, *, input_id: str | None = None, overlay: bool = False) -> PluginRecord:
+            return PluginRecord(
+                key=f"bundled-{getattr(plugin, 'plugin_id')}", source="test",
+                plugin_id=getattr(plugin, "plugin_id"), name=getattr(plugin, "name"),
+                description=getattr(plugin, "description"), plugin=plugin,
+                input_id=input_id, is_overlay_renderer=overlay,
+            )
+
+        down = HotkeySpec(MOD_CONTROL, ord("J")).to_json()
+        up = HotkeySpec(MOD_CONTROL, ord("K")).to_json()
+        outputs = (
+            ("ddc-volume", {"selected_monitor": {"description": "Desk", "identity": {"device_path": "MONITOR\\TEST", "manufacturer_id": "TST", "product_code": 1, "serial_number": "1"}}}),
+            ("onkyo-volume", {"host": "onkyo.local", "port": 60128}),
+            ("denon-marantz-volume", {"host": "denon.local", "port": 23}),
+            ("yamaha-volume", {"host": "yamaha.local", "port": 50000}),
+            ("pioneer-elite-volume", {"host": "pioneer.local", "port": 8102}),
+            ("sony-volume", {"host": "sony.local", "port": 10000}),
+            ("windows-soundcard-volume", {"endpoint_id": "endpoint-1", "display_name": "Desk speakers"}),
+        )
+        routes = [
+            {"route_id": f"windows-{index}", "name": f"Windows {plugin_id}", "input": {"plugin_id": "windows-volume-keys", "parameters": {}}, "output": {"plugin_id": plugin_id, "parameters": parameters}}
+            for index, (plugin_id, parameters) in enumerate(outputs)
+        ]
+        routes.append({"route_id": "keyboard-ddc", "name": "Keyboard DDC", "input": {"plugin_id": "keyboard-keys", "parameters": {"volume_down": down, "volume_up": up}}, "output": {"plugin_id": "ddc-volume", "parameters": outputs[0][1]}})
+        settings.SETTINGS_PATH.write_text(json.dumps({"schema_version": settings.SCHEMA_VERSION, "volume_routes": routes}), encoding="utf-8")
+        (settings.SETTINGS_PATH.parent / "plugin-settings").mkdir()
+        (settings.SETTINGS_PATH.parent / "plugin-settings" / "active-overlay.json").write_text('{"plugin_id": {"malformed": true}}', encoding="utf-8")
+        records = [
+            record(OverlayPlugin(), overlay=True), record(MacOSOverlayPlugin(), overlay=True),
+            record(WindowsVolumeInputPlugin(), input_id="windows-volume-keys"), record(KeyboardInputPlugin(), input_id="keyboard-keys"),
+            record(DdcVolumePlugin()), record(OnkyoVolumePlugin()), record(DenonMarantzVolumePlugin()), record(YamahaVolumePlugin()),
+            record(PioneerEliteVolumePlugin()), record(SonyVolumePlugin()), record(WindowsSoundcardVolumePlugin()),
+        ]
+        manager = PluginManager(Mock(), post_to_ui=lambda callback: callback(), on_notice=lambda _message: None, hotkey_factory=_FakeHotkeys)
+        with patch("plugin_manager.discover_plugins", return_value=records):
+            manager.start()
+
+        self.assertEqual(set(manager._route_instances), {route["route_id"] for route in routes})
+        self.assertEqual(manager.active_overlay_plugin_id, "windows11-overlay")
+
+    def test_malformed_persisted_keyboard_parameters_only_disable_that_route(self) -> None:
+        bad = {"volume_down": {"modifiers": {"bad": 1}, "virtual_key": ord("J")}, "volume_up": HotkeySpec(0, ord("K")).to_json()}
+        settings.SETTINGS_PATH.write_text(json.dumps({"schema_version": settings.SCHEMA_VERSION, "volume_routes": [
+            {"route_id": "bad-keys", "name": "Bad keys", "input": {"plugin_id": "keyboard-keys", "parameters": bad}, "output": {"plugin_id": "volume-fake", "parameters": {}}},
+            {"route_id": "working", "name": "Working", "input": {"plugin_id": "windows-volume-keys", "parameters": {}}, "output": {"plugin_id": "volume-fake", "parameters": {}}},
+        ]}), encoding="utf-8")
+
+        class InputPlugin(_FakePlugin):
+            plugin_id = "input-fake"
+            input_id = "keyboard-keys"
+            input_name = "Keyboard"
+
+            def create_input(self, parameters: object) -> object:
+                if isinstance(parameters, dict) and parameters:
+                    return __import__("plugins.keyboard_input_plugin", fromlist=["validate_parameters"]).validate_parameters(parameters)
+                return object()
+
+            def route_hotkeys(self, parameters: object) -> dict[str, HotkeySpec]:
+                if isinstance(parameters, dict) and parameters:
+                    self.create_input(parameters)
+                return {}
+
+        windows = InputPlugin()
+        windows.input_id = "windows-volume-keys"
+        keyboard = InputPlugin()
+        plugin = _FakeVolumePlugin()
+        records = [_record(windows), _record(keyboard), _record(plugin)]
+        manager = PluginManager(Mock(), post_to_ui=lambda callback: callback(), on_notice=lambda _message: None, hotkey_factory=_FakeHotkeys)
+        with patch("plugin_manager.discover_plugins", return_value=records):
+            manager.start()
+
+        self.assertEqual(set(manager._route_instances), {"working"})
+
+    def test_unhashable_route_binding_direction_does_not_abort_startup(self) -> None:
+        class MalformedBindings(dict):
+            def items(self) -> object:
+                return (({"bad": "direction"}, HotkeySpec(0, ord("J"))),)
+
+        class InputPlugin(_FakePlugin):
+            plugin_id = "input-fake"
+            input_id = "keyboard-keys"
+            input_name = "Keyboard"
+
+            def create_input(self, parameters: object) -> object:
+                return object()
+
+            def route_hotkeys(self, parameters: object) -> dict[str, HotkeySpec]:
+                return MalformedBindings()
+
+        settings.save_input_routes((plugin_manager.VolumeRoute("malformed", "Malformed", plugin_manager.RouteEndpoint("keyboard-keys", {}), plugin_manager.RouteEndpoint("volume-fake", {})),))
+        manager = PluginManager(Mock(), post_to_ui=lambda callback: callback(), on_notice=lambda _message: None, hotkey_factory=_FakeHotkeys)
+        with patch("plugin_manager.discover_plugins", return_value=[_record(InputPlugin()), _record(_FakeVolumePlugin())]):
+            manager.start()
+
+        self.assertEqual(manager._route_instances, {})
+
 
 class PluginGuiIntegrationTests(unittest.TestCase):
     def test_embedded_panels_are_built_after_plugin_startup(self) -> None:
@@ -577,6 +707,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         app.start_with_windows = False
         app.set_start_with_windows_enabled = Mock()
         app._get_volume_statuses = Mock()
+        app._ui_dpi = 96
         app.overlay_mode = "current"
         app.dark_mode = True
         app.high_contrast = False
@@ -590,6 +721,33 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         manager.create_overlay_renderer.assert_called_once_with(app.dark_mode, app.high_contrast)
         manager.build_routes_panel.assert_called_once_with(app.routes_panel)
         manager.build_action_plugins_panel.assert_called_once_with(app.plugins_panel)
+
+    def test_plugin_manager_startup_failure_keeps_an_actionable_routes_error_visible(self) -> None:
+        from gui import MonitorVolumeApp
+
+        manager = Mock()
+        manager.start.side_effect = RuntimeError("invalid route")
+        label = Mock()
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app.root = Mock()
+        app.routes_panel = Mock()
+        app.plugins_panel = Mock()
+        app._post_to_ui = Mock()
+        app._set_status = Mock()
+        app.start_with_windows = False
+        app.set_start_with_windows_enabled = Mock()
+        app._get_volume_statuses = Mock()
+        app._ui_dpi = 96
+
+        with patch("plugin_manager.PluginManager", return_value=manager), patch("gui.ttk.Label", return_value=label):
+            app._start_plugins()
+
+        self.assertIsNone(app._plugin_manager)
+        manager.stop.assert_called_once_with(2.0)
+        message = app._set_status.call_args.args[0]
+        self.assertIn("Plugin system failed: invalid route", message)
+        self.assertIn("Restart the app after correcting", message)
+        label.grid.assert_called_once()
 
 
 class PassiveHotkeyTests(unittest.TestCase):
@@ -652,6 +810,20 @@ class PassiveHotkeyTests(unittest.TestCase):
             ["one", "one"],
         )
         self.assertEqual(next_hook.call_count, 4)
+
+    def test_route_binding_reports_lifecycle_and_modifier_release_stops_it(self) -> None:
+        events: list[tuple[str, bool]] = []
+        controller = PluginHotkeyController(lambda _plugin_id: None, lambda _error: None, lambda binding, pressed: events.append((binding, pressed)))
+        controller._hook_handle = 99
+        controller._active.set()
+        controller.set_route_binding("route/one/up", HotkeySpec(MOD_CONTROL, ord("K")))
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=0):
+            self._key_event(controller, WM_KEYDOWN, 0x11)
+            self._key_event(controller, WM_KEYDOWN, ord("K"))
+            self._key_event(controller, WM_KEYDOWN, ord("K"))
+            self._key_event(controller, WM_KEYUP, 0x11)
+
+        self.assertEqual(events, [("route/one/up", True), ("route/one/up", False)])
 
     def test_binding_requires_a_running_observer(self) -> None:
         controller = self.make_controller()

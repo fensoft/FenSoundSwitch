@@ -131,7 +131,9 @@ def load_legacy_overlay_mode() -> str | None:
     if not isinstance(value, str):
         return None
     mode = value.strip().lower()
-    return mode if mode in {"current", "all-routed"} else None
+    if mode == "all-routed":
+        return "all"
+    return mode if mode in {"current", "all"} else None
 
 
 def clear_legacy_overlay_mode() -> None:

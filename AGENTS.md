@@ -33,6 +33,7 @@ Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or 
 | --- | --- |
 | `app.py` | Supported process entrypoint, single-instance boundary, and Tk composition root. |
 | `audio_outputs.py` | Fail-closed monitor/render-endpoint matching, endpoint visibility policy, and fixed FenSound elevated rename helper. |
+| `core_audio.py` | Focused Core Audio render-endpoint enumeration and master-volume adapter used only by soundcard route workers. |
 | `autostart.py` | Current-user Run-key state and quoted source/packaged launch commands. |
 | `diagnostics.py` | Nonfatal per-user rotating-log configuration and component logger access. |
 | `main.py` | Unsupported launcher stub; prints migration guidance and returns `1`. |
@@ -76,6 +77,7 @@ Changes to the icon name or location must update `theme.APP_ICON_PATH`, `--windo
 - Start with Windows is represented only by `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\windows-ddc`. Never read, create, change, or delete the live value during automated work; mock `autostart.winreg`. The GUI is the authorized interactive mutation path.
 - Windows persists audio render-endpoint visibility and the selected endpoint's FenSound description outside the app settings. The normal process reads HKLM endpoint/monitor metadata and changes visibility through private Windows audio policy; the administrator-approved helper writes the fixed alias through Core Audio. Never enumerate, rename, hide, show, or otherwise mutate live endpoints during automated work. Mock `audio_outputs.winreg`, `_set_endpoint_visibility`, and `request_elevated_endpoint_rename`.
 - The physical monitor volume is external mutable state. A set can succeed even if the following readback fails, and shutdown does not restore the old value.
+- The Windows soundcard route adapter may enumerate or change only its explicitly selected render endpoint from route/configuration workers. Never invoke it in automated tests without mocks; it must not alter endpoint visibility, names, or defaults.
 - Plugin non-secret JSON lives under `%APPDATA%\windows-ddc\plugin-settings`; external executable code is discovered from adjacent `external-plugins\` and `%APPDATA%\windows-ddc\plugins`. Patch these paths to temporary directories in tests and never import untrusted fixtures from a live user directory.
 - Discord client configuration, client secret, access token, and refresh token live only in current-user Windows Credential Manager target `windows-ddc/plugins/discord-output/oauth-rpc`; valid prototype target `windows-ddc/test-discord/oauth-rpc` is migrated. Never read, write, delete, or reset live credentials in automated work. Mock credential, browser, pipe, and HTTPS functions. Never include secrets/tokens in source, screenshots, fixtures, logs, or documentation.
 

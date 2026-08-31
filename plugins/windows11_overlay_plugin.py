@@ -131,7 +131,7 @@ class VolumeOverlay:
         root: tk.Tk,
         dark_mode: bool = True,
         high_contrast: bool = False,
-        mode: str = "all-routed",
+        mode: str = "all",
     ) -> None:
         self.root = root
         self._hide_after_id: str | None = None
@@ -515,15 +515,17 @@ class OverlayPlugin:
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
-        self._mode = "all-routed"
+        self._mode = "all"
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
         settings = host.load_plugin_settings()
         mode = settings.get("mode")
-        if mode not in ("all-routed", "current"):
+        if mode == "all-routed":
+            mode = "all"
+        if mode not in ("all", "current"):
             legacy_mode = host.load_legacy_overlay_mode()
-            self._mode = legacy_mode or "all-routed"
+            self._mode = legacy_mode or "all"
             if legacy_mode is not None:
                 host.save_plugin_settings({"schema_version": 1, "mode": self._mode})
                 host.clear_legacy_overlay_mode()
@@ -541,8 +543,8 @@ class OverlayPlugin:
         frame.grid(sticky="nsew")
         value = tk.StringVar(value=self._mode)
         ttk.Label(frame, text="Show:").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(frame, textvariable=value, values=("all-routed", "current"), state="readonly", width=18).grid(row=0, column=1, padx=(8, 0))
-        ttk.Label(frame, text="All routed shows every route. Current shows only the route that changed.", wraplength=360, justify="left").grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Combobox(frame, textvariable=value, values=("all", "current"), state="readonly", width=18).grid(row=0, column=1, padx=(8, 0))
+        ttk.Label(frame, text="All shows every route. Current shows only the route that changed.", wraplength=360, justify="left").grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
         def save() -> None:
             self._mode = value.get()
             self._host.save_plugin_settings({"schema_version": 1, "mode": self._mode})

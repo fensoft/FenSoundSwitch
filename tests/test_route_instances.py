@@ -141,6 +141,9 @@ class RouteInstanceTests(unittest.TestCase):
                 providers = manager.volume_providers_for_input("test-input")
                 self.assertEqual([route.name for route, _provider in providers], ["Test Input to Test output", "Test Input to Test output"])
                 self.assertEqual([provider.read_volume() for _, provider in providers], [10, 80])
+                self.assertTrue(
+                    all(route.route_id.startswith("route-") for route, _provider in manager.relevant_volume_providers())
+                )
                 providers[0][1].write_volume(20)
                 self.assertEqual(providers[1][1].read_volume(), 80)
             finally:

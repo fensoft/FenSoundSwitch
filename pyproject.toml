@@ -21,6 +21,7 @@ build = [
 py-modules = [
     "app",
     "audio_outputs",
+    "core_audio",
     "autostart",
     "diagnostics",
     "gui",

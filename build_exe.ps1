@@ -24,6 +24,8 @@ try {
         --include-package=plugins `
         --include-module=plugins.windows11_overlay_plugin `
         --include-module=plugins.macos_overlay_plugin `
+        --include-module=plugins.keyboard_input_plugin `
+        --include-module=plugins.windows_soundcard_volume_plugin `
         --windows-icon-from-ico=windows-ddc.ico `
         --include-data-files=windows-ddc.ico=windows-ddc.ico `
         --output-dir=dist `

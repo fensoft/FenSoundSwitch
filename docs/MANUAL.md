@@ -43,10 +43,10 @@ If a receiver does not respond, confirm that it is powered on, on the same netwo
 
 Choose an overlay in the **Overlay** section of Routes.
 
-- **Windows 11 overlay** offers **Current route** and **All routed** display choices.
+- **Windows 11 overlay** offers **Current route** and **All** display choices.
 - **macOS-style overlay** provides an alternate visual style.
 
-Current route shows the route most recently changed. All routed shows every configured route and its current status.
+Current route shows the route most recently changed. All shows every configured route and its current status.
 
 ## Plugins And Shortcuts
 

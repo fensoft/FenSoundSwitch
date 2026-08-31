@@ -60,9 +60,11 @@ class PluginHotkeyController:
         self,
         on_hotkey: Callable[[str], None],
         on_error: Callable[[Exception], None],
+        on_route_key: Callable[[str, bool], None] | None = None,
     ) -> None:
         self.on_hotkey = on_hotkey
         self.on_error = on_error
+        self.on_route_key = on_route_key or (lambda _binding_id, _pressed: None)
         self._ready = threading.Event()
         self._active = threading.Event()
         self._stopping = threading.Event()
@@ -72,6 +74,9 @@ class PluginHotkeyController:
         self._binding_lock = threading.Lock()
         self._bindings_by_plugin: dict[str, HotkeySpec] = {}
         self._plugins_by_hotkey: dict[HotkeySpec, str] = {}
+        self._route_bindings: dict[str, HotkeySpec] = {}
+        self._routes_by_hotkey: dict[HotkeySpec, str] = {}
+        self._held_route_keys: dict[int, tuple[str, HotkeySpec]] = {}
         self._held_modifier_keys: set[int] = set()
         self._pressed_keys: set[int] = set()
         self._dispatch_queue: queue.Queue[str | None] = queue.Queue()
@@ -120,13 +125,53 @@ class PluginHotkeyController:
             raise HotkeyRegistrationError("Plugin hotkeys are not running.")
         self._apply_binding(plugin_id, hotkey)
 
+    def set_route_binding(self, binding_id: str, hotkey: HotkeySpec | None) -> None:
+        """Register a repeatable route key without changing action semantics."""
+        if not self._active.is_set() or self._stopping.is_set():
+            raise HotkeyRegistrationError("Plugin hotkeys are not running.")
+        with self._binding_lock:
+            old_hotkey = self._route_bindings.get(binding_id)
+            if old_hotkey == hotkey:
+                return
+            if hotkey is not None:
+                other = self._routes_by_hotkey.get(hotkey) or self._plugins_by_hotkey.get(hotkey)
+                if other is not None and other != binding_id:
+                    raise HotkeyConflictError(f"{hotkey.label} is already used by {other}.")
+            if old_hotkey is not None:
+                self._routes_by_hotkey.pop(old_hotkey, None)
+                self._route_bindings.pop(binding_id, None)
+                self._release_route_binding_locked(binding_id)
+            if hotkey is not None:
+                self._route_bindings[binding_id] = hotkey
+                self._routes_by_hotkey[hotkey] = binding_id
+
+    def _release_route_binding_locked(self, binding_id: str) -> None:
+        for virtual_key, (held_binding, _hotkey) in tuple(self._held_route_keys.items()):
+            if held_binding == binding_id:
+                del self._held_route_keys[virtual_key]
+                self.on_route_key(binding_id, False)
+
+    def _release_inactive_route_keys(self) -> None:
+        with self._binding_lock:
+            modifiers = self._current_modifiers()
+            for virtual_key, (binding_id, hotkey) in tuple(self._held_route_keys.items()):
+                if hotkey.modifiers != modifiers:
+                    del self._held_route_keys[virtual_key]
+                    self.on_route_key(binding_id, False)
+
+    def _release_all_route_keys(self) -> None:
+        with self._binding_lock:
+            for virtual_key, (binding_id, _hotkey) in tuple(self._held_route_keys.items()):
+                del self._held_route_keys[virtual_key]
+                self.on_route_key(binding_id, False)
+
     def _apply_binding(self, plugin_id: str, hotkey: HotkeySpec | None) -> None:
         with self._binding_lock:
             old_hotkey = self._bindings_by_plugin.get(plugin_id)
             if old_hotkey == hotkey:
                 return
             if hotkey is not None:
-                other_plugin = self._plugins_by_hotkey.get(hotkey)
+                other_plugin = self._plugins_by_hotkey.get(hotkey) or self._routes_by_hotkey.get(hotkey)
                 if other_plugin is not None and other_plugin != plugin_id:
                     raise HotkeyConflictError(
                         f"{hotkey.label} is already used by plugin {other_plugin}."
@@ -159,13 +204,23 @@ class PluginHotkeyController:
                     hotkey = HotkeySpec(self._current_modifiers(), virtual_key)
                     with self._binding_lock:
                         plugin_id = self._plugins_by_hotkey.get(hotkey)
+                        route_binding = self._routes_by_hotkey.get(hotkey)
+                        if route_binding is not None:
+                            self._held_route_keys[virtual_key] = (route_binding, hotkey)
                     if plugin_id is not None and self._active.is_set():
                         self._dispatch_queue.put(plugin_id)
+                    if route_binding is not None and self._active.is_set():
+                        self.on_route_key(route_binding, True)
             elif w_param in (WM_KEYUP, WM_SYSKEYUP):
                 if modifier_flag is not None:
                     self._held_modifier_keys.discard(virtual_key)
+                    self._release_inactive_route_keys()
                 else:
                     self._pressed_keys.discard(virtual_key)
+                    with self._binding_lock:
+                        held = self._held_route_keys.pop(virtual_key, None)
+                    if held is not None:
+                        self.on_route_key(held[0], False)
         except Exception as exc:
             if not self._stopping.is_set():
                 try:
@@ -208,9 +263,12 @@ class PluginHotkeyController:
                     pass
         finally:
             self._active.clear()
+            self._release_all_route_keys()
             with self._binding_lock:
                 self._bindings_by_plugin.clear()
                 self._plugins_by_hotkey.clear()
+                self._route_bindings.clear()
+                self._routes_by_hotkey.clear()
             self._held_modifier_keys.clear()
             self._pressed_keys.clear()
             if self._hook_handle is not None:

@@ -13,8 +13,8 @@ That audited history contains one parentless commit. The audit clone had no loca
 ### Added
 
 - Added `BUILD.md`, a complete user manual, and a technical documentation index while simplifying the root README into a product overview and brief setup guide.
-- Added selectable bundled Windows 11 and macOS-style overlay renderers. Overlay selection and renderer settings are persisted under plugin settings; the Windows 11 renderer safely migrates the former global `overlay_mode` setting and retains typed current/all-routed configuration.
-- Added persisted, validated route names to route configuration, status reporting, and all-routed overlay rows; schema-v6 routes receive deterministic endpoint-based names on their next save.
+- Added selectable bundled Windows 11 and macOS-style overlay renderers. Overlay selection and renderer settings are persisted under plugin settings; the Windows 11 renderer safely migrates the former global `overlay_mode` setting and retains typed current/all configuration.
+- Added persisted, validated route names to route configuration, status reporting, and all overlay rows; schema-v6 routes receive deterministic endpoint-based names on their next save.
 - Moved the bundled volume overlay into the `plugins` package as the renderer-only `volume-overlay` plugin capability. The plugin is initialized by `PluginManager`, constructed on the host Tk thread after manager startup, and remains absent from action and route configuration.
 - Added a logical Windows Volume Up/Down input plugin with per-input volume-provider routing, persisted safely in the main settings file while the host retains the only native Volume-key hook and serialized write boundary.
 - Added immutable host-published multi-provider volume-status snapshots for plugins and a configurable host-owned overlay that can show the current provider or all routed providers.
@@ -82,3 +82,6 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 [Unreleased]: https://github.com/fensoft/windows-ddc/compare/0.1.0...HEAD
 [0.1.0]: https://github.com/fensoft/windows-ddc/releases/tag/0.1.0
+# Unreleased
+
+- Added route-scoped passive keyboard input and Windows render-soundcard master-volume bundled plugins.

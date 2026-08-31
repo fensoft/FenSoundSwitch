@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
@@ -66,6 +67,42 @@ class DisplayTopologyChanged(RuntimeError):
     pass
 
 
+class RouteInputRepeatScheduler:
+    """Bounded held-key state; polling emits at most one delta per route."""
+
+    INITIAL_DELAY_SECONDS = 0.35
+    REPEAT_INTERVAL_SECONDS = 0.075
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._held: dict[str, tuple[int, float]] = {}
+
+    def key_event(self, route_id: str, delta: int, pressed: bool) -> tuple[tuple[str, int], ...]:
+        if not pressed:
+            self._held.pop(route_id, None)
+            return ()
+        if route_id in self._held:
+            return ()
+        self._held[route_id] = (delta, self._clock() + self.INITIAL_DELAY_SECONDS)
+        return ((route_id, delta),)
+
+    def poll(self) -> tuple[tuple[str, int], ...]:
+        now = self._clock()
+        due: list[tuple[str, int]] = []
+        for route_id, (delta, next_repeat) in tuple(self._held.items()):
+            if now >= next_repeat:
+                self._held[route_id] = (delta, now + self.REPEAT_INTERVAL_SECONDS)
+                due.append((route_id, delta))
+        return tuple(due)
+
+    def cancel(self, route_ids: set[str] | None = None) -> None:
+        if route_ids is None:
+            self._held.clear()
+        else:
+            for route_id in route_ids:
+                self._held.pop(route_id, None)
+
+
 class MonitorVolumeApp:
     WINDOWS_VOLUME_INPUT_ID = "windows-volume-keys"
     TRAY_TOOLTIP = "windows-ddc"
@@ -115,6 +152,11 @@ class MonitorVolumeApp:
         self._ignore_scale_events = False
         self._result_queue: queue.Queue[Callable[[], None]] = queue.Queue()
         self._hotkey_delta_queue: queue.Queue[int] = queue.Queue()
+        self._pending_hotkey_delta = 0
+        self._route_input_queue: queue.Queue[tuple[str, int]] = queue.Queue()
+        self._route_key_queue: queue.Queue[tuple[str, int, bool]] = queue.Queue()
+        self._route_repeat_scheduler = RouteInputRepeatScheduler()
+        self._pending_route_deltas: dict[str, int] = {}
         self._hotkeys_ready = False
         self._hotkeys_enabled = False
         self._ready_route_ids: set[str] = set()
@@ -311,10 +353,11 @@ class MonitorVolumeApp:
     def _start_plugins(self) -> None:
         # This import deliberately stays beyond app.py's single-instance boundary.
         # Duplicate launches must not import or discover external plugin code.
+        manager: Any | None = None
         try:
             from plugin_manager import PluginManager
 
-            self._plugin_manager = PluginManager(
+            manager = PluginManager(
                 self.root,
                 post_to_ui=self._post_to_ui,
                 on_notice=self._set_status,
@@ -323,19 +366,39 @@ class MonitorVolumeApp:
                 get_volume_statuses=self._get_volume_statuses,
                 on_overlay_renderer_changed=self._replace_overlay_renderer,
                 on_volume_routes_changed=self._routes_changed,
+                on_route_input=self._queue_route_input_delta,
+                on_route_key=self._queue_route_input_key,
             )
-            self._plugin_manager.start()
-            self._overlay = self._plugin_manager.create_overlay_renderer(
+            manager.start()
+            self._plugin_manager = manager
+            self._overlay = manager.create_overlay_renderer(
                 self.dark_mode,
                 self.high_contrast,
             )
-            self._plugin_manager.build_routes_panel(self.routes_panel)
-            self._plugin_manager.build_action_plugins_panel(self.plugins_panel)
-            self.root.after_idle(self._resize_for_content)
+            manager.build_routes_panel(self.routes_panel)
+            manager.build_action_plugins_panel(self.plugins_panel)
+            # Panels are added after the initial window-size lock. Measure them
+            # now so a tray-first window never opens at the pre-plugin height.
+            self._resize_for_content(force=True)
         except Exception as exc:
             LOGGER.error("Plugin system startup failed (%s).", exc.__class__.__name__)
             self._plugin_manager = None
-            self._set_status(f"Plugin system failed: {self._format_error(exc)}")
+            if manager is not None:
+                try:
+                    manager.stop(2.0)
+                except Exception:
+                    pass
+            message = (
+                f"Plugin system failed: {self._format_error(exc)}\n\n"
+                "Volume routes are unavailable. Restart the app after correcting the Routes or plugin configuration."
+            )
+            self._set_status(message)
+            ttk.Label(
+                self.routes_panel,
+                text=message,
+                justify="left",
+                wraplength=self._scaled_px(560),
+            ).grid(sticky="ew", padx=self._scaled_px(12), pady=self._scaled_px(12))
 
     def _on_volume_provider_changed(self, provider: Any | None, _plugin_id: str | None) -> None:
         if self._closing or provider is None:
@@ -464,6 +527,7 @@ class MonitorVolumeApp:
 
     def _handle_display_listener_error(self, exc: Exception) -> None:
         LOGGER.error("Display-change listener failed (%s).", exc.__class__.__name__)
+        self._cancel_route_repeats()
         self._hotkeys_ready = False
         self.current_volume = None
         self.target_volume = None
@@ -501,6 +565,7 @@ class MonitorVolumeApp:
 
     def _handle_listener_error(self, exc: Exception) -> None:
         LOGGER.error("Volume-key listener failed (%s).", exc.__class__.__name__)
+        self._cancel_route_repeats()
         self._hotkeys_ready = False
         self._update_hotkey_state()
         self._set_status(f"Volume-key listener failed: {self._format_error(exc)}")
@@ -548,12 +613,33 @@ class MonitorVolumeApp:
         self._ready_route_ids.clear()
         self._hotkeys_ready = False
         self._topology_valid.clear()
+        self._cancel_route_repeats()
         self._update_hotkey_state()
         self.refresh_configured_routes()
 
     def _queue_hotkey_delta(self, delta: int) -> None:
         if not self._closing:
             self._hotkey_delta_queue.put(delta)
+
+    def _queue_route_input_delta(self, route_id: str, delta: int) -> None:
+        if not self._closing and delta in (-1, 1):
+            self._route_input_queue.put((route_id, delta))
+
+    def _queue_route_input_key(self, route_id: str, delta: int, pressed: bool) -> None:
+        if not self._closing and delta in (-1, 1):
+            self._route_key_queue.put((route_id, delta, pressed))
+
+    def _cancel_route_repeats(self, route_ids: set[str] | None = None) -> None:
+        scheduler = getattr(self, "_route_repeat_scheduler", None)
+        if scheduler is not None:
+            scheduler.cancel(route_ids)
+        pending = getattr(self, "_pending_route_deltas", None)
+        if pending is not None:
+            if route_ids is None:
+                pending.clear()
+            else:
+                for route_id in route_ids:
+                    pending.pop(route_id, None)
 
     def _queue_unavailable_hotkey_notice(self) -> None:
         self._post_to_ui(self._show_unavailable_error)
@@ -598,14 +684,16 @@ class MonitorVolumeApp:
                 except Exception as exc:
                     self._report_ui_callback_error(exc)
 
-            if self._hotkeys_enabled and not self._busy:
-                pending_delta = 0
+            pending_delta = getattr(self, "_pending_hotkey_delta", 0)
+            if self._hotkeys_enabled:
                 while True:
                     try:
                         pending_delta += self._hotkey_delta_queue.get_nowait()
                     except queue.Empty:
                         break
-                if pending_delta:
+                self._pending_hotkey_delta = pending_delta
+                if pending_delta and not self._busy:
+                    self._pending_hotkey_delta = 0
                     try:
                         if getattr(self, "_plugin_manager", None) is None:
                             self.adjust_selected_volume(pending_delta)
@@ -614,11 +702,41 @@ class MonitorVolumeApp:
                     except Exception as exc:
                         self._report_ui_callback_error(exc)
             elif not self._hotkeys_enabled:
+                self._pending_hotkey_delta = 0
                 while True:
                     try:
                         self._hotkey_delta_queue.get_nowait()
                     except queue.Empty:
                         break
+            # Passive keyboard route inputs are independent of the native
+            # Windows Volume-key hook and remain available without its route.
+            route_key_queue = getattr(self, "_route_key_queue", None)
+            scheduler = getattr(self, "_route_repeat_scheduler", None)
+            pending_routes = getattr(self, "_pending_route_deltas", None)
+            if route_key_queue is not None and scheduler is not None and pending_routes is not None:
+                while True:
+                    try:
+                        route_id, delta, pressed = route_key_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    for repeat_route_id, repeat_delta in scheduler.key_event(route_id, delta, pressed):
+                        pending_routes[repeat_route_id] = pending_routes.get(repeat_route_id, 0) + repeat_delta
+                for repeat_route_id, repeat_delta in scheduler.poll():
+                    pending_routes[repeat_route_id] = pending_routes.get(repeat_route_id, 0) + repeat_delta
+            route_input_queue = getattr(self, "_route_input_queue", None)
+            if route_input_queue is not None and pending_routes is not None:
+                while True:
+                    try:
+                        route_id, delta = route_input_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    pending_routes[route_id] = pending_routes.get(route_id, 0) + delta
+            if pending_routes is not None and not self._busy:
+                for route_id, delta in tuple(pending_routes.items()):
+                    del pending_routes[route_id]
+                    if delta:
+                        self._route_volume_delta((route_id,), delta)
+                    break
         except Exception as exc:
             self._report_ui_callback_error(exc)
         finally:
@@ -917,8 +1035,8 @@ class MonitorVolumeApp:
         manager = getattr(self, "_plugin_manager", None)
         if manager is None:
             return
-        for provider_id, provider in manager.relevant_volume_providers():
-            existing = self._volume_statuses.get(provider_id)
+        for route, provider in manager.relevant_volume_providers():
+            existing = self._volume_statuses.get(route.route_id)
             if existing is None:
                 self._publish_volume_status(provider, None, "Not yet read")
 
@@ -1046,7 +1164,9 @@ class MonitorVolumeApp:
             self._refresh_requested_automatic = self._refresh_requested_automatic or automatic
             return
         manager = getattr(self, "_plugin_manager", None)
-        routes = manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ()
+        routes = manager.relevant_volume_providers() if manager else ()
+        if not isinstance(routes, tuple):
+            routes = manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ()
         self._ready_route_ids.clear()
         self._hotkeys_ready = False
         self._topology_valid.clear()
@@ -1589,14 +1709,25 @@ class MonitorVolumeApp:
             self._start_volume_write(self.selected_key, target_volume)
 
     def _route_windows_volume_delta(self, delta: int) -> None:
+        manager = self._plugin_manager
+        route_ids = tuple(route.route_id for route, _provider in (manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ()))
+        self._route_volume_delta(route_ids, delta)
+
+    def _route_volume_delta(self, route_ids: tuple[str, ...], delta: int) -> None:
         """Apply one host input to every configured output on the sole worker slot."""
         manager = self._plugin_manager
-        routes = tuple(
-            (route, provider)
-            for route, provider in (manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ())
-            if route.route_id in self._ready_route_ids
-        )
-        if not routes or not self._control_ready() or self._busy:
+        available = manager.relevant_volume_providers() if manager else ()
+        if not isinstance(available, tuple):
+            available = manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ()
+        routes = tuple((route, provider) for route, provider in available if route.route_id in route_ids and route.route_id in self._ready_route_ids)
+        if (
+            not routes
+            or self._closing
+            or not self._display_listener_available()
+            or not self._topology_valid.is_set()
+            or self._busy
+        ):
+            self._cancel_route_repeats(set(route_ids))
             return
         generation = self._current_topology_generation()
         self._volume_write_inflight = True
@@ -1883,6 +2014,7 @@ class MonitorVolumeApp:
     def on_close(self) -> None:
         if self._closing:
             return
+        self._cancel_route_repeats()
         self._closing = True
         self._pending_audio_output_sync = None
         self._topology_valid.clear()

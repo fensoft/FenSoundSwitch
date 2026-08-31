@@ -224,6 +224,7 @@ class PluginHostContext:
     save_plugin_settings: Callable[[dict[str, object]], None] = lambda _settings: None
     load_legacy_overlay_mode: Callable[[], str | None] = lambda: None
     clear_legacy_overlay_mode: Callable[[], None] = lambda: None
+    dispatch_route_input: Callable[[str, int], None] = lambda _route_id, _delta: None
 
 
 @runtime_checkable

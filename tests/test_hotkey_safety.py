@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from ddc import MonitorIdentity, SavedMonitorSelection
-from gui import MonitorVolumeApp
+from gui import MonitorVolumeApp, RouteInputRepeatScheduler
 from windows_platform import (
     GlobalVolumeKeyListener,
     VK_VOLUME_DOWN,
@@ -40,6 +40,14 @@ class CapturedThread:
 
     def start(self) -> None:
         return None
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 class MonitorVolumeAppHotkeyTests(unittest.TestCase):
@@ -379,6 +387,71 @@ class GlobalVolumeKeyListenerTests(unittest.TestCase):
         self.assertEqual(listener._resolve_volume_key_event(VK_VOLUME_UP, WM_KEYUP), (True, None))
         listener.set_step(3)
         self.assertEqual(listener._resolve_volume_key_event(VK_VOLUME_DOWN, WM_KEYDOWN), (True, -3))
+
+
+class RouteInputRepeatSchedulerTests(unittest.TestCase):
+    def test_initial_delay_repeats_and_keyup_stop_with_fake_clock(self) -> None:
+        clock = FakeClock()
+        scheduler = RouteInputRepeatScheduler(clock)
+
+        self.assertEqual(scheduler.key_event("route", 1, True), (("route", 1),))
+        self.assertEqual(scheduler.poll(), ())
+        clock.now = scheduler.INITIAL_DELAY_SECONDS
+        self.assertEqual(scheduler.poll(), (("route", 1),))
+        clock.now += scheduler.REPEAT_INTERVAL_SECONDS
+        self.assertEqual(scheduler.poll(), (("route", 1),))
+        self.assertEqual(scheduler.key_event("route", 1, False), ())
+        clock.now += scheduler.REPEAT_INTERVAL_SECONDS
+        self.assertEqual(scheduler.poll(), ())
+
+    def test_multiple_routes_are_independent_and_each_poll_is_bounded(self) -> None:
+        clock = FakeClock()
+        scheduler = RouteInputRepeatScheduler(clock)
+        scheduler.key_event("down", -1, True)
+        scheduler.key_event("up", 1, True)
+        clock.now = 10.0
+
+        self.assertEqual(set(scheduler.poll()), {("down", -1), ("up", 1)})
+        # A delayed UI poll does not replay an unbounded backlog.
+        self.assertEqual(scheduler.poll(), ())
+
+    def test_route_removal_unavailable_and_shutdown_cancel_held_keys(self) -> None:
+        clock = FakeClock()
+        scheduler = RouteInputRepeatScheduler(clock)
+        scheduler.key_event("one", 1, True)
+        scheduler.key_event("two", -1, True)
+        scheduler.cancel({"one"})
+        clock.now = 1.0
+        self.assertEqual(scheduler.poll(), (("two", -1),))
+        scheduler.cancel()  # Used for unavailable topology, hook failure, and shutdown.
+        clock.now += 1.0
+        self.assertEqual(scheduler.poll(), ())
+
+    def test_gui_busy_state_coalesces_one_pending_delta_per_route(self) -> None:
+        clock = FakeClock()
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._closing = False
+        app._result_queue = queue.Queue()
+        app._hotkey_delta_queue = queue.Queue()
+        app._route_input_queue = queue.Queue()
+        app._route_key_queue = queue.Queue()
+        app._route_repeat_scheduler = RouteInputRepeatScheduler(clock)
+        app._pending_route_deltas = {}
+        app._hotkeys_enabled = False
+        app._busy = True
+        app.root = Mock()
+        app.root.after.return_value = "poll"
+        app._report_ui_callback_error = Mock()
+        app._route_volume_delta = Mock()
+
+        app._queue_route_input_key("route", 1, True)
+        app._poll_queues()
+        clock.now = 1.0
+        app._poll_queues()
+        self.assertEqual(app._pending_route_deltas, {"route": 2})
+        app._busy = False
+        app._poll_queues()
+        app._route_volume_delta.assert_called_once_with(("route",), 2)
 
 
 if __name__ == "__main__":
