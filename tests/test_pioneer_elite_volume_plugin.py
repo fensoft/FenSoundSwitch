@@ -88,6 +88,15 @@ class PioneerEliteVolumePluginTests(unittest.TestCase):
         self.assertTrue(plugin.shutdown(0.0))
         self.assertTrue(fake.closed)
 
+    def test_fast_write_sends_one_command_without_readback(self) -> None:
+        fake = FakeSocket([])
+        plugin = pioneer.PioneerEliteVolumePlugin()
+        plugin._config = pioneer.ReceiverConfig("receiver")
+        with patch("plugins.pioneer_elite_volume_plugin.socket.create_connection", return_value=fake):
+            self.assertIsNone(plugin.write_volume_fast(75))
+        self.assertEqual(fake.sent, [b"139V\r"])
+        self.assertTrue(fake.closed)
+
 
 if __name__ == "__main__":
     unittest.main()

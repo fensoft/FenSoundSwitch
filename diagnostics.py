@@ -7,14 +7,14 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
-LOGGER_NAME = "windows_ddc"
+LOGGER_NAME = "fensoundswitch"
 LOG_MAX_BYTES = 512 * 1024
 LOG_BACKUP_COUNT = 2
 LOG_BASE_PATH = Path(
     os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or Path.home()
 )
-LOG_PATH = LOG_BASE_PATH / "windows-ddc" / "windows-ddc.log"
-_HANDLER_MARKER = "_windows_ddc_managed_handler"
+LOG_PATH = LOG_BASE_PATH / "fensoundswitch" / "fensoundswitch.log"
+_HANDLER_MARKER = "_fensoundswitch_managed_handler"
 _CONFIGURATION_LOCK = threading.Lock()
 _BASE_LOGGER = logging.getLogger(LOGGER_NAME)
 _BASE_LOGGER.addHandler(logging.NullHandler())
@@ -62,6 +62,28 @@ def configure_logging(log_path: Path | None = None) -> logging.Logger:
         setattr(handler, _HANDLER_MARKER, True)
         logger.addHandler(handler)
     return logger
+
+
+def read_log_contents(log_path: Path | None = None) -> str:
+    """Return the active diagnostic log and retained rotations, oldest first."""
+    destination = log_path or LOG_PATH
+    entries: list[str] = []
+    for backup_index in range(LOG_BACKUP_COUNT, -1, -1):
+        path = destination if backup_index == 0 else Path(f"{destination}.{backup_index}")
+        try:
+            contents = path.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            entries.append(f"Could not read {path.name}: {exc}")
+            continue
+        if backup_index:
+            entries.append(f"--- {path.name} ---\n{contents}")
+        else:
+            entries.append(contents)
+    if not entries:
+        return "No diagnostic log entries are available yet."
+    return "\n".join(entries)
 
 
 def close_logging() -> None:

@@ -95,6 +95,15 @@ class OnkyoVolumePluginTests(unittest.TestCase):
                 plugin.read_volume()
         self.assertTrue(fake.closed)
 
+    def test_fast_write_sends_one_framed_command_without_readback(self) -> None:
+        fake = FakeSocket([])
+        plugin = onkyo.OnkyoVolumePlugin()
+        plugin._config = onkyo.ReceiverConfig("receiver")
+        with patch("plugins.onkyo_volume_plugin.socket.create_connection", return_value=fake):
+            self.assertIsNone(plugin.write_volume_fast(75))
+        self.assertEqual(fake.sent, [onkyo.encode_eiscp(b"!1MVL4B\r")])
+        self.assertTrue(fake.closed)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,7 +11,7 @@ import autostart
 
 class AutostartCommandTests(unittest.TestCase):
     def test_packaged_command_quotes_the_executable_without_python(self) -> None:
-        executable = Path(r"C:\Program Files\windows-ddc\windows-ddc.exe")
+        executable = Path(r"C:\Program Files\FenSoundSwitch\FenSoundSwitch.exe")
 
         command = autostart.build_autostart_command(executable)
 
@@ -19,7 +19,7 @@ class AutostartCommandTests(unittest.TestCase):
 
     def test_source_command_quotes_python_and_app_paths(self) -> None:
         python_executable = Path(r"C:\Program Files\Python\pythonw.exe")
-        entrypoint = Path(r"C:\Users\Example User\windows-ddc\app.py")
+        entrypoint = Path(r"C:\Users\Example User\FenSoundSwitch\app.py")
 
         command = autostart.build_autostart_command(entrypoint, python_executable)
 
@@ -33,7 +33,7 @@ class AutostartCommandTests(unittest.TestCase):
             autostart.build_autostart_command(Path("app.py"))
 
     def test_command_longer_than_the_windows_run_limit_is_rejected(self) -> None:
-        long_target = Path("C:/") / ("nested/" * 40) / "windows-ddc.exe"
+        long_target = Path("C:/") / ("nested/" * 40) / "FenSoundSwitch.exe"
 
         with self.assertRaisesRegex(
             autostart.AutostartCommandError,
@@ -62,11 +62,11 @@ class AutostartCommandTests(unittest.TestCase):
             self.assertEqual(command, expected)
 
     def test_current_packaged_command_uses_the_original_argv_path(self) -> None:
-        executable = Path(r"C:\Program Files\windows-ddc\windows-ddc.exe")
+        executable = Path(r"C:\Program Files\FenSoundSwitch\FenSoundSwitch.exe")
         with patch.object(autostart.sys, "argv", [str(executable)]), patch.object(
             autostart.sys,
             "executable",
-            r"C:\Temp\onefile_123\windows-ddc.exe",
+            r"C:\Temp\onefile_123\FenSoundSwitch.exe",
         ):
             command = autostart.current_autostart_command()
 
@@ -108,16 +108,19 @@ class AutostartRegistryTests(unittest.TestCase):
                 with patch.object(autostart, "winreg", registry):
                     self.assertFalse(autostart.is_start_with_windows_enabled())
                 if missing_call == "QueryValueEx":
-                    registry.QueryValueEx.assert_called_once_with(
-                        key,
-                        autostart.RUN_VALUE_NAME,
+                    self.assertEqual(
+                        registry.QueryValueEx.call_args_list,
+                        [
+                            ((key, autostart.RUN_VALUE_NAME),),
+                            ((key, autostart.LEGACY_RUN_VALUE_NAME),),
+                        ],
                     )
 
     def test_enabling_writes_the_current_user_run_value(self) -> None:
         key = self.registry.CreateKeyEx.return_value.__enter__.return_value
         with patch.object(autostart, "winreg", self.registry), patch(
             "autostart.current_autostart_command",
-            return_value='"C:\\Program Files\\windows-ddc.exe"',
+            return_value='"C:\\Program Files\\FenSoundSwitch.exe"',
         ):
             autostart.set_start_with_windows(True)
 
@@ -126,7 +129,7 @@ class AutostartRegistryTests(unittest.TestCase):
             autostart.RUN_VALUE_NAME,
             0,
             self.registry.REG_SZ,
-            '"C:\\Program Files\\windows-ddc.exe"',
+            '"C:\\Program Files\\FenSoundSwitch.exe"',
         )
         self.registry.CreateKeyEx.assert_called_once_with(
             self.registry.HKEY_CURRENT_USER,
@@ -139,9 +142,12 @@ class AutostartRegistryTests(unittest.TestCase):
         with patch.object(autostart, "winreg", self.registry):
             autostart.set_start_with_windows(False)
 
-        self.registry.DeleteValue.assert_called_once_with(
-            self.key,
-            autostart.RUN_VALUE_NAME,
+        self.assertEqual(
+            self.registry.DeleteValue.call_args_list,
+            [
+                ((self.key, autostart.RUN_VALUE_NAME),),
+                ((self.key, autostart.LEGACY_RUN_VALUE_NAME),),
+            ],
         )
 
         value_missing_registry = MagicMock()

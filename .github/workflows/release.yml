@@ -1,4 +1,4 @@
-name: Release
+name: FenSoundSwitch Release
 
 on:
   push:
@@ -41,7 +41,7 @@ jobs:
       - name: Verify release asset
         shell: powershell
         run: |
-          $asset = Resolve-Path .\dist\windows-ddc.exe -ErrorAction Stop
+          $asset = Resolve-Path .\dist\FenSoundSwitch.exe -ErrorAction Stop
           if ((Get-Item $asset).Length -le 0) {
               throw "Release executable is empty."
           }
@@ -75,7 +75,7 @@ jobs:
       - name: Verify release asset
         shell: powershell
         run: |
-          $asset = Resolve-Path .\dist\windows-ddc.exe -ErrorAction Stop
+          $asset = Resolve-Path .\dist\FenSoundSwitch.exe -ErrorAction Stop
           if ((Get-Item $asset).Length -le 0) {
               throw "Release executable is empty."
           }
@@ -83,5 +83,5 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/windows-ddc.exe
+          files: dist/FenSoundSwitch.exe
           generate_release_notes: true

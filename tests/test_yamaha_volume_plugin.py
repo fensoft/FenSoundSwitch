@@ -88,6 +88,15 @@ class YamahaVolumePluginTests(unittest.TestCase):
                 plugin.read_volume()
         self.assertTrue(oversized.closed)
 
+    def test_fast_write_sends_without_readback(self) -> None:
+        fake = FakeSocket([])
+        plugin = yamaha.YamahaVolumePlugin()
+        plugin._config = yamaha.ReceiverConfig("receiver")
+        with patch("plugins.yamaha_volume_plugin.socket.create_connection", return_value=fake):
+            self.assertIsNone(plugin.write_volume_fast(75))
+        self.assertEqual(fake.sent, [b"@MAIN:VOL=-8.0\r\n"])
+        self.assertTrue(fake.closed)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,13 +3,14 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "windows-ddc"
+name = "fensoundswitch"
 version = "0.1.0"
-description = "Windows DDC monitor volume controller with tray and overlay UI."
+description = "FenSoundSwitch Windows monitor and receiver volume controller with tray and overlay UI."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "monitorcontrol==4.2.0",
+    "paho-mqtt==2.1.0",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +23,8 @@ py-modules = [
     "app",
     "audio_outputs",
     "core_audio",
+    "config_archive",
+    "default",
     "autostart",
     "diagnostics",
     "gui",

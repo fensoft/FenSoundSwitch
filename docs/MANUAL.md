@@ -1,8 +1,8 @@
-# windows-ddc Manual
+# FenSoundSwitch Manual
 
 ## Install
 
-Download `windows-ddc.exe` from [GitHub Releases](https://github.com/fensoft/windows-ddc/releases), put it in a folder you control, and run it. The app starts in the notification area. Double-click its icon to open the main window.
+Download `FenSoundSwitch.exe` from [GitHub Releases](https://github.com/fensoft/windows-ddc/releases), put it in a folder you control, and run it. The app starts in the notification area. Double-click its icon to open the main window.
 
 ## Create Your First Route
 
@@ -19,6 +19,14 @@ A route connects an input to one or more outputs. The normal input is **Windows 
 9. Press Volume Up or Volume Down at a safe listening level.
 
 Add more routes to control several outputs from the same keys. A key press changes each output in sequence.
+
+### Keyboard Input
+
+Choose **Keyboard volume keys** as a route input to capture separate volume-down and volume-up keys. **Forward keys to other applications** is enabled by default, including existing routes, so the configured keys remain available to the foreground application. Disable it only when that route should consume its configured key down/repeats and matching key up; modifier and unrelated keys are never consumed.
+
+### MQTT Input
+
+Choose **MQTT / Home Assistant** as a route input, then configure its broker host, port, optional credentials, discovery prefix, topic prefix, and slider maximum. The route connects to the broker in the background and publishes retained Home Assistant MQTT discovery for a 0-to-maximum volume slider. It accepts integer slider values from `0` to the configured maximum on `<topic prefix>/<route id>/command`. MQTT credentials are stored in the route settings, so use a restricted broker account.
 
 ## Outputs
 
@@ -50,7 +58,9 @@ Current route shows the route most recently changed. All shows every configured 
 
 ## Plugins And Shortcuts
 
-The **Action plugins** section contains optional actions such as Discord output switching. Select **Configure** to set up an action plugin. Select **Configure shortcuts** to assign a shortcut. Shortcuts observe the key press while leaving it available to the foreground application.
+The **Action plugins** section contains optional actions such as Discord output switching. Select **Configure** to set up an action plugin. Select **Configure shortcuts** to assign a shortcut and choose whether **Forward keys to other applications** is enabled. Existing shortcuts default to forwarding; disabled forwarding consumes only that shortcut's held key pair. Use **Disable** to stop an action plugin and unregister its shortcuts; disabled action plugins do not initialize at the next start. Enabling a plugin that was stopped in the current session takes effect after restarting the app, because plugins are not required to support reinitialization.
+
+**Audio output keep-alive** renders silence to the selected current Windows default playback output, voice output, or both. It is disabled until configured. Choose continuous operation, or keep the outputs active only while the pointer has moved within the selected number of seconds. The plugin does not change volume or default-device selection.
 
 ## Tray
 

@@ -129,6 +129,7 @@ class DenonMarantzVolumePlugin:
     name = "Denon/Marantz AVR volume"
     description = "Controls a configured generic Denon/Marantz AVR Ethernet main zone using its documented MV protocol."
     provider_name = "Denon/Marantz AVR main-zone volume"
+    supports_fast_volume_write = True
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
@@ -234,6 +235,11 @@ class DenonMarantzVolumePlugin:
         with self._lock:
             return GENERAL_MAIN_ZONE_PROFILE.to_percent(self._request_volume_locked(command))
 
+    def write_volume_fast(self, target_volume: int) -> None:
+        command = _encode_main_zone_volume(GENERAL_MAIN_ZONE_PROFILE.from_percent(target_volume)) + b"\r"
+        with self._lock:
+            self._send_unconfirmed_locked(command)
+
     def shutdown(self, timeout: float) -> bool:
         with self._lock:
             self._close_transport_locked()
@@ -260,6 +266,22 @@ class DenonMarantzVolumePlugin:
             self._close_transport_locked()
             if isinstance(exc, DenonMarantzError):
                 raise
+            raise DenonMarantzError(f"Could not communicate with the configured AVR: {exc}") from exc
+
+    def _send_unconfirmed_locked(self, command: bytes) -> None:
+        # Use a short-lived connection so unsolicited set echoes cannot be read as
+        # a later query response on the persistent confirmed-read connection.
+        config = self._config
+        if config is None:
+            raise DenonMarantzError("Configure a Denon/Marantz AVR in Routes.")
+        try:
+            connection = socket.create_connection((config.host, config.port), timeout=CONNECT_TIMEOUT_SECONDS)
+            try:
+                connection.settimeout(IO_TIMEOUT_SECONDS)
+                connection.sendall(command)
+            finally:
+                connection.close()
+        except OSError as exc:
             raise DenonMarantzError(f"Could not communicate with the configured AVR: {exc}") from exc
 
     def _connection_locked(self) -> socket.socket:

@@ -11,11 +11,11 @@ try {
         throw "app.py was not found in $repoRoot"
     }
 
-    if (-not (Test-Path "windows-ddc.ico")) {
-        throw "windows-ddc.ico was not found in $repoRoot"
+    if (-not (Test-Path "FenSoundSwitch.ico")) {
+        throw "FenSoundSwitch.ico was not found in $repoRoot"
     }
 
-    Write-Host "Building dist\\windows-ddc.exe with Nuitka..."
+    Write-Host "Building dist\\FenSoundSwitch.exe with Nuitka..."
 
     & $pythonExe -m nuitka `
         --onefile `
@@ -26,10 +26,10 @@ try {
         --include-module=plugins.macos_overlay_plugin `
         --include-module=plugins.keyboard_input_plugin `
         --include-module=plugins.windows_soundcard_volume_plugin `
-        --windows-icon-from-ico=windows-ddc.ico `
-        --include-data-files=windows-ddc.ico=windows-ddc.ico `
+        --windows-icon-from-ico=FenSoundSwitch.ico `
+        --include-data-files=FenSoundSwitch.ico=FenSoundSwitch.ico `
         --output-dir=dist `
-        --output-filename=windows-ddc.exe `
+        --output-filename=FenSoundSwitch.exe `
         --remove-output `
         --assume-yes-for-downloads `
         app.py
@@ -38,7 +38,7 @@ try {
         throw "Nuitka build failed with exit code $LASTEXITCODE"
     }
 
-    Write-Host "Build complete: dist\\windows-ddc.exe"
+    Write-Host "Build complete: dist\\FenSoundSwitch.exe"
 }
 finally {
     Pop-Location

@@ -107,12 +107,16 @@ class SonyVolumePlugin:
         "Protocol compatibility is not verified for any specific receiver model."
     )
     provider_name = "Sony network AVR main-zone volume"
+    # A held repeat reuses the range confirmed by its initial normal write and
+    # performs only the bounded JSON-RPC set request, never an extra readback.
+    supports_fast_volume_write = True
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
         self._config: ReceiverConfig | None = None
         self._lock = threading.Lock()
         self._next_request_id = 1
+        self._volume_range: VolumeRange | None = None
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
@@ -215,6 +219,18 @@ class SonyVolumePlugin:
             value, confirmed_range = self._read_volume_locked()
             return confirmed_range.to_percent(value)
 
+    def write_volume_fast(self, target_volume: int) -> None:
+        with self._lock:
+            volume_range = self._volume_range
+            if volume_range is None:
+                raise SonyError("The receiver volume range has not been confirmed.")
+            result = self._request_locked(
+                "setAudioVolume",
+                [{"output": MAIN_ZONE_OUTPUT, "volume": _format_volume(volume_range.from_percent(target_volume))}],
+            )
+            if not isinstance(result, list):
+                raise SonyError("The receiver returned an invalid set-volume response.")
+
     def shutdown(self, timeout: float) -> bool:
         return True
 
@@ -225,10 +241,12 @@ class SonyVolumePlugin:
         for item in result:
             if not isinstance(item, dict) or item.get("output") != MAIN_ZONE_OUTPUT:
                 continue
-            return _decimal(item.get("volume"), "volume"), VolumeRange(
+            volume_range = VolumeRange(
                 _decimal(item.get("minVolume"), "minimum volume"),
                 _decimal(item.get("maxVolume"), "maximum volume"),
             )
+            self._volume_range = volume_range
+            return _decimal(item.get("volume"), "volume"), volume_range
         raise SonyError("The receiver did not return main-zone volume information.")
 
     def _request_locked(self, method: str, params: list[object]) -> object:

@@ -19,8 +19,8 @@ from windows_platform import (
 
 
 PREFERRED_THEMES = ("vista", "xpnative", "winnative")
-APP_ICON_PATH = Path(__file__).resolve().with_name("windows-ddc.ico")
-DARK_THEME_NAME = "windows_ddc_dark"
+APP_ICON_PATH = Path(__file__).resolve().with_name("FenSoundSwitch.ico")
+DARK_THEME_NAME = "fensoundswitch_dark"
 WINDOWS_THEME_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 WINDOWS_APPS_USE_LIGHT_THEME = "AppsUseLightTheme"
 DARK_BG = "#202020"

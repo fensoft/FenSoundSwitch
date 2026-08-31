@@ -138,6 +138,49 @@ class HotkeySpec:
 
 
 @dataclass(frozen=True)
+class RouteHotkeyBinding:
+    """A route input binding and its explicit foreground-input policy."""
+
+    hotkey: HotkeySpec
+    consume: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.hotkey, HotkeySpec):
+            raise ValueError("Route keyboard binding must use a HotkeySpec.")
+        if not isinstance(self.consume, bool):
+            raise ValueError("Route keyboard consume setting must be true or false.")
+
+
+@dataclass(frozen=True)
+class ActionHotkeyBinding:
+    """A host-owned action shortcut and its foreground-input policy."""
+
+    hotkey: HotkeySpec | None
+    forward_keys: bool = True
+
+    def __post_init__(self) -> None:
+        if self.hotkey is not None and not isinstance(self.hotkey, HotkeySpec):
+            raise ValueError("Action shortcut must use a HotkeySpec or be unset.")
+        if not isinstance(self.forward_keys, bool):
+            raise ValueError("Action shortcut forward setting must be true or false.")
+
+    @property
+    def consume(self) -> bool:
+        return not self.forward_keys
+
+    def to_json(self) -> dict[str, object]:
+        return {"hotkey": self.hotkey.to_json() if self.hotkey is not None else None, "forward_keys": self.forward_keys}
+
+    @classmethod
+    def from_json(cls, value: object) -> "ActionHotkeyBinding":
+        if isinstance(value, dict) and ("hotkey" in value or "forward_keys" in value):
+            forward_keys = value.get("forward_keys", True)
+            return cls(HotkeySpec.from_json(value.get("hotkey")), forward_keys)  # type: ignore[arg-type]
+        # Schema-v1 action bindings stored the HotkeySpec directly and were passive.
+        return cls(HotkeySpec.from_json(value), True)
+
+
+@dataclass(frozen=True)
 class ShortcutAction:
     """A named shortcut action whose binding is owned by the host."""
 
@@ -225,6 +268,8 @@ class PluginHostContext:
     load_legacy_overlay_mode: Callable[[], str | None] = lambda: None
     clear_legacy_overlay_mode: Callable[[], None] = lambda: None
     dispatch_route_input: Callable[[str, int], None] = lambda _route_id, _delta: None
+    dispatch_route_volume: Callable[[str, int], None] = lambda _route_id, _volume: None
+    show_overlay_text: Callable[[str], None] = lambda _text: None
 
 
 @runtime_checkable
@@ -259,6 +304,7 @@ class VolumeProvider(Protocol):
     """
 
     provider_name: str
+    supports_fast_volume_write: bool
 
     def is_volume_provider_available(self) -> tuple[bool, str | None]:
         ...
@@ -267,6 +313,11 @@ class VolumeProvider(Protocol):
         ...
 
     def write_volume(self, target_volume: int) -> int:
+        ...
+
+    # Optional route-held-repeat capability.  It must issue one bounded absolute
+    # command without treating an acknowledgement as a confirmed volume.
+    def write_volume_fast(self, target_volume: int) -> None:
         ...
 
     def activate_volume_provider(self) -> None:
@@ -287,6 +338,17 @@ class RouteInputDefinition(Protocol):
     input_name: str
 
     def create_input(self, parameters: Mapping[str, Any]) -> object:
+        ...
+
+
+@runtime_checkable
+class RouteInputInstance(Protocol):
+    """Optional active route input, started and stopped by the host."""
+
+    def start(self) -> None:
+        ...
+
+    def shutdown(self, timeout: float) -> bool:
         ...
 
 

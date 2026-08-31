@@ -90,8 +90,8 @@ REG_BINARY = 3
 ERROR_ALREADY_EXISTS = 183
 NATIVE_START_TIMEOUT_SECONDS = 2.0
 NATIVE_STOP_TIMEOUT_SECONDS = 2.0
-SINGLE_INSTANCE_MUTEX_NAME = r"Local\windows-ddc-single-instance"
-SINGLE_INSTANCE_RESTORE_MESSAGE_NAME = "windows-ddc-restore-existing-instance"
+SINGLE_INSTANCE_MUTEX_NAME = r"Local\fensoundswitch-single-instance"
+SINGLE_INSTANCE_RESTORE_MESSAGE_NAME = "fensoundswitch-restore-existing-instance"
 
 BYTE = ctypes.c_ubyte
 UINT_PTR = ctypes.c_size_t
@@ -505,7 +505,7 @@ class SingleInstanceGuard:
         if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
             kernel32.CloseHandle(handle)
             raise InstanceAlreadyRunningError(
-                "windows-ddc is already running in this Windows session."
+                "FenSoundSwitch is already running in this Windows session."
             )
         self._handle: wintypes.HANDLE | None = handle
 
@@ -528,7 +528,7 @@ def request_existing_instance_restore() -> None:
         raise PlatformError("Failed to register the existing-instance restore message.")
     if not user32.PostMessageW(HWND_BROADCAST, message, 0, 0):
         error = win_error("Failed to broadcast the existing-instance restore message")
-        raise PlatformError(f"Failed to restore the existing windows-ddc instance: {error}") from error
+        raise PlatformError(f"Failed to restore the existing FenSoundSwitch instance: {error}") from error
 
 
 def _normalize_edid_serial(value: str) -> str | None:

@@ -39,7 +39,7 @@ class DiscordPureFunctionTests(unittest.TestCase):
 
 
 class DiscordCredentialTests(unittest.TestCase):
-    def test_valid_prototype_credential_is_migrated_to_the_plugin_target(self) -> None:
+    def test_valid_legacy_credential_is_copied_to_the_plugin_target_without_deletion(self) -> None:
         saved = {
             "version": 1,
             "client_id": "123456789012345",
@@ -56,7 +56,7 @@ class DiscordCredentialTests(unittest.TestCase):
 
         self.assertEqual(result, saved)
         write.assert_called_once_with(discord._CREDENTIAL_TARGET, saved)
-        delete.assert_called_once_with(discord._PROTOTYPE_CREDENTIAL_TARGET)
+        delete.assert_not_called()
 
     def test_token_response_rotates_refresh_token_and_calculates_expiry(self) -> None:
         configuration = discord._saved_client_configuration(

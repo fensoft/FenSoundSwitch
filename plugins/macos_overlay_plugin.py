@@ -54,6 +54,10 @@ class MacOSVolumeOverlay(VolumeOverlay):
         super().show_error(message, preferred_display_device_name)
         self.title_var.set("VOLUME")
 
+    def show_text(self, text: str, preferred_display_device_name: str | None = None) -> None:
+        super().show_text(text, preferred_display_device_name)
+        self.title_var.set("FENSOUNDSWITCH")
+
     def show_statuses(self, statuses: tuple[VolumeStatus, ...], current_provider_id: str | None, preferred_display_device_name: str | None = None) -> None:
         super().show_statuses(statuses, current_provider_id, preferred_display_device_name)
         if statuses:

@@ -1,4 +1,4 @@
-# Build windows-ddc
+# Build FenSoundSwitch
 
 ## Requirements
 
@@ -15,7 +15,7 @@ python -m pip install -e .[build]
 .\build_exe.ps1
 ```
 
-The build produces `dist\windows-ddc.exe`.
+The build produces `dist\FenSoundSwitch.exe`.
 
 The build can download Nuitka support or toolchain components, overwrites an existing output with the same name, and removes intermediate output. Do not run it as a routine test.
 
@@ -25,7 +25,7 @@ Run the hardware-free checks first:
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m compileall -q app.py audio_outputs.py autostart.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py windows_platform.py plugins
+python -m compileall -q app.py audio_outputs.py autostart.py core_audio.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py windows_platform.py plugins
 python -m pip check
 git diff --check
 git diff --cached --check

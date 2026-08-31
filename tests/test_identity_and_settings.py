@@ -206,6 +206,22 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(payload["schema_version"], 8)
         self.assertEqual(payload["change_speed"], "slow")
 
+    def test_absent_current_settings_are_copied_from_legacy_without_mutation(self) -> None:
+        current_directory = Path(self.temp_dir.name) / "fensoundswitch"
+        legacy_path = Path(self.temp_dir.name) / "windows-ddc" / "settings.json"
+        legacy_path.parent.mkdir()
+        legacy_payload = {"schema_version": 8, "change_speed": "fast"}
+        legacy_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+        with patch.object(settings, "USER_DATA_DIRECTORY", current_directory), patch.object(
+            settings, "SETTINGS_PATH", current_directory / "settings.json"
+        ), patch.object(settings, "LEGACY_SETTINGS_PATH", legacy_path):
+            self.assertEqual(settings.load_change_speed(), "fast")
+        self.assertEqual(
+            json.loads((current_directory / "settings.json").read_text(encoding="utf-8")),
+            legacy_payload,
+        )
+        self.assertEqual(json.loads(legacy_path.read_text(encoding="utf-8")), legacy_payload)
+
     def test_change_speed_round_trip_preserves_monitor_selection(self) -> None:
         selection = SavedMonitorSelection(
             description="Monitor",

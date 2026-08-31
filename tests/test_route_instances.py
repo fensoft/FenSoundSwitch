@@ -31,6 +31,23 @@ class _Input:
     def shutdown(self, timeout): return True
 
 
+class _ActiveInput(_Input):
+    plugin_id = "active-input-plugin"
+    input_id = "active-input"
+
+    def __init__(self):
+        self.created: list[tuple[str, dict]] = []
+        self.stopped: list[float] = []
+
+    def create_route_input(self, route_id, parameters):
+        self.created.append((route_id, dict(parameters)))
+        plugin = self
+        class Instance:
+            def start(self): pass
+            def shutdown(self, timeout): plugin.stopped.append(timeout); return True
+        return Instance()
+
+
 class _OutputInstance:
     provider_name = "Test output"
     def __init__(self, parameters): self.parameters = dict(parameters)
@@ -146,5 +163,22 @@ class RouteInstanceTests(unittest.TestCase):
                 )
                 providers[0][1].write_volume(20)
                 self.assertEqual(providers[1][1].read_volume(), 80)
+            finally:
+                settings.SETTINGS_PATH = old_settings
+
+    def test_active_route_input_receives_route_id_and_stops_on_rebuild(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_settings = settings.SETTINGS_PATH
+            settings.SETTINGS_PATH = Path(directory) / "settings.json"
+            try:
+                manager = PluginManager(Mock(), lambda callback: callback(), lambda message: None, hotkey_factory=Mock)
+                inputs, output = _ActiveInput(), _Output()
+                with patch("plugin_manager.discover_plugins", return_value=[_record(inputs), _record(output, True)]), patch("plugin_manager.load_input_routes", return_value=()):
+                    manager.start()
+                self.assertTrue(manager.add_route("active-input", "test-output", input_parameters={"topic": "office"}))
+                self.assertEqual(len(inputs.created), 1)
+                self.assertEqual(inputs.created[0][1], {"topic": "office"})
+                self.assertTrue(manager.remove_route(manager.input_routes[0].route_id))
+                self.assertEqual(len(inputs.stopped), 1)
             finally:
                 settings.SETTINGS_PATH = old_settings

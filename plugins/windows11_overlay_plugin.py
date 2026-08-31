@@ -312,6 +312,23 @@ class VolumeOverlay:
             self.error_label.pack(anchor="w")
         self._show_window(ERROR_AUTO_HIDE_MS, preferred_display_device_name)
 
+    def show_text(
+        self,
+        text: str,
+        preferred_display_device_name: str | None = None,
+    ) -> None:
+        self._hide_status_rows()
+        self._hide_route_name()
+        self.title_var.set("FenSoundSwitch")
+        self.value_var.set(text.strip() or "Done")
+        self.value_label.configure(fg=self._palette.text)
+        if not self.value_label.winfo_manager():
+            self.value_label.pack(anchor="w", pady=(1, 8))
+        self.error_var.set("")
+        self.error_label.pack_forget()
+        self.progress.pack_forget()
+        self._show_window(AUTO_HIDE_MS, preferred_display_device_name)
+
     def show_statuses(
         self,
         statuses: tuple[VolumeStatus, ...],

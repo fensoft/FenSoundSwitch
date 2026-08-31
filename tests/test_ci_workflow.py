@@ -64,7 +64,7 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("python -m pip install -e .[build]", workflow)
         self.assertIn('python-version: "3.10"', workflow)
         self.assertIn("run: .\\build_exe.ps1", workflow)
-        self.assertIn("dist\\windows-ddc.exe", workflow)
+        self.assertIn("dist\\FenSoundSwitch.exe", workflow)
         self.assertIn("if: github.ref == 'refs/heads/master'", workflow)
         self.assertIn("if: startsWith(github.ref, 'refs/tags/')", workflow)
         self.assertIn("permissions:\n      contents: read", workflow)

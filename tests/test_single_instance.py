@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import app
@@ -108,7 +109,7 @@ class CompositionRootTests(unittest.TestCase):
         ) as close_logging_mock, patch("app.SingleInstanceGuard", return_value=guard), patch(
             "app.tk.Tk",
             return_value=root,
-        ) as tk_mock, patch("app.MonitorVolumeApp") as app_mock:
+        ) as tk_mock, patch("app.MonitorVolumeApp") as app_mock, patch("app.ensure_default_configuration"):
             result = app.main()
 
         self.assertEqual(result, 0)
@@ -118,6 +119,23 @@ class CompositionRootTests(unittest.TestCase):
         guard.close.assert_called_once_with()
         configure_logging_mock.assert_called_once_with()
         close_logging_mock.assert_called_once_with()
+
+    def test_import_restart_reexecutes_after_normal_shutdown(self) -> None:
+        guard = Mock()
+        root = Mock()
+        application = Mock(restart_requested=True)
+        with patch("app.configure_logging"), patch("app.close_logging"), patch(
+            "app.SingleInstanceGuard", return_value=guard
+        ), patch("app.tk.Tk", return_value=root), patch(
+            "app.MonitorVolumeApp", return_value=application
+        ), patch("app.os.execv") as execv, patch("app.ensure_default_configuration"):
+            app.main()
+
+        guard.close.assert_called_once_with()
+        execv.assert_called_once_with(
+            app.sys.executable,
+            [app.sys.executable, str(Path(app.__file__).resolve())],
+        )
 
     def test_duplicate_exits_before_tk_and_requests_existing_window(self) -> None:
         with patch("app.get_logger") as get_logger_mock, patch(
@@ -150,7 +168,7 @@ class CompositionRootTests(unittest.TestCase):
         ) as close_logging_mock, patch("app.SingleInstanceGuard", return_value=guard), patch(
             "app.tk.Tk",
             return_value=root,
-        ), patch("app.MonitorVolumeApp", side_effect=RuntimeError("startup failed")):
+        ), patch("app.MonitorVolumeApp", side_effect=RuntimeError("startup failed")), patch("app.ensure_default_configuration"):
             with self.assertRaisesRegex(RuntimeError, "startup failed"):
                 app.main()
 

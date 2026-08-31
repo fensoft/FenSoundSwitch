@@ -28,7 +28,7 @@ class TrayIconControllerTests(unittest.TestCase):
             side_effect=[0xC123, 0xC124],
         ):
             return TrayIconController(
-                tooltip="windows-ddc",
+                tooltip="FenSoundSwitch",
                 on_restore=on_restore or (lambda: None),
                 on_exit=lambda: None,
                 on_error=on_error or (lambda _error: None),

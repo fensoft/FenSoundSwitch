@@ -5,8 +5,9 @@ import sys
 import threading
 import time
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
-from tkinter import ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable, TypeAlias
 
 from audio_outputs import (
@@ -32,7 +33,17 @@ from ddc import (
     read_monitor_volume,
     set_monitor_volume,
 )
-from diagnostics import get_logger
+from diagnostics import get_logger, read_log_contents
+from config_archive import (
+    ARCHIVE_EXTENSION,
+    DEFAULT_ARCHIVE_NAME,
+    ConfigurationArchiveError,
+    add_to_import_history,
+    configuration_directory,
+    export_configuration,
+    import_configuration,
+    recent_configurations,
+)
 from plugin_api import OverlayRenderer, VolumeStatus
 from settings import load_selected_monitor_key, save_selected_monitor_key
 from theme import (
@@ -95,6 +106,9 @@ class RouteInputRepeatScheduler:
                 due.append((route_id, delta))
         return tuple(due)
 
+    def is_held(self, route_id: str) -> bool:
+        return route_id in self._held
+
     def cancel(self, route_ids: set[str] | None = None) -> None:
         if route_ids is None:
             self._held.clear()
@@ -105,18 +119,19 @@ class RouteInputRepeatScheduler:
 
 class MonitorVolumeApp:
     WINDOWS_VOLUME_INPUT_ID = "windows-volume-keys"
-    TRAY_TOOLTIP = "windows-ddc"
+    TRAY_TOOLTIP = "FenSoundSwitch"
     DISPLAY_CHANGE_DEBOUNCE_MS = 500
     DDC_OPERATION_TIMEOUT_MS = 10_000
     REFRESH_RETRY_DELAYS_MS = (1000, 2000, 4000)
     THEME_CHANGE_DEBOUNCE_MS = 100
+    LOG_VIEW_REFRESH_MS = 1000
     BASE_WINDOW_MIN_WIDTH = 620
     DECREASE_VOLUME_LABEL = "Decrease volume"
     INCREASE_VOLUME_LABEL = "Increase volume"
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Monitor Volume")
+        self.root.title("FenSoundSwitch")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.bind("<Unmap>", self.on_window_unmap)
@@ -149,14 +164,18 @@ class MonitorVolumeApp:
         self.app_icon_path: Path | None = None
         self._busy = False
         self._closing = False
+        self.restart_requested = False
         self._ignore_scale_events = False
         self._result_queue: queue.Queue[Callable[[], None]] = queue.Queue()
         self._hotkey_delta_queue: queue.Queue[int] = queue.Queue()
         self._pending_hotkey_delta = 0
         self._route_input_queue: queue.Queue[tuple[str, int]] = queue.Queue()
+        self._route_volume_queue: queue.Queue[tuple[str, int]] = queue.Queue()
         self._route_key_queue: queue.Queue[tuple[str, int, bool]] = queue.Queue()
         self._route_repeat_scheduler = RouteInputRepeatScheduler()
         self._pending_route_deltas: dict[str, int] = {}
+        self._route_optimistic_targets: dict[str, int] = {}
+        self._route_reconciliation_pending: set[str] = set()
         self._hotkeys_ready = False
         self._hotkeys_enabled = False
         self._ready_route_ids: set[str] = set()
@@ -167,6 +186,9 @@ class MonitorVolumeApp:
         self._volume_write_inflight = False
         self._pending_target_volume: int | None = None
         self._tray_icon: TrayIconController | None = None
+        self._log_window: tk.Toplevel | None = None
+        self._log_text: tk.Text | None = None
+        self._log_refresh_after_id: str | None = None
         self._in_tray = False
         self._poll_after_id: str | None = None
         self._refresh_after_id: str | None = None
@@ -244,6 +266,28 @@ class MonitorVolumeApp:
         self.routes_panel.grid(row=1, column=0, sticky="nsew", pady=(self._scaled_px(10), 0))
         self.plugins_panel = ttk.Frame(self.content_frame)
         self.plugins_panel.grid(row=2, column=0, sticky="ew", pady=(self._scaled_px(12), 0))
+        self.log_button = ttk.Button(
+            self.content_frame,
+            text="Log",
+            command=self.show_diagnostic_log,
+        )
+        self.configuration_actions = ttk.Frame(self.content_frame)
+        self.configuration_actions.grid(row=3, column=0, sticky="e", pady=(self._scaled_px(12), 0))
+        ttk.Button(self.configuration_actions, text="Export", command=self.export_configuration).grid(row=0, column=0)
+        ttk.Button(self.configuration_actions, text="Import", command=self.import_configuration).grid(
+            row=0, column=1, padx=(self._scaled_px(8), 0)
+        )
+        self.import_history_button = ttk.Button(
+            self.configuration_actions,
+            text="▼",
+            command=self.show_import_history,
+            takefocus=False,
+        )
+        self.import_history_button.grid(row=0, column=2)
+        ttk.Button(self.configuration_actions, text="Default", command=self.import_default_configuration).grid(
+            row=0, column=3, padx=(self._scaled_px(8), 0)
+        )
+        self.log_button.grid(row=0, column=4, padx=(self._scaled_px(8), 0))
 
         self.status_bar = tk.Label(
             self.root,
@@ -262,7 +306,175 @@ class MonitorVolumeApp:
         self.content_frame.configure(padding=self._scaled_px(12))
         self.routes_panel.grid_configure(pady=(self._scaled_px(10), 0))
         self.plugins_panel.grid_configure(pady=(self._scaled_px(12), 0))
+        self.configuration_actions.grid_configure(pady=(self._scaled_px(12), 0))
         self.status_bar.configure(padx=self._scaled_px(6))
+
+    def show_diagnostic_log(self) -> None:
+        """Open the bounded diagnostic history without mutating its files."""
+        LOGGER.info("Diagnostic log viewer opened.")
+        if self._log_window is None or not self._log_window.winfo_exists():
+            self._create_diagnostic_log_window()
+        else:
+            self._log_window.deiconify()
+            self._log_window.lift()
+        self._refresh_diagnostic_log()
+        self._schedule_diagnostic_log_refresh()
+        if self._log_window is not None:
+            self._log_window.focus_set()
+
+    def export_configuration(self) -> None:
+        directory = configuration_directory()
+        filename = f"FenSoundSwitch-{datetime.now():%Y%m%d-%H%M%S-%f}{ARCHIVE_EXTENSION}"
+        destination = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Export FenSoundSwitch configuration",
+            initialdir=directory,
+            initialfile=filename,
+            defaultextension=ARCHIVE_EXTENSION,
+            filetypes=[("FenSoundSwitch configuration", f"*{ARCHIVE_EXTENSION}"), ("All files", "*.*")],
+        )
+        if not destination:
+            return
+        try:
+            archive = Path(destination)
+            export_configuration(archive)
+            history_archive = add_to_import_history(archive)
+        except ConfigurationArchiveError as exc:
+            LOGGER.warning("Configuration export failed (%s).", exc.__class__.__name__)
+            self._set_status(str(exc))
+            return
+        if history_archive == archive:
+            self._set_status(f"Configuration exported to {archive}.")
+        else:
+            self._set_status(f"Configuration exported to {archive} and added to import history.")
+
+    def import_configuration(self) -> None:
+        source = filedialog.askopenfilename(
+            parent=self.root,
+            title="Import FenSoundSwitch configuration",
+            initialdir=configuration_directory(),
+            filetypes=[("FenSoundSwitch configuration", f"*{ARCHIVE_EXTENSION}"), ("All files", "*.*")],
+        )
+        if source:
+            self._confirm_import_configuration(Path(source))
+
+    def show_import_history(self) -> None:
+        configurations = recent_configurations()
+        if not configurations:
+            self._set_status("No exported configuration is available.")
+            return
+        menu = tk.Menu(self.root, tearoff=False)
+        for source in configurations:
+            menu.add_command(
+                label=source.name,
+                command=lambda selected=source: self._confirm_import_configuration(selected),
+            )
+        try:
+            menu.tk_popup(
+                self.import_history_button.winfo_rootx(),
+                self.import_history_button.winfo_rooty() + self.import_history_button.winfo_height(),
+            )
+        finally:
+            menu.grab_release()
+
+    def import_default_configuration(self) -> None:
+        source = configuration_directory() / DEFAULT_ARCHIVE_NAME
+        if not source.is_file():
+            self._set_status(f"Default configuration not found: {source}.")
+            return
+        self._confirm_import_configuration(source)
+
+    def _confirm_import_configuration(self, source: Path) -> None:
+        if not messagebox.askyesno(
+            "Restart FenSoundSwitch?",
+            f"Importing {source.name} will close and restart FenSoundSwitch. Continue?",
+            parent=self.root,
+        ):
+            return
+        try:
+            import_configuration(source)
+        except ConfigurationArchiveError as exc:
+            LOGGER.warning("Configuration import failed (%s).", exc.__class__.__name__)
+            self._set_status(str(exc))
+            return
+        self._set_status(f"Configuration imported from {source.name}. Restarting FenSoundSwitch...")
+        self.restart_requested = True
+        self.root.after_idle(self.on_close)
+
+    def _create_diagnostic_log_window(self) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("FenSoundSwitch diagnostic log")
+        window.minsize(self._scaled_px(600), self._scaled_px(360))
+        window.geometry(f"{self._scaled_px(820)}x{self._scaled_px(560)}")
+        window.transient(self.root)
+        window.protocol("WM_DELETE_WINDOW", self._close_diagnostic_log)
+        apply_window_chrome(window, self.dark_mode)
+
+        content = ttk.Frame(window, padding=self._scaled_px(12))
+        content.grid(sticky="nsew")
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        text = tk.Text(content, wrap="none", state="disabled")
+        vertical_scrollbar = ttk.Scrollbar(content, orient="vertical", command=text.yview)
+        horizontal_scrollbar = ttk.Scrollbar(content, orient="horizontal", command=text.xview)
+        text.configure(
+            yscrollcommand=vertical_scrollbar.set,
+            xscrollcommand=horizontal_scrollbar.set,
+        )
+        text.grid(row=0, column=0, sticky="nsew")
+        vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+        horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+
+        actions = ttk.Frame(content)
+        actions.grid(row=2, column=0, columnspan=2, sticky="e", pady=(self._scaled_px(10), 0))
+        ttk.Button(actions, text="Refresh", command=self._refresh_diagnostic_log).grid(row=0, column=0)
+        ttk.Button(actions, text="Close", command=self._close_diagnostic_log).grid(
+            row=0,
+            column=1,
+            padx=(self._scaled_px(8), 0),
+        )
+        self._log_window = window
+        self._log_text = text
+
+    def _refresh_diagnostic_log(self, record_event: bool = True) -> None:
+        if self._log_text is None:
+            return
+        if record_event:
+            LOGGER.info("Diagnostic log viewer refreshed.")
+        contents = read_log_contents()
+        self._log_text.configure(state="normal")
+        self._log_text.delete("1.0", tk.END)
+        self._log_text.insert("1.0", contents)
+        self._log_text.configure(state="disabled")
+        self._log_text.yview_moveto(1.0)
+
+    def _schedule_diagnostic_log_refresh(self) -> None:
+        if self._closing or self._log_window is None or self._log_refresh_after_id is not None:
+            return
+        self._log_refresh_after_id = self.root.after(
+            self.LOG_VIEW_REFRESH_MS,
+            self._refresh_diagnostic_log_live,
+        )
+
+    def _refresh_diagnostic_log_live(self) -> None:
+        self._log_refresh_after_id = None
+        if self._log_window is None or not self._log_window.winfo_exists():
+            return
+        self._refresh_diagnostic_log(record_event=False)
+        self._schedule_diagnostic_log_refresh()
+
+    def _close_diagnostic_log(self) -> None:
+        window = self._log_window
+        self._log_window = None
+        self._log_text = None
+        if self._log_refresh_after_id is not None:
+            self.root.after_cancel(self._log_refresh_after_id)
+            self._log_refresh_after_id = None
+        if window is not None and window.winfo_exists():
+            window.destroy()
 
     def _lock_window_size(self) -> None:
         self._apply_scaled_layout()
@@ -365,8 +577,10 @@ class MonitorVolumeApp:
                 set_start_with_windows=self.set_start_with_windows_enabled,
                 get_volume_statuses=self._get_volume_statuses,
                 on_overlay_renderer_changed=self._replace_overlay_renderer,
+                on_overlay_text=self._show_plugin_overlay_text,
                 on_volume_routes_changed=self._routes_changed,
                 on_route_input=self._queue_route_input_delta,
+                on_route_volume=self._queue_route_input_volume,
                 on_route_key=self._queue_route_input_key,
             )
             manager.start()
@@ -619,14 +833,27 @@ class MonitorVolumeApp:
 
     def _queue_hotkey_delta(self, delta: int) -> None:
         if not self._closing:
+            LOGGER.info("Volume-key input received: adjustment=%+d.", delta)
             self._hotkey_delta_queue.put(delta)
 
     def _queue_route_input_delta(self, route_id: str, delta: int) -> None:
-        if not self._closing and delta in (-1, 1):
+        if not self._closing and isinstance(delta, int) and not isinstance(delta, bool) and -100 <= delta <= 100 and delta != 0:
+            LOGGER.info("Route shortcut input received: route=%s, adjustment=%+d.", route_id, delta)
             self._route_input_queue.put((route_id, delta))
+
+    def _queue_route_input_volume(self, route_id: str, volume: int) -> None:
+        if not self._closing and isinstance(volume, int) and not isinstance(volume, bool) and 0 <= volume <= 100:
+            LOGGER.info("Route input received: route=%s, target volume=%d.", route_id, volume)
+            self._route_volume_queue.put((route_id, volume))
 
     def _queue_route_input_key(self, route_id: str, delta: int, pressed: bool) -> None:
         if not self._closing and delta in (-1, 1):
+            LOGGER.info(
+                "Route shortcut key %s: route=%s, adjustment=%+d.",
+                "pressed" if pressed else "released",
+                route_id,
+                delta,
+            )
             self._route_key_queue.put((route_id, delta, pressed))
 
     def _cancel_route_repeats(self, route_ids: set[str] | None = None) -> None:
@@ -640,6 +867,19 @@ class MonitorVolumeApp:
             else:
                 for route_id in route_ids:
                     pending.pop(route_id, None)
+        optimistic = getattr(self, "_route_optimistic_targets", None)
+        if optimistic is not None:
+            if route_ids is None:
+                optimistic.clear()
+            else:
+                for route_id in route_ids:
+                    optimistic.pop(route_id, None)
+        reconciliations = getattr(self, "_route_reconciliation_pending", None)
+        if reconciliations is not None:
+            if route_ids is None:
+                reconciliations.clear()
+            else:
+                reconciliations.difference_update(route_ids)
 
     def _queue_unavailable_hotkey_notice(self) -> None:
         self._post_to_ui(self._show_unavailable_error)
@@ -695,6 +935,7 @@ class MonitorVolumeApp:
                 if pending_delta and not self._busy:
                     self._pending_hotkey_delta = 0
                     try:
+                        LOGGER.info("Volume-key input applied: adjustment=%+d.", pending_delta)
                         if getattr(self, "_plugin_manager", None) is None:
                             self.adjust_selected_volume(pending_delta)
                         else:
@@ -719,6 +960,8 @@ class MonitorVolumeApp:
                         route_id, delta, pressed = route_key_queue.get_nowait()
                     except queue.Empty:
                         break
+                    if not pressed:
+                        self._route_reconciliation_pending.add(route_id)
                     for repeat_route_id, repeat_delta in scheduler.key_event(route_id, delta, pressed):
                         pending_routes[repeat_route_id] = pending_routes.get(repeat_route_id, 0) + repeat_delta
                 for repeat_route_id, repeat_delta in scheduler.poll():
@@ -731,12 +974,27 @@ class MonitorVolumeApp:
                     except queue.Empty:
                         break
                     pending_routes[route_id] = pending_routes.get(route_id, 0) + delta
+            route_volume_queue = getattr(self, "_route_volume_queue", None)
+            if route_volume_queue is not None and not self._busy:
+                try:
+                    route_id, volume = route_volume_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                else:
+                    LOGGER.info("Route input applied: route=%s, target volume=%d.", route_id, volume)
+                    self._route_volume_delta((route_id,), 0, absolute_target=volume)
             if pending_routes is not None and not self._busy:
                 for route_id, delta in tuple(pending_routes.items()):
                     del pending_routes[route_id]
                     if delta:
+                        LOGGER.info("Route input applied: route=%s, adjustment=%+d.", route_id, delta)
                         self._route_volume_delta((route_id,), delta)
                     break
+                else:
+                    pending_reconciliations = self._route_reconciliation_pending
+                    if pending_reconciliations:
+                        route_id = pending_reconciliations.pop()
+                        self._route_volume_delta((route_id,), 0, reconcile=True)
         except Exception as exc:
             self._report_ui_callback_error(exc)
         finally:
@@ -779,6 +1037,7 @@ class MonitorVolumeApp:
 
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
+        LOGGER.info("Status bar: %s", message)
 
     def _set_widget_enabled(self, widget: ttk.Widget, enabled: bool) -> None:
         if enabled:
@@ -987,6 +1246,18 @@ class MonitorVolumeApp:
             )
             return
         self._render_overlay("show", clamp(volume, 0, 100), preferred_display_device_name=self._selected_display_device_name())
+
+    def _show_plugin_overlay_text(self, text: str) -> None:
+        """Render a plugin notification after PluginManager returns to Tk."""
+        if self._closing or self._overlay is None:
+            return
+        show_text = getattr(self._overlay, "show_text", None)
+        if callable(show_text):
+            self._render_overlay(
+                "show_text",
+                text,
+                preferred_display_device_name=self._selected_display_device_name(),
+            )
 
     def _replace_overlay_renderer(self) -> None:
         """Replace a renderer only from the Tk-thread manager callback."""
@@ -1713,13 +1984,23 @@ class MonitorVolumeApp:
         route_ids = tuple(route.route_id for route, _provider in (manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ()))
         self._route_volume_delta(route_ids, delta)
 
-    def _route_volume_delta(self, route_ids: tuple[str, ...], delta: int) -> None:
+    def _route_volume_delta(self, route_ids: tuple[str, ...], delta: int, reconcile: bool = False, absolute_target: int | None = None) -> None:
         """Apply one host input to every configured output on the sole worker slot."""
         manager = self._plugin_manager
         available = manager.relevant_volume_providers() if manager else ()
         if not isinstance(available, tuple):
             available = manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ()
-        routes = tuple((route, provider) for route, provider in available if route.route_id in route_ids and route.route_id in self._ready_route_ids)
+        routes = tuple(
+            (
+                route,
+                provider,
+                self._volume_statuses.get(route.route_id).confirmed_volume
+                if self._volume_statuses.get(route.route_id) is not None
+                else None,
+            )
+            for route, provider in available
+            if route.route_id in route_ids and route.route_id in self._ready_route_ids
+        )
         if (
             not routes
             or self._closing
@@ -1730,32 +2011,49 @@ class MonitorVolumeApp:
             self._cancel_route_repeats(set(route_ids))
             return
         generation = self._current_topology_generation()
+        scheduler = getattr(self, "_route_repeat_scheduler", None)
+        held_routes = {
+            route_id for route_id in route_ids
+            if scheduler is not None and scheduler.is_held(route_id)
+        }
         self._volume_write_inflight = True
         self._set_busy(True, "Applying routed volume change...")
         operation_id = self._begin_ddc_operation("Routed volume change")
 
         def runner() -> None:
-            results: list[tuple[str, Any, int | None, str | None]] = []
-            for route, provider in routes:
+            results: list[tuple[str, Any, int | None, str | None, int | None]] = []
+            for route, provider, confirmed_volume in routes:
                 try:
                     ready, reason = provider.is_volume_provider_available()
                     if not ready:
                         raise RuntimeError(reason or "Provider is unavailable")
-                    current = clamp(int(provider.read_volume()), 0, 100)
-                    target = clamp(current + delta, 0, 100)
+                    if reconcile:
+                        results.append((route.route_id, provider, clamp(int(provider.read_volume()), 0, 100), None, None))
+                        continue
+                    fast_write = getattr(provider, "write_volume_fast", None)
+                    supports_fast_write = getattr(provider, "supports_fast_volume_write", False) is True
+                    optimistic = getattr(self, "_route_optimistic_targets", {}).get(route.route_id)
+                    current = clamp(int(optimistic), 0, 100) if optimistic is not None else (
+                        clamp(int(confirmed_volume), 0, 100) if confirmed_volume is not None
+                        else clamp(int(provider.read_volume()), 0, 100)
+                    )
+                    target = clamp(absolute_target, 0, 100) if absolute_target is not None else clamp(current + delta, 0, 100)
                     # Do not send redundant physical writes at the volume bounds.
                     # Some DDC implementations reject an otherwise harmless set.
                     if target == current:
-                        results.append((route.route_id, provider, current, None))
+                        results.append((route.route_id, provider, current, None, None))
+                    elif route.route_id in held_routes and supports_fast_write and callable(fast_write):
+                        fast_write(target)
+                        results.append((route.route_id, provider, None, None, target))
                     else:
-                        results.append((route.route_id, provider, clamp(int(provider.write_volume(target)), 0, 100), None))
+                        results.append((route.route_id, provider, clamp(int(provider.write_volume(target)), 0, 100), None, None))
                 except Exception as exc:
-                    results.append((route.route_id, provider, None, self._format_error(exc)))
+                    results.append((route.route_id, provider, None, self._format_error(exc), None))
             self._post_to_ui(lambda values=tuple(results), token=generation, operation=operation_id: self._finish_routed_volume_change(values, token, operation))
 
         threading.Thread(target=runner, name="routed-volume-change", daemon=True).start()
 
-    def _finish_routed_volume_change(self, results: tuple[tuple[str, Any, int | None, str | None], ...], generation: int, operation_id: int) -> None:
+    def _finish_routed_volume_change(self, results: tuple[tuple[str, Any, int | None, str | None, int | None], ...], generation: int, operation_id: int) -> None:
         if self._closing or not self._accept_ddc_completion(operation_id):
             return
         self._volume_write_inflight = False
@@ -1766,9 +2064,29 @@ class MonitorVolumeApp:
             return
         failures: list[str] = []
         manager = self._plugin_manager
-        for route_id, provider, volume, reason in results:
-            self._publish_volume_status(provider, volume, reason)
+        for route_id, provider, volume, reason, optimistic_target in results:
+            if optimistic_target is not None:
+                # Fast sends deliberately do not claim confirmation.  The target
+                # is only a baseline for the next held tick until release reads it.
+                getattr(self, "_route_optimistic_targets", {})[route_id] = optimistic_target
+                LOGGER.info(
+                    "Route output sent: route=%s, output=%s, target volume=%d.",
+                    manager.route_name(route_id) if manager is not None else route_id,
+                    getattr(provider, "provider_name", provider.__class__.__name__),
+                    optimistic_target,
+                )
+            else:
+                getattr(self, "_route_optimistic_targets", {}).pop(route_id, None)
+                self._publish_volume_status(provider, volume, reason)
+                if volume is not None and reason is None:
+                    LOGGER.info(
+                        "Route output applied: route=%s, output=%s, volume=%d.",
+                        manager.route_name(route_id) if manager is not None else route_id,
+                        getattr(provider, "provider_name", provider.__class__.__name__),
+                        volume,
+                    )
             if reason is not None:
+                getattr(self, "_route_reconciliation_pending", set()).discard(route_id)
                 failures.append(
                     f"{manager.route_name(route_id) or 'Route'}: {reason}"
                 )
@@ -2016,6 +2334,7 @@ class MonitorVolumeApp:
             return
         self._cancel_route_repeats()
         self._closing = True
+        self._close_diagnostic_log()
         self._pending_audio_output_sync = None
         self._topology_valid.clear()
         self._hotkeys_ready = False

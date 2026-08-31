@@ -4,9 +4,9 @@ These instructions apply to the entire repository. Keep this file operational an
 
 ## Project Snapshot
 
-- This is a Windows-only Python 3.10+ Tkinter application for one selected monitor's DDC/CI audio volume.
+- FenSoundSwitch is a Windows-only Python 3.10+ Tkinter application for one selected monitor's DDC/CI audio volume.
 - The supported composition root is `app.py`. `main.py` is deliberately an exit-1 rejection stub that directs users to `app.py` without launching it.
-- Runtime dependency: `monitorcontrol==4.2.0`. Optional executable builder: `Nuitka==2.4.8`.
+- Runtime dependencies: `monitorcontrol==4.2.0` and `paho-mqtt==2.1.0`. Optional executable builder: `Nuitka==2.4.8`.
 - The app is an interactive current-user process, not a service. It has no HTTP/API server, listening port, database, application account system, external broker/job queue, cron, or telemetry. The bundled Discord plugin is an OAuth client for Discord's HTTPS token endpoint and local named pipe.
 - The global Volume Down/Up hook, passive plugin shortcut observer, Discord voice-output changes, physical DDC writes, audio endpoint visibility changes, and elevated FenSound rename are safety-sensitive. Do not launch the app or call live monitor/audio/Discord operations as routine automated validation.
 - There is a standard-library unit-test suite for fail-safe and registered hotkeys, plugin discovery/isolation, mocked Discord credentials/OAuth/restoration, stable identity/settings, Change speed persistence, autostart, diagnostics, display invalidation, revalidation, fail-closed audio-output matching, single-instance behavior, overlay focus safety, live theme/accessibility/scaling, resilience, CI safety, and tray recovery. GitHub Actions runs hardware-free checks on Windows for Python 3.10. There is no lint, format, type-check, or third-party test-framework configuration. State those limitations accurately.
@@ -16,7 +16,7 @@ These instructions apply to the entire repository. Keep this file operational an
 1. `app.py` handles only its strictly validated internal elevated audio-rename request before the normal composition boundary. An ordinary launch acquires the session-local `SingleInstanceGuard` before creating Tk; a duplicate broadcasts restore and exits before application initialization.
 2. The primary configures the rotating diagnostic log, creates the single `tk.Tk`, constructs `gui.MonitorVolumeApp`, reads the current-user autostart state, and enters Tk's main loop while retaining the mutex handle.
 3. After Tk exists, `gui.py` dynamically imports the plugin manager, directly imports bundled modules from the `plugins` package, then discovers trusted adjacent `external-plugins\*.py` and per-user `plugins\*.py` modules. The bundled package is never dynamically scanned. It initializes plugins and starts the shared `plugin-hotkey-loop`/`plugin-hotkey-dispatch`. Duplicate processes exit before that import, discovery, or credential access.
-4. `display-change-listener`, `tray-icon`, and `volume-key-hook` are long-lived daemon threads with native Win32 message loops. The display listener also relays live theme/system-color broadcasts into Tk. The passive plugin-hotkey observer is independent of the low-level Volume hook.
+4. `display-change-listener`, `tray-icon`, and `volume-key-hook` are long-lived daemon threads with native Win32 message loops. The display listener also relays live theme/system-color broadcasts into Tk. The plugin-hotkey observer is independent of the low-level Volume hook: action shortcuts and keyboard routes may explicitly consume only their configured held key pairs.
 5. `ddc-gui-worker` and `ddc-volume-write` are short-lived daemon workers for blocking DDC/CI work. `audio-output-sync`, `plugin-<id>`, and `discord-output-auth` are separate short-lived daemons for audio reconciliation, plugin triggers, and Discord OAuth/RPC respectively.
 6. Worker and native-thread callbacks cross into Tk through `queue.Queue`; `_poll_queues()` drains them every 50 ms. Plugin status uses the same `_post_to_ui()` boundary.
 7. Only one application-issued DDC operation should be active. Rapid writes are serialized and reduced to the latest `_pending_target_volume`. A timed-out operation keeps the slot until its worker returns; its late result is ignored and followed by read-only rediscovery.
@@ -33,7 +33,7 @@ Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or 
 | --- | --- |
 | `app.py` | Supported process entrypoint, single-instance boundary, and Tk composition root. |
 | `audio_outputs.py` | Fail-closed monitor/render-endpoint matching, endpoint visibility policy, and fixed FenSound elevated rename helper. |
-| `core_audio.py` | Focused Core Audio render-endpoint enumeration and master-volume adapter used only by soundcard route workers. |
+| `core_audio.py` | Focused Core Audio render/capture endpoint enumeration and master-volume adapter for soundcard/capture-gain route workers, explicit default-role changes, and silent WASAPI keep-alive streams. |
 | `autostart.py` | Current-user Run-key state and quoted source/packaged launch commands. |
 | `diagnostics.py` | Nonfatal per-user rotating-log configuration and component logger access. |
 | `main.py` | Unsupported launcher stub; prints migration guidance and returns `1`. |
@@ -42,13 +42,16 @@ Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or 
 | `plugins/ddc_volume_plugin.py` | Bundled DDC volume provider, including plugin-owned monitor selection and active-only audio-output policy. |
 | `plugins/denon_marantz_volume_plugin.py` | Bundled Denon/Marantz AVR main-zone provider using bounded outbound LAN TCP. |
 | `plugins/discord_output_plugin.py` | Discord local RPC, OAuth/token refresh, Credential Manager storage/migration, plugin UI, and temporary output restoration. |
+| `plugins/audio_keepalive_plugin.py` | Configurable silent WASAPI playback to the current Windows default playback and/or voice endpoint. |
 | `plugins/onkyo_volume_plugin.py` | Bundled configurable Onkyo/Integra eISCP main-zone volume provider using bounded outbound LAN TCP. |
 | `plugins/pioneer_elite_volume_plugin.py` | Bundled Pioneer/Elite main-zone provider using bounded outbound LAN TCP. |
 | `plugins/sony_volume_plugin.py` | Bundled Sony network AVR main-zone provider using bounded outbound HTTP. |
+| `plugins/windows_microphone_gain_plugin.py` | Bundled Windows capture endpoint gain provider. |
+| `plugins/mqtt_input_plugin.py` | Bundled MQTT route input with Home Assistant MQTT button discovery. |
 | `plugins/yamaha_volume_plugin.py` | Bundled Yamaha main-zone provider using bounded outbound LAN TCP. |
 | `settings.py` | Per-user selected-monitor and Change speed JSON load/save. |
 | `plugin_api.py` | Runtime plugin API version, `HotkeySpec`, optional input/provider capabilities, protocol, and host context. |
-| `plugin_hotkeys.py` | Shared passive native keyboard observer and off-thread dispatch. |
+| `plugin_hotkeys.py` | Shared native keyboard observer, off-thread dispatch, and explicit per-route key consumption. |
 | `plugin_manager.py` | Trusted plugin discovery, isolation/status, configuration UI, trigger suppression, and shutdown. |
 | `plugins/windows11_overlay_plugin.py` | Bundled Windows 11 work-area/DPI-aware, live-themed, no-activate, topmost, auto-hiding overlay renderer. |
 | `plugins/macos_overlay_plugin.py` | Bundled macOS-style no-activate overlay renderer sharing the safe Windows presentation path. |
@@ -57,8 +60,8 @@ Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or 
 | `tests/` | Hardware-free plugin/hotkey/Discord, identity, settings, autostart, audio-output, single-instance, topology, fresh-write, overlay, accessibility/scaling, resilience, and tray regressions. |
 | `.github/workflows/ci.yml` | Windows Python 3.10 hardware-free unit and low-risk validation workflow. |
 | `pyproject.toml` | Python requirement, dependency pins, and installed flat modules. |
-| `build_exe.ps1` | One-file Nuitka build for `dist\windows-ddc.exe`. |
-| `windows-ddc.ico` | Tracked executable, window, and tray icon source. |
+| `build_exe.ps1` | One-file Nuitka build for `dist\FenSoundSwitch.exe`. |
+| `FenSoundSwitch.ico` | Tracked executable, window, and tray icon source. |
 | `docs/app.png`, `docs/overlay.png` | Manually maintained screenshots; there is no generation pipeline. |
 
 Adding, renaming, or removing a distributable runtime module must keep `[tool.setuptools].py-modules` in `pyproject.toml` synchronized. Do not add `main.py` there or turn it back into a launcher without an explicit compatibility decision.
@@ -67,19 +70,20 @@ Changes to the icon name or location must update `theme.APP_ICON_PATH`, `--windo
 
 ## Persistent or Sensitive Data
 
-- Live settings normally reside at `%APPDATA%\windows-ddc\settings.json`; if `APPDATA` is empty or unset, the fallback is `<home>\windows-ddc\settings.json`.
+- Live settings normally reside at `%APPDATA%\fensoundswitch\settings.json`; if `APPDATA` is empty or unset, the fallback is `<home>\fensoundswitch\settings.json`. When that file is absent, runtime validates and copies legacy `%APPDATA%\windows-ddc\settings.json` without modifying it.
 - New settings use schema version 8 and persist ordered independent route records (`route_id`, user-defined `name`, input endpoint, output endpoint); each endpoint has a plugin ID and JSON parameters. Schema-v6 routes receive deterministic endpoint-ID names when next saved. Overlay selection and non-secret renderer settings live under `plugin-settings`; legacy global `overlay_mode` migrates to the Windows 11 renderer. Legacy Change speed/active-provider fields remain where present, along with description, a Windows device path, and optional EDID manufacturer/product/serial identity. Never persist the transient display index.
+- Main-window Export archives `settings.json` and flat non-secret `plugin-settings\*.json` files to `%APPDATA%\fensoundswitch\configurations\*.fsc`. On first primary launch, bundled `default.py` creates `default.fsc` in that directory without overwriting an existing file. Import replaces those saved files after validating all archive JSON objects and restarts the app to apply them. The Import down-arrow lists the five newest non-default archives and requires a selected item plus restart confirmation; Default reads the generated `default.fsc`. Archives exclude Credential Manager OAuth data, executable plugins, logs, audio-endpoint state, and hardware state.
 - Unique EDID serial identity is preferred. Duplicate serials require the saved device path; monitors without a usable serial use the device path. Missing or ambiguous matches fail closed.
 - Saving either monitor selection or Change speed writes `settings.tmp` and then replaces `settings.json` while preserving the other valid setting. There is backward-compatible loading/promotion for unambiguous legacy description/ordinal files and no file lock; the session mutex prevents ordinary same-session project instances from racing but does not coordinate external tools or separate sessions.
 - Missing, unreadable, invalid-JSON, non-object, unknown-version, and invalid nested monitor settings are treated as absent. JSON booleans are rejected as legacy ordinals. Missing or invalid Change speed defaults to `slow`; valid persisted values are `slow`, `medium`, and `fast`.
 - Do not read, overwrite, delete, or reset a user's live `settings.json` or leftover `settings.tmp` during automated work. Patch `settings.SETTINGS_PATH` to a unique temporary path before calling load/save functions.
-- Live diagnostics normally reside at `%LOCALAPPDATA%\windows-ddc\windows-ddc.log`, fall back to `APPDATA` and then home, and retain two 512 KiB backups. Do not read, overwrite, delete, or reset them during automated work; pass a unique temporary path to `configure_logging()` in tests.
-- Start with Windows is represented only by `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\windows-ddc`. Never read, create, change, or delete the live value during automated work; mock `autostart.winreg`. The GUI is the authorized interactive mutation path.
+- Live diagnostics normally reside at `%LOCALAPPDATA%\fensoundswitch\fensoundswitch.log`, fall back to `APPDATA` and then home, and retain two 512 KiB backups. Do not read, overwrite, delete, or reset them during automated work; pass a unique temporary path to `configure_logging()` in tests.
+- Start with Windows is represented by `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\FenSoundSwitch`; a legacy `windows-ddc` value is read for compatibility and removed only on an explicit GUI checkbox mutation. Never read, create, change, or delete live values during automated work; mock `autostart.winreg`.
 - Windows persists audio render-endpoint visibility and the selected endpoint's FenSound description outside the app settings. The normal process reads HKLM endpoint/monitor metadata and changes visibility through private Windows audio policy; the administrator-approved helper writes the fixed alias through Core Audio. Never enumerate, rename, hide, show, or otherwise mutate live endpoints during automated work. Mock `audio_outputs.winreg`, `_set_endpoint_visibility`, and `request_elevated_endpoint_rename`.
 - The physical monitor volume is external mutable state. A set can succeed even if the following readback fails, and shutdown does not restore the old value.
 - The Windows soundcard route adapter may enumerate or change only its explicitly selected render endpoint from route/configuration workers. Never invoke it in automated tests without mocks; it must not alter endpoint visibility, names, or defaults.
-- Plugin non-secret JSON lives under `%APPDATA%\windows-ddc\plugin-settings`; external executable code is discovered from adjacent `external-plugins\` and `%APPDATA%\windows-ddc\plugins`. Patch these paths to temporary directories in tests and never import untrusted fixtures from a live user directory.
-- Discord client configuration, client secret, access token, and refresh token live only in current-user Windows Credential Manager target `windows-ddc/plugins/discord-output/oauth-rpc`; valid prototype target `windows-ddc/test-discord/oauth-rpc` is migrated. Never read, write, delete, or reset live credentials in automated work. Mock credential, browser, pipe, and HTTPS functions. Never include secrets/tokens in source, screenshots, fixtures, logs, or documentation.
+- Plugin non-secret JSON lives under `%APPDATA%\fensoundswitch\plugin-settings`; valid legacy JSON is copied without changing `%APPDATA%\windows-ddc`. External executable code is discovered from adjacent `external-plugins\`, `%APPDATA%\fensoundswitch\plugins`, then the legacy trusted `%APPDATA%\windows-ddc\plugins` fallback. Patch these paths to temporary directories in tests and never import untrusted fixtures from a live user directory.
+- Discord client configuration, client secret, access token, and refresh token live only in current-user Windows Credential Manager target `fensoundswitch/plugins/discord-output/oauth-rpc`; valid legacy `windows-ddc` and prototype targets are copied but never deleted. Never read, write, delete, or reset live credentials in automated work. Mock credential, browser, pipe, and HTTPS functions. Never include secrets/tokens in source, screenshots, fixtures, logs, or documentation.
 
 There is no database and no migration command. If the settings schema changes, implement backward-compatible loading or an explicit migration, update README and architecture examples, and test old, missing, malformed, and new formats.
 
@@ -101,7 +105,7 @@ CI is validation-only. Keep it free of `python app.py`, live controller `start()
 
 ## API Shape
 
-`windows-ddc` defines no external API or installed project CLI command. Its dependency's `monitorcontrol` command is an upstream hardware-management interface, not a supported project entrypoint. The important internal boundaries are:
+`FenSoundSwitch` defines no external API or installed project CLI command. Its dependency's `monitorcontrol` command is an upstream hardware-management interface, not a supported project entrypoint. The important internal boundaries are:
 
 - `ddc.enumerate_monitors() -> list[MonitorRef]`
 - `ddc.match_selected_monitor(monitors, selected_key) -> SelectionMatch`
@@ -129,7 +133,7 @@ Run these low-risk validation checks from the repository root:
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m compileall -q app.py audio_outputs.py autostart.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py windows_platform.py plugins
+python -m compileall -q app.py audio_outputs.py autostart.py core_audio.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py windows_platform.py plugins
 python -m pip check
 git diff --check
 git diff --cached --check
@@ -183,7 +187,7 @@ Manual DDC tests can be audible and mutate monitor state. Record what was actual
 - Do not mutate Tk state directly from another thread. Keep callbacks small and exception-safe so `_poll_queues()` continues rescheduling itself.
 - Keep all plugin imports/discovery and Credential Manager reads after the primary-instance/Tk boundary; duplicate launches must never execute external plugin code or touch Discord credentials.
 - Treat external plugins as trusted unsandboxed current-user code, auto-load them only from adjacent `external-plugins\` and per-user `plugins\` after direct bundled-package imports, reject later duplicate IDs, and isolate each load/initialize/trigger failure from monitor control.
-- Keep passive plugin shortcut observation separate from `GlobalVolumeKeyListener`: allow arbitrary Windows keyboard virtual keys with optional supported modifiers, treat modifier keys as capture prefixes, always forward input to the foreground application, queue dispatch away from the native thread, and suppress held-key repeats and overlapping triggers.
+- Keep plugin shortcut observation separate from `GlobalVolumeKeyListener`: action shortcuts and keyboard routes may consume only their configured non-modifier key down/repeat and matching held key up when their persisted `forward_keys` setting is false; modifier and unrelated keys always forward. Existing action shortcuts migrate to forwarding. Queue dispatch away from the native thread, and suppress held-key repeats and overlapping triggers.
 - Never call Tk from Discord/auth/trigger threads. Preserve Credential Manager-only secrets, explicit first consent, silent reuse/refresh, first non-current concrete output selection, restoration in `finally`, and pipe close only as restoration fallback.
 - Keep `audio-output-sync` off Tk and coalesced independently of the serialized DDC slot. Recheck topology before mutations, make the selected output visible first, hide only endpoints positively mapped to other current monitors, and never infer a conflicting/non-placeholder container.
 - Keep the internal rename mode strictly before mutex/logging/Tk initialization, validate the endpoint ID on both sides of elevation, accept only the fixed FenSound alias, and latch every requested/failed/cancelled endpoint for the primary session so UAC cannot loop.
@@ -205,7 +209,7 @@ Manual DDC tests can be audible and mutate monitor state. Record what was actual
 - Preserve autostart as an explicit current-user checkbox. Keep registry failures nonfatal, quote source/executable paths, reject commands beyond 260 characters, prefer `pythonw.exe` for source, and use `sys.argv[0]` for Nuitka one-file builds so temporary extraction paths are never registered.
 - Do not bypass the guard to run multiple instances during testing. Separate sessions and external tools can still conflict over hardware or `settings.tmp` because there is no file or hardware lock.
 - Keep CI on Windows and hardware-free. Changes to its Python matrix, commands, permissions, or action versions must update `tests/test_ci_workflow.py`, README, and architecture documentation together.
-- Do not hand-edit or commit `dist/`, `windows_ddc.egg-info/`, or `__pycache__/`. The present egg-info is ignored generated residue and can be stale; `pyproject.toml` and tracked sources are authoritative.
+- Do not hand-edit or commit `dist/`, `fensoundswitch.egg-info/`, or `__pycache__/`. The present egg-info is ignored generated residue and can be stale; `pyproject.toml` and tracked sources are authoritative.
 - Review `docs/app.png` and `docs/overlay.png` when visible UI changes. Update them only with real application captures and scrub machine-specific or sensitive content.
 - Keep `README.md`, `CHANGELOG.md`, this file, and `docs/ARCHITECTURE.md` consistent when commands, dependencies, entrypoints, paths, settings, release behavior, or architectural boundaries change.
 - The local clone can lack the remote lightweight `0.1.0` tag. For release-history work, inspect local refs and the live origin before concluding that no tags exist.

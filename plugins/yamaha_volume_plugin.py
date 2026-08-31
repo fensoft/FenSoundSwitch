@@ -147,6 +147,7 @@ class YamahaVolumePlugin:
     name = "Yamaha YNCA volume"
     description = "Controls a configured Yamaha network receiver main zone through its YNCA TCP interface."
     provider_name = "Yamaha YNCA main-zone volume"
+    supports_fast_volume_write = True
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
@@ -250,6 +251,10 @@ class YamahaVolumePlugin:
             # A YNCA PUT need not notify when the value is unchanged, so read back explicitly.
             return YNCA_MAIN_ZONE_PROFILE.to_percent(self._request_volume_locked((_volume_command(value_db), _volume_command())))
 
+    def write_volume_fast(self, target_volume: int) -> None:
+        value_db = YNCA_MAIN_ZONE_PROFILE.from_percent(target_volume)
+        self._send_unconfirmed(_volume_command(value_db))
+
     def shutdown(self, timeout: float) -> bool:
         return True
 
@@ -287,6 +292,20 @@ class YamahaVolumePlugin:
                     connection.close()
                 except OSError:
                     pass
+
+    def _send_unconfirmed(self, command: bytes) -> None:
+        config = self._config
+        if config is None:
+            raise YamahaError("Configure a Yamaha YNCA receiver in Routes.")
+        try:
+            connection = socket.create_connection((config.host, config.port), timeout=CONNECT_TIMEOUT_SECONDS)
+            try:
+                connection.settimeout(IO_TIMEOUT_SECONDS)
+                connection.sendall(command)
+            finally:
+                connection.close()
+        except OSError as exc:
+            raise YamahaError(f"Could not communicate with the configured Yamaha receiver: {exc}") from exc
 
     def _require_host(self) -> PluginHostContext:
         if self._host is None:

@@ -147,6 +147,7 @@ class OnkyoVolumePlugin:
         "The NR696 is protocol-compatible, but is not automatically verified."
     )
     provider_name = "Onkyo eISCP main-zone volume"
+    supports_fast_volume_write = True
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
@@ -253,6 +254,11 @@ class OnkyoVolumePlugin:
             response = self._request_volume_locked(f"!1MVL{raw_value:02X}\r".encode("ascii"))
             return GENERAL_MAIN_ZONE_PROFILE.to_percent(response)
 
+    def write_volume_fast(self, target_volume: int) -> None:
+        raw_value = GENERAL_MAIN_ZONE_PROFILE.from_percent(target_volume)
+        with self._lock:
+            self._send_unconfirmed_locked(f"!1MVL{raw_value:02X}\r".encode("ascii"))
+
     def shutdown(self, timeout: float) -> bool:
         with self._lock:
             self._close_transport_locked()
@@ -290,6 +296,20 @@ class OnkyoVolumePlugin:
             self._socket.settimeout(IO_TIMEOUT_SECONDS)
             self._parser = EiscpParser()
         return self._socket
+
+    def _send_unconfirmed_locked(self, command: bytes) -> None:
+        config = self._config
+        if config is None:
+            raise OnkyoError("Configure an Onkyo eISCP receiver in Routes.")
+        try:
+            connection = socket.create_connection((config.host, config.port), timeout=CONNECT_TIMEOUT_SECONDS)
+            try:
+                connection.settimeout(IO_TIMEOUT_SECONDS)
+                connection.sendall(encode_eiscp(command))
+            finally:
+                connection.close()
+        except OSError as exc:
+            raise OnkyoError(f"Could not communicate with the configured Onkyo receiver: {exc}") from exc
 
     def _close_transport_locked(self) -> None:
         connection, self._socket = self._socket, None

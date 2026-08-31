@@ -12,6 +12,13 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Added
 
+- Added main-window configuration export/import controls. Exports bundle main and plugin JSON settings into `.fsc` archives; every export is recorded in import history, bundled `default.py` creates the user default archive, Import's arrow lists the five latest exports, and Default restores `default.fsc` after restart confirmation.
+- Added a bundled configurable audio output keep-alive plugin that renders silence to the current Windows default playback and/or voice output continuously or following recent mouse movement.
+- Added persisted Enable/Disable controls for action plugins; disabled plugins do not initialize or register shortcuts, and unconfigured shortcut cells are blank.
+- Added a bundled MQTT route input with retained Home Assistant MQTT configurable 0-to-100 slider discovery for per-route volume commands.
+- Added a persisted **Forward keys to other applications** policy to every action-plugin shortcut. Existing action bindings migrate to forwarding; disabled forwarding consumes only the configured held key pair.
+- Added a bundled Windows default-device plugin with independent shortcuts for active playback, voice output, input, and microphone devices. Each shortcut cycles only its corresponding Windows default roles and needs no plugin configuration dialog.
+- Added a typed per-keyboard-route **Forward keys to other applications** setting. Existing keyboard routes migrate to forwarding; routes that disable it consume only their configured held key pairs, while action-plugin shortcuts remain passive.
 - Added `BUILD.md`, a complete user manual, and a technical documentation index while simplifying the root README into a product overview and brief setup guide.
 - Added selectable bundled Windows 11 and macOS-style overlay renderers. Overlay selection and renderer settings are persisted under plugin settings; the Windows 11 renderer safely migrates the former global `overlay_mode` setting and retains typed current/all configuration.
 - Added persisted, validated route names to route configuration, status reporting, and all overlay rows; schema-v6 routes receive deterministic endpoint-based names on their next save.
@@ -20,7 +27,7 @@ That audited history contains one parentless commit. The audit clone had no loca
 - Added immutable host-published multi-provider volume-status snapshots for plugins and a configurable host-owned overlay that can show the current provider or all routed providers.
 - Added host-owned named plugin shortcut actions with isolated manager persistence, generic capture/configuration, conflict handling, and legacy API-v1 shortcut compatibility.
 - Split operational documentation into focused user-guide, configuration, troubleshooting, and development pages while simplifying the root project overview.
-- Added a release workflow that verifies a build on `master` and publishes `windows-ddc.exe` only for pushed Git tags.
+- Added a release workflow that verifies a build on `master` and publishes `FenSoundSwitch.exe` only for pushed Git tags.
 - Added a configurable bundled Onkyo/Integra eISCP main-zone volume provider with bounded TCP transport and hardware-free protocol tests.
 - Added configurable bundled main-zone volume providers for Denon/Marantz, Yamaha, Pioneer/Elite, and Sony network receivers with isolated protocol tests.
 - Reduced GitHub Actions CI to Python 3.10 and made the autostart command test independent of Windows short-path normalization.
@@ -44,7 +51,7 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Changed
 
-- Moved bundled first-party plugins into the `plugins` package and reserved the adjacent `external-plugins\` directory for dynamically discovered trusted external plugins; `%APPDATA%\windows-ddc\plugins\` remains the per-user external location.
+- Moved bundled first-party plugins into the `plugins` package and reserved the adjacent `external-plugins\` directory for dynamically discovered trusted external plugins; `%APPDATA%\fensoundswitch\plugins\` is the per-user external location.
 - Replaced the single active volume provider and root volume slider with ordered independent routes. Schema version 5 persists stable route IDs and migrates schema-4 input maps; one input may fan out to several outputs while writes remain serialized.
 - Split configuration into **Plugins** for initialized action-only plugins and **Routes** for volume-provider setup, input assignment, overlay configuration, and Start with Windows.
 - Moved Discord output switching to the host-configured `switch-output` shortcut action and removed Discord-local shortcut storage and key capture UI.
@@ -71,14 +78,14 @@ That audited history contains one parentless commit. The audit clone had no loca
 - Global Windows Volume Down and Volume Up interception that redirects ready-state key presses to the selected monitor while passing keys through before readiness.
 - A topmost, translucent on-screen volume overlay that automatically hides after 1.4 seconds.
 - Tray-first operation with startup minimization, double-click/menu restore, minimize-to-tray behavior, and an Exit action.
-- Per-user selected-monitor persistence in `%APPDATA%\windows-ddc\settings.json`, with a home-directory fallback and temporary-file replacement.
+- Per-user selected-monitor persistence in `%APPDATA%\fensoundswitch\settings.json`, with a home-directory fallback and temporary-file replacement.
 - Windows light/dark application-theme detection, dark DWM title-bar support, and a shared application/tray icon.
 - Background DDC/CI reads and serialized, coalesced rapid volume writes so blocking hardware access does not run on Tk's UI thread.
 - Native Win32 tray and low-level keyboard-hook integration through `ctypes`.
 - Python 3.10+ setuptools metadata with pinned `monitorcontrol==4.2.0` runtime and `Nuitka==2.4.8` build dependencies.
-- A one-file, console-free Nuitka build for `dist\windows-ddc.exe`, including the Tk plugin and icon as both executable metadata and runtime data.
+- A one-file, console-free Nuitka build for `dist\FenSoundSwitch.exe`, including the Tk plugin and icon as both executable metadata and runtime data.
 - The supported `app.py` launcher, an explicit exit-1 rejection stub in `main.py` that directs users to `app.py`, setup/build documentation, and tracked UI screenshots.
-- A published `windows-ddc.exe` asset on the GitHub `0.1.0` release.
+- A published `FenSoundSwitch.exe` asset on the GitHub `0.1.0` release.
 
 [Unreleased]: https://github.com/fensoft/windows-ddc/compare/0.1.0...HEAD
 [0.1.0]: https://github.com/fensoft/windows-ddc/releases/tag/0.1.0

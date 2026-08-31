@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -19,13 +20,17 @@ from plugins import (
     ddc_volume_plugin,
     denon_marantz_volume_plugin,
     discord_output_plugin,
+    audio_keepalive_plugin,
+    windows_default_device_plugin,
     onkyo_volume_plugin,
     macos_overlay_plugin,
     windows11_overlay_plugin,
     pioneer_elite_volume_plugin,
     sony_volume_plugin,
     keyboard_input_plugin,
+    mqtt_input_plugin,
     windows_volume_input_plugin,
+    windows_microphone_gain_plugin,
     windows_soundcard_volume_plugin,
     yamaha_volume_plugin,
 )
@@ -41,6 +46,8 @@ from plugin_api import (
     HotkeySpec,
     PluginHostContext,
     ShortcutAction,
+    RouteHotkeyBinding,
+    ActionHotkeyBinding,
     OverlayRenderer,
     VolumeProvider,
 )
@@ -64,9 +71,11 @@ PLUGIN_SETTINGS_DIRECTORY_NAME = "plugin-settings"
 USER_PLUGINS_DIRECTORY_NAME = "plugins"
 ADJACENT_EXTERNAL_PLUGINS_DIRECTORY_NAME = "external-plugins"
 SHORTCUT_SETTINGS_FILE_NAME = "shortcuts.json"
-SHORTCUT_SETTINGS_VERSION = 1
+SHORTCUT_SETTINGS_VERSION = 2
 OVERLAY_SETTINGS_FILE_NAME = "active-overlay.json"
 OVERLAY_SETTINGS_VERSION = 1
+ACTION_PLUGIN_STATE_FILE_NAME = "action-plugin-state.json"
+ACTION_PLUGIN_STATE_VERSION = 1
 DEFAULT_OVERLAY_PLUGIN_ID = "windows11-overlay"
 
 
@@ -81,7 +90,7 @@ class PluginRecord:
     initialized: bool = False
     status: str = "Not initialized"
     shortcut_actions: tuple[ShortcutAction, ...] = ()
-    configured_hotkeys: dict[str, HotkeySpec | None] | None = None
+    configured_hotkeys: dict[str, ActionHotkeyBinding] | None = None
     active_hotkeys: dict[str, HotkeySpec | None] | None = None
     shortcut_error: str | None = None
     is_volume_provider: bool = False
@@ -89,6 +98,8 @@ class PluginRecord:
     input_id: str | None = None
     input_name: str | None = None
     is_overlay_renderer: bool = False
+    enabled: bool = True
+    restart_required: bool = False
 
     @property
     def is_failure(self) -> bool:
@@ -101,10 +112,10 @@ class PluginRecord:
         labels = [hotkey.label for hotkey in active.values() if hotkey is not None]
         if labels:
             return ", ".join(labels)
-        labels = [f"{hotkey.label} (unavailable)" for hotkey in configured.values() if hotkey is not None]
+        labels = [f"{binding.hotkey.label} (unavailable)" for binding in configured.values() if binding.hotkey is not None]
         if labels:
             return ", ".join(labels)
-        return "Not set"
+        return ""
 
     @property
     def display_status(self) -> str:
@@ -122,6 +133,10 @@ def _runtime_base_directory() -> Path:
 
 
 def user_data_directory() -> Path:
+    return Path(os.environ.get("APPDATA") or Path.home()) / "fensoundswitch"
+
+
+def legacy_user_data_directory() -> Path:
     return Path(os.environ.get("APPDATA") or Path.home()) / "windows-ddc"
 
 
@@ -134,12 +149,64 @@ def user_plugins_directory() -> Path:
     return user_data_directory() / USER_PLUGINS_DIRECTORY_NAME
 
 
+def legacy_user_plugins_directory() -> Path:
+    return legacy_user_data_directory() / USER_PLUGINS_DIRECTORY_NAME
+
+
 def plugin_settings_directory() -> Path:
     return user_data_directory() / PLUGIN_SETTINGS_DIRECTORY_NAME
 
 
+def legacy_plugin_settings_directory() -> Path:
+    return legacy_user_data_directory() / PLUGIN_SETTINGS_DIRECTORY_NAME
+
+
 def shortcut_settings_path() -> Path:
     return plugin_settings_directory() / SHORTCUT_SETTINGS_FILE_NAME
+
+
+def action_plugin_state_path() -> Path:
+    return plugin_settings_directory() / ACTION_PLUGIN_STATE_FILE_NAME
+
+
+def _load_disabled_action_plugin_ids(path: Path) -> set[str]:
+    payload = _load_json_object(path)
+    if not payload:
+        return set()
+    if payload.get("schema_version") != ACTION_PLUGIN_STATE_VERSION:
+        return set()
+    values = payload.get("disabled_plugin_ids")
+    if not isinstance(values, list) or not all(isinstance(value, str) and PLUGIN_ID_PATTERN.fullmatch(value) for value in values):
+        return set()
+    return set(values) if len(values) == len(set(values)) else set()
+
+
+def _save_disabled_action_plugin_ids(path: Path, plugin_ids: set[str]) -> None:
+    if not all(PLUGIN_ID_PATTERN.fullmatch(plugin_id) for plugin_id in plugin_ids):
+        raise ValueError("Action plugin state contains an invalid plugin ID.")
+    _save_json_object(path, {"schema_version": ACTION_PLUGIN_STATE_VERSION, "disabled_plugin_ids": sorted(plugin_ids)})
+
+
+def migrate_legacy_plugin_settings(
+    destination: Path | None = None,
+    legacy_source: Path | None = None,
+) -> None:
+    """Copy valid legacy JSON settings once without changing the old namespace."""
+    destination = destination or plugin_settings_directory()
+    legacy_source = legacy_source or legacy_plugin_settings_directory()
+    try:
+        candidates = tuple(legacy_source.glob("*.json"))
+    except OSError:
+        return
+    for source in candidates:
+        target = destination / source.name
+        if target.exists() or not _load_json_object(source):
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+        except OSError:
+            continue
 
 
 def _load_json_object(path: Path) -> dict[str, object]:
@@ -157,33 +224,33 @@ def _save_json_object(path: Path, payload: dict[str, object]) -> None:
     temporary.replace(path)
 
 
-def _load_shortcut_bindings(path: Path) -> dict[str, HotkeySpec | None]:
+def _load_shortcut_bindings(path: Path) -> dict[str, ActionHotkeyBinding]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
-    if not isinstance(payload, dict) or payload.get("schema_version") != SHORTCUT_SETTINGS_VERSION:
+    if not isinstance(payload, dict) or payload.get("schema_version") not in (1, SHORTCUT_SETTINGS_VERSION):
         return {}
     values = payload.get("bindings")
     if not isinstance(values, dict):
         return {}
-    loaded: dict[str, HotkeySpec | None] = {}
+    loaded: dict[str, ActionHotkeyBinding] = {}
     for binding_id, value in values.items():
         if not isinstance(binding_id, str):
             return {}
         try:
-            loaded[binding_id] = HotkeySpec.from_json(value)
+            loaded[binding_id] = ActionHotkeyBinding.from_json(value)
         except ValueError:
             return {}
     return loaded
 
 
-def _save_shortcut_bindings(path: Path, bindings: dict[str, HotkeySpec | None]) -> None:
+def _save_shortcut_bindings(path: Path, bindings: dict[str, ActionHotkeyBinding]) -> None:
     payload = {"schema_version": SHORTCUT_SETTINGS_VERSION, "bindings": {
-        binding_id: hotkey.to_json() if hotkey is not None else None
-        for binding_id, hotkey in bindings.items()
+        binding_id: binding.to_json()
+        for binding_id, binding in bindings.items()
     }}
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
@@ -273,7 +340,7 @@ def _record_plugin(
 
 def _import_external_module(path: Path) -> ModuleType:
     digest = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:16]
-    module_name = f"windows_ddc_external_plugin_{digest}"
+    module_name = f"fensoundswitch_external_plugin_{digest}"
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError("Could not create a Python import specification.")
@@ -300,6 +367,8 @@ def discover_plugins(
         (windows11_overlay_plugin, "Bundled Windows 11 overlay plugin"),
         (macos_overlay_plugin, "Bundled macOS-style overlay plugin"),
         (discord_output_plugin, "Bundled Discord output plugin"),
+        (audio_keepalive_plugin, "Bundled audio output keep-alive plugin"),
+        (windows_default_device_plugin, "Bundled Windows default device plugin"),
         (ddc_volume_plugin, "Bundled DDC volume plugin"),
         (onkyo_volume_plugin, "Bundled Onkyo volume plugin"),
         (denon_marantz_volume_plugin, "Bundled Denon/Marantz volume plugin"),
@@ -308,7 +377,9 @@ def discover_plugins(
         (sony_volume_plugin, "Bundled Sony volume plugin"),
         (windows_volume_input_plugin, "Bundled Windows Volume input plugin"),
         (keyboard_input_plugin, "Bundled keyboard input plugin"),
+        (mqtt_input_plugin, "Bundled MQTT input plugin"),
         (windows_soundcard_volume_plugin, "Bundled Windows soundcard volume plugin"),
+        (windows_microphone_gain_plugin, "Bundled Windows capture gain plugin"),
     ):
         try:
             if module.PLUGIN_API_VERSION != PLUGIN_API_VERSION:
@@ -321,6 +392,8 @@ def discover_plugins(
     directories = list(external_directories) if external_directories is not None else [
         adjacent_external_plugins_directory(),
         user_plugins_directory(),
+        # Legacy code remains a trusted, bounded final fallback during migration.
+        legacy_user_plugins_directory(),
     ]
     seen_directories: set[str] = set()
     for directory in directories:
@@ -384,14 +457,17 @@ class PluginManager:
         set_start_with_windows: Callable[[bool], None] | None = None,
         get_volume_statuses: Callable[[], tuple[Any, ...]] | None = None,
         on_overlay_renderer_changed: Callable[[], None] | None = None,
+        on_overlay_text: Callable[[str], None] | None = None,
         on_volume_routes_changed: Callable[[], None] | None = None,
         on_route_input: Callable[[str, int], None] | None = None,
+        on_route_volume: Callable[[str, int], None] | None = None,
         on_route_key: Callable[[str, int, bool], None] | None = None,
         *,
         hotkey_factory: Callable[..., PluginHotkeyController] = PluginHotkeyController,
         external_directories: Iterable[Path] | None = None,
         shortcut_path: Path | None = None,
         plugin_settings_path: Path | None = None,
+        action_plugin_state_path_override: Path | None = None,
     ) -> None:
         self.root = root
         self._post_to_ui = post_to_ui
@@ -400,14 +476,21 @@ class PluginManager:
         self._set_start_with_windows = set_start_with_windows
         self._get_volume_statuses = get_volume_statuses or (lambda: ())
         self._on_overlay_renderer_changed = on_overlay_renderer_changed or (lambda: None)
+        self._on_overlay_text = on_overlay_text or (lambda _text: None)
         self._on_volume_routes_changed = on_volume_routes_changed or (lambda: None)
         self._on_route_input = on_route_input or (lambda _route_id, _delta: None)
+        self._on_route_volume = on_route_volume or (lambda _route_id, _volume: None)
         self._on_route_key = on_route_key or (lambda _route_id, _delta, _pressed: None)
         self._hotkey_factory = hotkey_factory
         self._external_directories = external_directories
         self._shortcut_path = shortcut_path or shortcut_settings_path()
         self._plugin_settings_path = plugin_settings_path or plugin_settings_directory()
-        self._shortcut_bindings: dict[str, HotkeySpec | None] = {}
+        self._legacy_plugin_settings_path = (
+            None if plugin_settings_path is not None else legacy_plugin_settings_directory()
+        )
+        self._action_plugin_state_path = action_plugin_state_path_override or action_plugin_state_path()
+        self._disabled_action_plugin_ids: set[str] = set()
+        self._shortcut_bindings: dict[str, ActionHotkeyBinding] = {}
         self._records: list[PluginRecord] = []
         self._records_by_id: dict[str, PluginRecord] = {}
         self._hotkeys: PluginHotkeyController | None = None
@@ -419,6 +502,7 @@ class PluginManager:
         self._started = False
         self._input_routes: tuple[VolumeRoute, ...] = ()
         self._route_instances: dict[str, VolumeProvider] = {}
+        self._route_input_instances: dict[str, object] = {}
         self._route_hotkeys: dict[str, int] = {}
         self._active_overlay_plugin_id = DEFAULT_OVERLAY_PLUGIN_ID
 
@@ -483,6 +567,12 @@ class PluginManager:
             return None
         return renderer
 
+    def _show_plugin_overlay_text(self, text: str) -> None:
+        if not isinstance(text, str) or not text.strip():
+            return
+        safe_text = text.strip()[:300]
+        self._post_to_ui(lambda: self._on_overlay_text(safe_text))
+
     @property
     def active_overlay_plugin_id(self) -> str:
         return self._active_overlay_plugin_id
@@ -491,7 +581,18 @@ class PluginManager:
         return self._plugin_settings_path / f"{plugin_id}.json"
 
     def _load_plugin_settings(self, plugin_id: str) -> dict[str, object]:
-        return _load_json_object(self._plugin_settings_file(plugin_id))
+        path = self._plugin_settings_file(plugin_id)
+        payload = _load_json_object(path)
+        if payload or self._legacy_plugin_settings_path is None:
+            return payload
+        legacy_path = self._legacy_plugin_settings_path / f"{plugin_id}.json"
+        payload = _load_json_object(legacy_path)
+        if payload:
+            try:
+                _save_json_object(path, payload)
+            except OSError:
+                pass
+        return payload
 
     def _save_plugin_settings(self, plugin_id: str, settings: dict[str, object]) -> None:
         if not isinstance(settings, dict):
@@ -579,12 +680,94 @@ class PluginManager:
         record = next((record for record in self._records if record.initialized and record.input_id == input_id), None)
         return (record.input_name if record is not None else None) or input_id
 
+    @staticmethod
+    def _is_action_plugin(record: PluginRecord) -> bool:
+        return (
+            record.plugin is not None
+            and not record.is_volume_provider
+            and record.input_id is None
+            and not record.is_overlay_renderer
+        )
+
+    def _initialize_record(self, record: PluginRecord) -> None:
+        assert record.plugin is not None and record.plugin_id is not None
+        host = PluginHostContext(
+            plugin_id=record.plugin_id,
+            ui_parent=self.root,
+            logger=get_logger(f"plugin.{record.plugin_id}"),
+            post_to_ui=self._post_to_ui,
+            report_status=lambda status, plugin_id=record.plugin_id: self._report_status(plugin_id, status),
+            prepare_window=self.prepare_window,
+            request_volume_refresh=self.request_volume_refresh,
+            get_volume_statuses=self._get_volume_statuses,
+            load_plugin_settings=lambda plugin_id=record.plugin_id: self._load_plugin_settings(plugin_id),
+            save_plugin_settings=lambda settings, plugin_id=record.plugin_id: self._save_plugin_settings(plugin_id, settings),
+            load_legacy_overlay_mode=load_legacy_overlay_mode,
+            clear_legacy_overlay_mode=clear_legacy_overlay_mode,
+            show_overlay_text=self._show_plugin_overlay_text,
+            dispatch_route_input=self._on_route_input,
+            dispatch_route_volume=self._on_route_volume,
+        )
+        try:
+            record.plugin.initialize(host)
+            record.initialized = True
+            record.status = "Ready" if record.status in {"Not initialized", "Disabled"} else record.status
+            self._initialize_shortcut_actions(record)
+        except Exception as exc:
+            record.status = f"Initialization failed: {self._format_error(exc)}"
+            LOGGER.error("Plugin initialization failed for %s (%s).", record.plugin_id, exc.__class__.__name__)
+            self._notice(f"Plugin {record.name} is unavailable: {self._format_error(exc)}")
+
+    def set_action_plugin_enabled(self, plugin_id: str, enabled: bool) -> bool:
+        record = self._records_by_id.get(plugin_id)
+        if record is None or not self._is_action_plugin(record) or not isinstance(enabled, bool):
+            return False
+        if record.enabled == enabled:
+            return True
+        disabled = set(self._disabled_action_plugin_ids)
+        if enabled:
+            disabled.discard(plugin_id)
+        else:
+            disabled.add(plugin_id)
+        try:
+            _save_disabled_action_plugin_ids(self._action_plugin_state_path, disabled)
+        except (OSError, ValueError) as exc:
+            self._notice(f"Could not save action plugin state: {self._format_error(exc)}")
+            return False
+        self._disabled_action_plugin_ids = disabled
+        record.enabled = enabled
+        if enabled:
+            if record.restart_required:
+                record.status = "Enabled; restart required"
+                return True
+            self._initialize_record(record)
+            return record.initialized
+        if self._hotkeys is not None:
+            for binding_id in (record.configured_hotkeys or {}):
+                try:
+                    self._hotkeys.set_binding(binding_id, None)
+                except Exception:
+                    pass
+        record.active_hotkeys = {binding_id: None for binding_id in (record.configured_hotkeys or {})}
+        try:
+            stopped = record.plugin.shutdown(0.5)
+        except Exception:
+            stopped = False
+        record.initialized = False
+        record.shortcut_actions = ()
+        record.restart_required = True
+        record.status = "Disabled" if stopped else "Disabled; shutdown timed out"
+        return stopped
+
     def start(self) -> None:
         if self._started:
             return
         self._started = True
+        if self._legacy_plugin_settings_path is not None:
+            migrate_legacy_plugin_settings(self._plugin_settings_path, self._legacy_plugin_settings_path)
         self._records = discover_plugins(self._external_directories)
         self._shortcut_bindings = _load_shortcut_bindings(self._shortcut_path)
+        self._disabled_action_plugin_ids = _load_disabled_action_plugin_ids(self._action_plugin_state_path)
         self._input_routes = load_input_routes()
         self._records_by_id = {
             record.plugin_id: record
@@ -616,36 +799,11 @@ class PluginManager:
         for record in self._records:
             if record.plugin is None or record.plugin_id is None:
                 continue
-            host = PluginHostContext(
-                plugin_id=record.plugin_id,
-                ui_parent=self.root,
-                logger=get_logger(f"plugin.{record.plugin_id}"),
-                post_to_ui=self._post_to_ui,
-                report_status=lambda status, plugin_id=record.plugin_id: self._report_status(
-                    plugin_id, status
-                ),
-                prepare_window=self.prepare_window,
-                request_volume_refresh=self.request_volume_refresh,
-                get_volume_statuses=self._get_volume_statuses,
-                load_plugin_settings=lambda plugin_id=record.plugin_id: self._load_plugin_settings(plugin_id),
-                save_plugin_settings=lambda settings, plugin_id=record.plugin_id: self._save_plugin_settings(plugin_id, settings),
-                load_legacy_overlay_mode=load_legacy_overlay_mode,
-                clear_legacy_overlay_mode=clear_legacy_overlay_mode,
-            )
-            try:
-                record.plugin.initialize(host)
-                record.initialized = True
-                if record.status == "Not initialized":
-                    record.status = "Ready"
-                self._initialize_shortcut_actions(record)
-            except Exception as exc:
-                record.status = f"Initialization failed: {self._format_error(exc)}"
-                LOGGER.error(
-                    "Plugin initialization failed for %s (%s).",
-                    record.plugin_id,
-                    exc.__class__.__name__,
-                )
-                self._notice(f"Plugin {record.name} is unavailable: {self._format_error(exc)}")
+            if self._is_action_plugin(record) and record.plugin_id in self._disabled_action_plugin_ids:
+                record.enabled = False
+                record.status = "Disabled"
+                continue
+            self._initialize_record(record)
 
         active_record = self._records_by_id.get(self._active_overlay_plugin_id)
         if active_record is None or not active_record.initialized or not active_record.is_overlay_renderer:
@@ -681,6 +839,8 @@ class PluginManager:
         self._route_hotkeys = {}
         previous = self._route_instances
         self._route_instances = {}
+        previous_inputs = self._route_input_instances
+        self._route_input_instances = {}
         for route in self._input_routes:
             # Route input endpoints use the logical source ID (for example,
             # ``windows-volume-keys``), not the plugin module ID.
@@ -700,14 +860,28 @@ class PluginManager:
                 input_record.plugin.create_input(route.input.parameters)
                 provider = output_record.plugin.create_output(route.output.parameters)
                 self._route_instances[route.route_id] = provider
-                for direction, hotkey in self._route_hotkey_bindings(input_record, route.input.parameters):
+                create_route_input = getattr(input_record.plugin, "create_route_input", None)
+                if callable(create_route_input):
+                    route_input = create_route_input(route.route_id, route.input.parameters)
+                    start = getattr(route_input, "start", None)
+                    if not callable(start):
+                        raise ValueError("Route input did not return a startable instance.")
+                    start()
+                    self._route_input_instances[route.route_id] = route_input
+                for direction, binding in self._route_hotkey_bindings(input_record, route.input.parameters):
                     binding_id = f"route/{route.route_id}/{direction}"
                     if self._hotkeys is None:
                         raise ValueError("Passive keyboard service is unavailable.")
-                    self._set_route_hotkey(binding_id, hotkey)
+                    self._set_route_hotkey(binding_id, binding)
                     self._route_hotkeys[binding_id] = -1 if direction == "down" else 1
             except Exception as exc:
                 self._route_instances.pop(route.route_id, None)
+                route_input = self._route_input_instances.pop(route.route_id, None)
+                if route_input is not None:
+                    try:
+                        route_input.shutdown(0.0)
+                    except Exception:
+                        pass
                 self._notice(f"Route {route.name} is unavailable: {self._format_error(exc)}")
         for route_id, provider in previous.items():
             if provider is self._route_instances.get(route_id):
@@ -716,21 +890,28 @@ class PluginManager:
                 provider.shutdown(0.0)
             except Exception:
                 pass
+        for route_id, route_input in previous_inputs.items():
+            if route_input is self._route_input_instances.get(route_id):
+                continue
+            try:
+                route_input.shutdown(0.0)
+            except Exception:
+                pass
 
     def _validate_route_hotkeys(self, routes: tuple[VolumeRoute, ...]) -> None:
         """Reject duplicate keyboard route combinations rather than broadcasting."""
         seen: dict[HotkeySpec, str] = {}
         for route in routes:
             record = next((item for item in self._records if item.initialized and item.input_id == route.input_id), None)
-            for _direction, hotkey in self._route_hotkey_bindings(record, route.input.parameters):
-                previous = seen.get(hotkey)
+            for _direction, binding in self._route_hotkey_bindings(record, route.input.parameters):
+                previous = seen.get(binding.hotkey)
                 if previous is not None:
-                    raise ValueError(f"{hotkey.label} is already used by keyboard route {previous}; identical keyboard route keys are not broadcast.")
-                seen[hotkey] = route.name
+                    raise ValueError(f"{binding.hotkey.label} is already used by keyboard route {previous}; identical keyboard route keys are not broadcast.")
+                seen[binding.hotkey] = route.name
 
     @staticmethod
-    def _route_hotkey_bindings(record: PluginRecord | None, parameters: object) -> tuple[tuple[str, HotkeySpec], ...]:
-        """Validate plugin-owned passive bindings before using them as dict keys."""
+    def _route_hotkey_bindings(record: PluginRecord | None, parameters: object) -> tuple[tuple[str, RouteHotkeyBinding], ...]:
+        """Validate plugin-owned route bindings before using them as dict keys."""
         bindings = getattr(record.plugin, "route_hotkeys", None) if record is not None else None
         if not callable(bindings):
             return ()
@@ -740,11 +921,15 @@ class PluginManager:
             raise ValueError(f"Keyboard route parameters are invalid: {PluginManager._format_error(exc)}") from exc
         if not isinstance(values, dict):
             raise ValueError("Route input returned invalid passive key bindings.")
-        result: list[tuple[str, HotkeySpec]] = []
-        for direction, hotkey in values.items():
-            if not isinstance(direction, str) or direction not in {"down", "up"} or not isinstance(hotkey, HotkeySpec):
-                raise ValueError("Route input returned invalid passive key bindings.")
-            result.append((direction, hotkey))
+        result: list[tuple[str, RouteHotkeyBinding]] = []
+        for direction, binding in values.items():
+            # API-v3 route inputs returned HotkeySpec directly. Keep those
+            # integrations passive while allowing typed per-route consumption.
+            if isinstance(binding, HotkeySpec):
+                binding = RouteHotkeyBinding(binding)
+            if not isinstance(direction, str) or direction not in {"down", "up"} or not isinstance(binding, RouteHotkeyBinding):
+                raise ValueError("Route input returned invalid keyboard bindings.")
+            result.append((direction, binding))
         return tuple(result)
 
     def _notice(self, message: str) -> None:
@@ -791,7 +976,9 @@ class PluginManager:
                 raise ValueError("Shortcut action IDs must be unique per plugin.")
             record.shortcut_actions = tuple(actions)
             record.configured_hotkeys = {
-                self._binding_id(record.plugin_id, action.action_id): self._shortcut_bindings.get(self._binding_id(record.plugin_id, action.action_id))
+                self._binding_id(record.plugin_id, action.action_id): self._shortcut_bindings.get(
+                    self._binding_id(record.plugin_id, action.action_id), ActionHotkeyBinding(None)
+                )
                 for action in actions
             }
         else:
@@ -809,8 +996,12 @@ class PluginManager:
             record.shortcut_error = "global shortcut service is unavailable"
             return
         try:
-            for binding_id, hotkey in configured.items():
-                self._hotkeys.set_binding(binding_id, hotkey)
+            for binding_id, binding in configured.items():
+                try:
+                    self._hotkeys.set_binding(binding_id, binding.hotkey, consume=binding.consume)
+                except TypeError:
+                    # API-v1 test doubles cannot represent a consumption policy.
+                    self._hotkeys.set_binding(binding_id, binding.hotkey)
         except Exception as exc:
             record.shortcut_error = self._format_error(exc)
             LOGGER.warning(
@@ -820,22 +1011,22 @@ class PluginManager:
             )
             self._notice(f"Could not register {record.name} shortcut: {self._format_error(exc)}")
             return
-        record.active_hotkeys = dict(configured)
+        record.active_hotkeys = {binding_id: binding.hotkey for binding_id, binding in configured.items()}
         record.shortcut_error = None
 
-    def _set_named_shortcut(self, record: PluginRecord, action_id: str, hotkey: HotkeySpec | None) -> None:
+    def _set_named_shortcut(self, record: PluginRecord, action_id: str, hotkey: HotkeySpec | None, forward_keys: bool | None = None) -> None:
         assert record.plugin_id is not None
         binding_id = self._binding_id(record.plugin_id, action_id)
         configured = record.configured_hotkeys or {}
-        previous = configured.get(binding_id)
-        configured[binding_id] = hotkey
+        previous = configured.get(binding_id, ActionHotkeyBinding(None))
+        configured[binding_id] = ActionHotkeyBinding(hotkey, previous.forward_keys if forward_keys is None else forward_keys)
         record.configured_hotkeys = configured
         try:
             self.refresh_hotkey(record.plugin_id)
             if record.shortcut_error:
                 raise ValueError(record.shortcut_error)
             updated = dict(self._shortcut_bindings)
-            updated[binding_id] = hotkey
+            updated[binding_id] = configured[binding_id]
             _save_shortcut_bindings(self._shortcut_path, updated)
             self._shortcut_bindings = updated
         except Exception:
@@ -865,16 +1056,25 @@ class PluginManager:
             raise ValueError("Keep holding the modifier and press another key.")
         return HotkeySpec(flags, virtual_key)
 
-    def show_shortcut_configuration(self, parent: tk.Misc | None = None) -> None:
+    def show_shortcut_configuration(
+        self,
+        parent: tk.Misc | None = None,
+        selected_plugin_id: str | None = None,
+    ) -> None:
         parent = parent or self.root
+        selected_record = self._records_by_id.get(selected_plugin_id) if selected_plugin_id is not None else None
         window = tk.Toplevel(parent)
-        window.title("Configure shortcuts")
+        window.title(
+            f"Configure shortcuts: {selected_record.name}"
+            if selected_record is not None
+            else "Configure shortcuts"
+        )
         window.transient(parent)
         self.prepare_window(window)
         frame = ttk.Frame(window, padding=12)
         frame.grid(sticky="nsew")
         tree = ttk.Treeview(frame, columns=("shortcut",), show="tree headings", height=8)
-        tree.heading("#0", text="Plugin action")
+        tree.heading("#0", text="Action" if selected_record is not None else "Plugin action")
         tree.heading("shortcut", text="Shortcut")
         tree.column("shortcut", width=180)
         tree.grid(row=0, column=0, columnspan=3, sticky="nsew")
@@ -888,6 +1088,7 @@ class PluginManager:
                 if (
                     not record.initialized
                     or record.plugin_id is None
+                    or (selected_plugin_id is not None and record.plugin_id != selected_plugin_id)
                     or record.is_volume_provider
                     or record.input_id is not None
                     or record.is_overlay_renderer
@@ -897,8 +1098,9 @@ class PluginManager:
                     if action.action_id == "legacy" and not callable(getattr(record.plugin, "get_shortcut_actions", None)):
                         continue
                     binding_id = self._binding_id(record.plugin_id, action.action_id)
-                    hotkey = (record.configured_hotkeys or {}).get(binding_id)
-                    tree.insert("", "end", iid=binding_id, text=f"{record.name}: {action.label}", values=(hotkey.label if hotkey else "Not set",))
+                    binding = (record.configured_hotkeys or {}).get(binding_id, ActionHotkeyBinding(None))
+                    action_text = action.label if selected_record is not None else f"{record.name}: {action.label}"
+                    tree.insert("", "end", iid=binding_id, text=action_text, values=(binding.hotkey.label if binding.hotkey else "Not set",))
 
         message = tk.StringVar(window)
         ttk.Label(frame, textvariable=message, wraplength=560).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
@@ -909,11 +1111,36 @@ class PluginManager:
             record = self._records_by_id.get(plugin_id)
             if record is None: return None
             return next(((record, action) for action in record.shortcut_actions if action.action_id == action_id), None)
+        forward_keys = tk.BooleanVar(window, value=True)
+        def sync_forward_keys(_event: Any = None) -> None:
+            selected_action = selected()
+            if selected_action is None or selected_action[0].plugin_id is None:
+                forward_checkbox.state(["disabled"])
+                return
+            binding_id = self._binding_id(selected_action[0].plugin_id, selected_action[1].action_id)
+            binding = (selected_action[0].configured_hotkeys or {}).get(binding_id, ActionHotkeyBinding(None))
+            forward_keys.set(binding.forward_keys)
+            forward_checkbox.state(["!disabled"])
+        def save_forward_keys() -> None:
+            selected_action = selected()
+            if selected_action is None:
+                return
+            record, action = selected_action
+            binding_id = self._binding_id(record.plugin_id, action.action_id)
+            binding = (record.configured_hotkeys or {}).get(binding_id, ActionHotkeyBinding(None))
+            try:
+                self._set_named_shortcut(record, action.action_id, binding.hotkey, forward_keys.get())
+            except (ValueError, OSError) as exc:
+                message.set(self._format_error(exc))
+                sync_forward_keys()
+                return
+            message.set("Shortcut input policy saved.")
+            refresh()
         capturing = False
         def capture(event: Any) -> str | None:
             nonlocal capturing
             if not capturing or pending is None: return None
-            try: hotkey = self._hotkey_from_tk_event(event); self._set_named_shortcut(pending[0], pending[1].action_id, hotkey)
+            try: hotkey = self._hotkey_from_tk_event(event); self._set_named_shortcut(pending[0], pending[1].action_id, hotkey, forward_keys.get())
             except (ValueError, OSError) as exc: message.set(self._format_error(exc)); return "break"
             capturing = False; capture_button.configure(text="Capture"); message.set("Shortcut saved."); refresh(); return "break"
         def begin_capture() -> None:
@@ -928,11 +1155,22 @@ class PluginManager:
             except (ValueError, OSError) as exc: message.set(self._format_error(exc)); return
             message.set("Shortcut cleared."); refresh()
         capture_button = ttk.Button(frame, text="Capture", command=begin_capture)
-        capture_button.grid(row=2, column=0, sticky="w", pady=(10, 0)); capture_button.bind("<KeyPress>", capture)
-        ttk.Button(frame, text="Clear", command=clear).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
-        ttk.Button(frame, text="Close", command=window.destroy).grid(row=2, column=2, sticky="e", pady=(10, 0))
+        forward_checkbox = ttk.Checkbutton(frame, text="Forward keys to other applications", variable=forward_keys, command=save_forward_keys)
+        forward_checkbox.grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        capture_button.grid(row=3, column=0, sticky="w", pady=(10, 0)); capture_button.bind("<KeyPress>", capture)
+        ttk.Button(frame, text="Clear", command=clear).grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
+        ttk.Button(frame, text="Close", command=window.destroy).grid(row=3, column=2, sticky="e", pady=(10, 0))
         window.bind("<Escape>", lambda _event: window.destroy()); window.protocol("WM_DELETE_WINDOW", window.destroy)
-        refresh(); window.grab_set(); tree.focus_set(); window.wait_window()
+        refresh()
+        tree.bind("<<TreeviewSelect>>", sync_forward_keys)
+        if selected_plugin_id is not None and len(tree.get_children()) == 1:
+            tree.selection_set(tree.get_children()[0])
+            sync_forward_keys()
+            begin_capture()
+        window.grab_set()
+        if not capturing:
+            tree.focus_set()
+        window.wait_window()
 
     def _dispatch_trigger(self, binding_id: str) -> None:
         if self._closing.is_set():
@@ -941,6 +1179,7 @@ class PluginManager:
         if delta is not None:
             parts = binding_id.split("/")
             if len(parts) == 3:
+                LOGGER.info("Route shortcut triggered: adjustment=%+d.", delta)
                 self._on_route_input(parts[1], delta)
             return
         plugin_id, separator, action_id = binding_id.partition("/")
@@ -952,7 +1191,13 @@ class PluginManager:
         with self._inflight_lock:
             existing = self._inflight.get(binding_id)
             if existing is not None and existing.is_alive():
+                LOGGER.info("Plugin shortcut ignored because its action is already running.")
                 return
+            LOGGER.info(
+                "Plugin shortcut triggered: plugin=%s, action=%s.",
+                plugin_id,
+                action_id,
+            )
             worker = threading.Thread(
                 target=self._run_trigger,
                 args=(record, action_id, binding_id),
@@ -970,18 +1215,26 @@ class PluginManager:
         if delta is not None and len(parts) == 3:
             self._on_route_key(parts[1], delta, pressed)
 
-    def _set_route_hotkey(self, binding_id: str, hotkey: HotkeySpec | None) -> None:
+    def _set_route_hotkey(self, binding_id: str, binding: RouteHotkeyBinding | None) -> None:
         assert self._hotkeys is not None
         setter = getattr(self._hotkeys, "set_route_binding", None)
         if callable(setter):
-            setter(binding_id, hotkey)
+            if binding is None:
+                setter(binding_id, None)
+            else:
+                setter(binding_id, binding.hotkey, consume=binding.consume)
         else:
-            self._hotkeys.set_binding(binding_id, hotkey)
+            self._hotkeys.set_binding(binding_id, binding.hotkey if binding is not None else None)
 
     def _run_trigger(self, record: PluginRecord, action_id: str, binding_id: str) -> None:
         try:
             if not self._closing.is_set():
                 record.plugin.trigger_shortcut(action_id)
+                LOGGER.info(
+                    "Plugin shortcut handler returned: plugin=%s, action=%s.",
+                    record.plugin_id,
+                    action_id,
+                )
         except Exception as exc:
             LOGGER.error(
                 "Plugin trigger failed for %s (%s).",
@@ -1050,7 +1303,7 @@ class PluginManager:
             frame,
             text=(
                 "Action plugins run as trusted in-process Python code. New or removed "
-                "plugin files are detected after windows-ddc restarts. Configure volume "
+                "plugin files are detected after FenSoundSwitch restarts. Configure volume "
                 "providers and input routes below."
             ),
             wraplength=700,
@@ -1067,11 +1320,11 @@ class PluginManager:
         tree.heading("#0", text="Plugin")
         tree.heading("source", text="Source")
         tree.heading("status", text="Status")
-        tree.heading("shortcut", text="Active shortcut")
-        tree.column("#0", width=170, stretch=True)
-        tree.column("source", width=210, stretch=True)
-        tree.column("status", width=260, stretch=True)
-        tree.column("shortcut", width=135, stretch=False)
+        tree.heading("shortcut", text="Active shortcuts")
+        tree.column("#0", width=155, stretch=True)
+        tree.column("source", width=115, stretch=False)
+        tree.column("status", width=190, stretch=True)
+        tree.column("shortcut", width=260, stretch=True)
         tree.grid(row=1, column=0, columnspan=3, sticky="nsew")
 
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
@@ -1084,7 +1337,7 @@ class PluginManager:
             for item in tree.get_children():
                 tree.delete(item)
             for record in self.records:
-                if not record.initialized or record.is_volume_provider or record.input_id is not None or record.is_overlay_renderer:
+                if not self._is_action_plugin(record):
                     continue
                 tree.insert(
                     "",
@@ -1107,21 +1360,30 @@ class PluginManager:
 
         def update_buttons(_event: Any = None) -> None:
             record = selected_record()
-            if record is not None and record.plugin is not None and record.initialized:
+            if record is not None and record.plugin is not None and record.initialized and getattr(record.plugin, "has_configuration", True):
                 configure_button.state(["!disabled"])
             else:
                 configure_button.state(["disabled"])
+            if record is not None and record.shortcut_actions:
+                shortcuts_button.state(["!disabled"])
+            else:
+                shortcuts_button.state(["disabled"])
+            if record is not None:
+                enable_button.configure(text="Disable" if record.enabled else "Enable")
+                enable_button.state(["!disabled"])
+            else:
+                enable_button.state(["disabled"])
 
         def configure_selected() -> None:
             record = selected_record()
-            if record is None or record.plugin is None or not record.initialized:
+            if record is None or record.plugin is None or not record.initialized or not getattr(record.plugin, "has_configuration", True):
                 return
             try:
                 record.plugin.configure(parent)
                 if record.plugin_id is not None and not callable(getattr(record.plugin, "get_shortcut_actions", None)):
                     # API-v1 plugins may still update their own legacy shortcut in Configure.
                     configured = record.plugin.get_hotkey()
-                    record.configured_hotkeys = {self._binding_id(record.plugin_id, "legacy"): configured}
+                    record.configured_hotkeys = {self._binding_id(record.plugin_id, "legacy"): ActionHotkeyBinding(configured)}
                     self.refresh_hotkey(record.plugin_id)
             except Exception as exc:
                 record.status = f"Configuration failed: {self._format_error(exc)}"
@@ -1140,6 +1402,19 @@ class PluginManager:
             except OSError as exc:
                 self._notice(f"Could not open the plugin folder: {self._format_error(exc)}")
 
+        def configure_selected_shortcut() -> None:
+            record = selected_record()
+            if record is None or record.plugin_id is None or not record.shortcut_actions:
+                return
+            self.show_shortcut_configuration(parent, record.plugin_id)
+
+        def toggle_selected() -> None:
+            record = selected_record()
+            if record is None or record.plugin_id is None:
+                return
+            self.set_action_plugin_enabled(record.plugin_id, not record.enabled)
+            refresh_tree()
+
         configure_button = ttk.Button(
             frame,
             text="Configure",
@@ -1150,16 +1425,22 @@ class PluginManager:
         shortcuts_button = ttk.Button(
             frame,
             text="Configure shortcuts",
-            command=lambda: self.show_shortcut_configuration(parent),
+            command=configure_selected_shortcut,
         )
         shortcuts_button.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
+        enable_button = ttk.Button(
+            frame,
+            text="Disable",
+            command=toggle_selected,
+        )
+        enable_button.grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(10, 0))
         open_button = ttk.Button(
             frame,
             text="Open plugins folder",
             underline=0,
             command=open_user_folder,
         )
-        open_button.grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(10, 0))
+        open_button.grid(row=2, column=3, sticky="w", padx=(8, 0), pady=(10, 0))
         tree.bind("<<TreeviewSelect>>", update_buttons)
         tree.bind("<Double-1>", lambda _event: configure_selected())
         tree.bind("<Return>", lambda _event: configure_selected())
@@ -1425,6 +1706,13 @@ class PluginManager:
             except Exception:
                 stopped = False
             self._hotkeys = None
+
+        for route_input in tuple(self._route_input_instances.values()):
+            try:
+                route_input.shutdown(max(0.0, deadline - time.monotonic()))
+            except Exception:
+                stopped = False
+        self._route_input_instances = {}
 
         for record in self._records:
             if not record.initialized or record.plugin is None:

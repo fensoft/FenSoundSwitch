@@ -116,6 +116,7 @@ class PioneerEliteVolumePlugin:
     name = "Pioneer/Elite network volume"
     description = "Controls a configured Pioneer or Elite receiver main zone using its documented network control protocol."
     provider_name = "Pioneer/Elite main-zone volume"
+    supports_fast_volume_write = True
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
@@ -221,6 +222,11 @@ class PioneerEliteVolumePlugin:
         with self._lock:
             return _to_percent(self._request_volume_locked(command))
 
+    def write_volume_fast(self, target_volume: int) -> None:
+        command = f"{_from_percent(target_volume):03d}V\r".encode("ascii")
+        with self._lock:
+            self._send_unconfirmed_locked(command)
+
     def shutdown(self, timeout: float) -> bool:
         with self._lock:
             self._close_transport_locked()
@@ -258,6 +264,20 @@ class PioneerEliteVolumePlugin:
             self._socket.settimeout(IO_TIMEOUT_SECONDS)
             self._parser = PioneerLineParser()
         return self._socket
+
+    def _send_unconfirmed_locked(self, command: bytes) -> None:
+        config = self._config
+        if config is None:
+            raise PioneerEliteError("Configure a Pioneer or Elite receiver in Routes.")
+        try:
+            connection = socket.create_connection((config.host, config.port), timeout=CONNECT_TIMEOUT_SECONDS)
+            try:
+                connection.settimeout(IO_TIMEOUT_SECONDS)
+                connection.sendall(command)
+            finally:
+                connection.close()
+        except OSError as exc:
+            raise PioneerEliteError(f"Could not communicate with the configured Pioneer/Elite receiver: {exc}") from exc
 
     def _close_transport_locked(self) -> None:
         connection, self._socket = self._socket, None

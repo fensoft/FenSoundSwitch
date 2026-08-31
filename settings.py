@@ -13,7 +13,10 @@ from ddc import MonitorIdentity, SavedMonitorSelection
 SCHEMA_VERSION = 8
 DEFAULT_CHANGE_SPEED = "slow"
 CHANGE_SPEEDS = frozenset(("slow", "medium", "fast"))
-SETTINGS_PATH = Path(os.environ.get("APPDATA") or Path.home()) / "windows-ddc" / "settings.json"
+USER_DATA_DIRECTORY = Path(os.environ.get("APPDATA") or Path.home()) / "fensoundswitch"
+LEGACY_USER_DATA_DIRECTORY = Path(os.environ.get("APPDATA") or Path.home()) / "windows-ddc"
+SETTINGS_PATH = USER_DATA_DIRECTORY / "settings.json"
+LEGACY_SETTINGS_PATH = LEGACY_USER_DATA_DIRECTORY / "settings.json"
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _ROUTE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 MAX_ROUTE_NAME_LENGTH = 80
@@ -81,7 +84,22 @@ def _read_settings_object() -> dict[str, object] | None:
     try:
         data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return None
+        # Isolated tests and callers with an injected settings path must never
+        # fall through to a real user's legacy AppData directory.
+        if SETTINGS_PATH != USER_DATA_DIRECTORY / "settings.json":
+            return None
+        # Preserve the old namespace and copy only valid settings into the new one.
+        try:
+            data = json.loads(LEGACY_SETTINGS_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        try:
+            _write_settings_object(data)
+        except OSError:
+            pass
+        return data
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
 
@@ -191,7 +209,7 @@ def _endpoint(value: object) -> RouteEndpoint | None:
 def _legacy_parameters(plugin_id: str) -> dict[str, object]:
     """Best-effort import of old per-plugin settings; never mutate that file."""
     try:
-        payload = json.loads((Path(os.environ.get("APPDATA") or Path.home()) / "windows-ddc" / "plugin-settings" / f"{plugin_id}.json").read_text(encoding="utf-8"))
+        payload = json.loads((LEGACY_USER_DATA_DIRECTORY / "plugin-settings" / f"{plugin_id}.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return {}
     if not isinstance(payload, dict):

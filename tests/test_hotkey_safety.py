@@ -177,12 +177,14 @@ class MonitorVolumeAppHotkeyTests(unittest.TestCase):
         provider.write_volume.assert_called_once_with(52)
 
         provider.read_volume.return_value = 0
+        app._volume_statuses = {}
         with patch("gui.threading.Thread", ImmediateThread):
             app._route_windows_volume_delta(-2)
 
         provider.write_volume.assert_called_once_with(52)
 
         provider.read_volume.return_value = 50
+        app._volume_statuses = {}
         provider.write_volume.side_effect = RuntimeError("Transient DDC response failure")
         with patch("gui.threading.Thread", ImmediateThread):
             app._route_windows_volume_delta(2)
@@ -452,6 +454,15 @@ class RouteInputRepeatSchedulerTests(unittest.TestCase):
         app._busy = False
         app._poll_queues()
         app._route_volume_delta.assert_called_once_with(("route",), 2)
+
+    def test_gui_accepts_configured_multi_step_route_inputs(self) -> None:
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._closing = False
+        app._route_input_queue = queue.Queue()
+
+        app._queue_route_input_delta("mqtt-route", 5)
+
+        self.assertEqual(app._route_input_queue.get_nowait(), ("mqtt-route", 5))
 
 
 if __name__ == "__main__":

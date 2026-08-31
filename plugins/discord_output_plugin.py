@@ -38,7 +38,8 @@ _RPC_SCOPES = ("rpc", "rpc.voice.read", "rpc.voice.write")
 _OAUTH_TOKEN_URL = "https://discord.com/api/v10/oauth2/token"
 _DEVELOPER_PORTAL_URL = "https://discord.com/developers/applications"
 _DEFAULT_REDIRECT_URI = "https://127.0.0.1"
-_CREDENTIAL_TARGET = "windows-ddc/plugins/discord-output/oauth-rpc"
+_CREDENTIAL_TARGET = "fensoundswitch/plugins/discord-output/oauth-rpc"
+_LEGACY_CREDENTIAL_TARGET = "windows-ddc/plugins/discord-output/oauth-rpc"
 _PROTOTYPE_CREDENTIAL_TARGET = "windows-ddc/test-discord/oauth-rpc"
 _CREDENTIAL_VERSION = 1
 _CRED_TYPE_GENERIC = 1
@@ -309,11 +310,11 @@ def _write_credential(target: str, saved: dict[str, object]) -> None:
     credential = _CredentialW()
     credential.Type = _CRED_TYPE_GENERIC
     credential.TargetName = target
-    credential.Comment = "Discord OAuth RPC grant for windows-ddc"
+    credential.Comment = "Discord OAuth RPC grant for FenSoundSwitch"
     credential.CredentialBlobSize = len(encoded)
     credential.CredentialBlob = ctypes.cast(blob, ctypes.POINTER(wintypes.BYTE))
     credential.Persist = _CRED_PERSIST_LOCAL_MACHINE
-    credential.UserName = str(saved.get("client_id", "windows-ddc"))
+    credential.UserName = str(saved.get("client_id", "FenSoundSwitch"))
     cred_write, _, _, _ = _credential_functions()
     if not cred_write(ctypes.byref(credential), 0):
         raise ctypes.WinError(ctypes.get_last_error())
@@ -353,13 +354,14 @@ def _load_saved_oauth() -> dict[str, object] | None:
     saved = _read_credential(_CREDENTIAL_TARGET)
     if _is_valid_saved_oauth(saved):
         return saved
-    prototype = _read_credential(_PROTOTYPE_CREDENTIAL_TARGET)
-    if not _is_valid_saved_oauth(prototype, require_tokens=True):
-        return None
-    assert prototype is not None
-    _write_credential(_CREDENTIAL_TARGET, prototype)
-    _delete_credential(_PROTOTYPE_CREDENTIAL_TARGET)
-    return prototype
+    for legacy_target in (_LEGACY_CREDENTIAL_TARGET, _PROTOTYPE_CREDENTIAL_TARGET):
+        legacy = _read_credential(legacy_target)
+        if _is_valid_saved_oauth(legacy, require_tokens=True):
+            assert legacy is not None
+            # Legacy grants are never deleted; the user can revoke them explicitly.
+            _write_credential(_CREDENTIAL_TARGET, legacy)
+            return legacy
+    return None
 
 
 def _save_oauth(saved: dict[str, object]) -> None:
@@ -413,7 +415,7 @@ def _post_oauth_form(url: str, fields: dict[str, str]) -> dict[str, object]:
         headers={
             "Accept": "application/json",
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "windows-ddc-discord-output/1",
+            "User-Agent": "fensoundswitch-discord-output/1",
         },
         method="POST",
     )

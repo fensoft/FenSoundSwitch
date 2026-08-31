@@ -18,6 +18,7 @@ from plugin_manager import (
     PluginRecord,
     adjacent_external_plugins_directory,
     discover_plugins,
+    migrate_legacy_plugin_settings,
 )
 import plugin_manager
 import settings
@@ -64,6 +65,8 @@ class PluginDiscoveryTests(unittest.TestCase):
                 "windows11-overlay",
                 "macos-overlay",
                 "discord-output",
+                "audio-keepalive",
+                "windows-default-device",
                 "ddc-volume",
                 "onkyo-volume",
                 "denon-marantz-volume",
@@ -72,7 +75,9 @@ class PluginDiscoveryTests(unittest.TestCase):
                 "sony-volume",
                 "windows-volume-input",
                 "keyboard-input",
+                "mqtt-input",
                 "windows-soundcard-volume",
+                "windows-microphone-gain",
                 "alpha",
                 "zeta",
                 "beta",
@@ -83,12 +88,37 @@ class PluginDiscoveryTests(unittest.TestCase):
         self.assertFalse(records[0].is_volume_provider)
         self.assertIsNone(records[0].input_id)
 
+    def test_unconfigured_shortcut_label_is_blank(self) -> None:
+        self.assertEqual(PluginRecord(key="plugin", source="Bundled").shortcut_label, "")
+
     def test_adjacent_external_plugins_are_separate_from_the_bundled_package(self) -> None:
         with patch("plugin_manager._runtime_base_directory", return_value=Path("C:/runtime")):
             directory = adjacent_external_plugins_directory()
 
         self.assertEqual(directory, Path("C:/runtime/external-plugins"))
         self.assertNotEqual(directory.name, "plugins")
+
+    def test_legacy_plugin_settings_are_copied_without_changing_the_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            legacy = root / "windows-ddc" / "plugin-settings"
+            current = root / "fensoundswitch" / "plugin-settings"
+            legacy.mkdir(parents=True)
+            source = legacy / "example.json"
+            source.write_text('{"schema_version": 1, "host": "receiver"}', encoding="utf-8")
+
+            migrate_legacy_plugin_settings(current, legacy)
+
+            self.assertEqual(
+                (current / "example.json").read_text(encoding="utf-8"),
+                source.read_text(encoding="utf-8"),
+            )
+
+    def test_action_plugin_state_rejects_malformed_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "action-plugin-state.json"
+            path.write_text('{"schema_version": 1, "disabled_plugin_ids": ["valid", "valid"]}', encoding="utf-8")
+            self.assertEqual(plugin_manager._load_disabled_action_plugin_ids(path), set())
 
     def test_bad_version_import_failure_and_duplicate_id_are_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -566,11 +596,54 @@ class PluginManagerTests(unittest.TestCase):
             hotkey = HotkeySpec(MOD_CONTROL, ord("D"))
             manager._set_named_shortcut(manager.records[0], "do-thing", hotkey)
             self.assertEqual(manager._hotkeys.bindings[-1], ("fake/do-thing", hotkey))
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["bindings"]["fake/do-thing"], hotkey.to_json())
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["bindings"]["fake/do-thing"],
+                {"hotkey": hotkey.to_json(), "forward_keys": True},
+            )
             manager._dispatch_trigger("fake/do-thing")
             self.assertTrue(plugin.trigger_entered.wait(1.0))
             self.assertEqual(plugin.action_id, "do-thing")
             manager.stop(1.0)
+
+    def test_legacy_action_binding_migrates_to_forwarding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shortcuts.json"
+            hotkey = HotkeySpec(MOD_CONTROL, ord("D"))
+            path.write_text(
+                json.dumps({"schema_version": 1, "bindings": {"fake/do-thing": hotkey.to_json()}}),
+                encoding="utf-8",
+            )
+            binding = plugin_manager._load_shortcut_bindings(path)["fake/do-thing"]
+        self.assertEqual(binding.hotkey, hotkey)
+        self.assertTrue(binding.forward_keys)
+
+    def test_disabled_action_plugin_skips_startup_then_can_be_toggled(self) -> None:
+        plugin = _FakePlugin()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "action-plugin-state.json"
+            plugin_manager._save_disabled_action_plugin_ids(state_path, {plugin.plugin_id})
+            manager = PluginManager(
+                Mock(),
+                post_to_ui=lambda callback: callback(),
+                on_notice=lambda _message: None,
+                hotkey_factory=_FakeHotkeys,
+                action_plugin_state_path_override=state_path,
+            )
+            with patch("plugin_manager.discover_plugins", return_value=[_record(plugin)]):
+                manager.start()
+
+            record = manager.records[0]
+            self.assertFalse(record.enabled)
+            self.assertFalse(record.initialized)
+            self.assertEqual(record.status, "Disabled")
+            self.assertTrue(manager.set_action_plugin_enabled(plugin.plugin_id, True))
+            self.assertTrue(record.initialized)
+            self.assertEqual(plugin.host.plugin_id, plugin.plugin_id)
+            self.assertTrue(manager.set_action_plugin_enabled(plugin.plugin_id, False))
+            self.assertFalse(record.initialized)
+            self.assertEqual(record.status, "Disabled")
+            self.assertEqual(plugin.shutdown_count, 1)
+            self.assertEqual(plugin_manager._load_disabled_action_plugin_ids(state_path), {plugin.plugin_id})
 
     def test_routed_volume_provider_receives_topology_notification(self) -> None:
         plugin = _FakeVolumePlugin()
@@ -592,6 +665,7 @@ class PluginManagerTests(unittest.TestCase):
         from plugins.sony_volume_plugin import SonyVolumePlugin
         from plugins.windows11_overlay_plugin import OverlayPlugin
         from plugins.windows_soundcard_volume_plugin import WindowsSoundcardVolumePlugin
+        from plugins.windows_microphone_gain_plugin import WindowsMicrophoneGainPlugin
         from plugins.windows_volume_input_plugin import WindowsVolumeInputPlugin
         from plugins.yamaha_volume_plugin import YamahaVolumePlugin
 
@@ -613,6 +687,7 @@ class PluginManagerTests(unittest.TestCase):
             ("pioneer-elite-volume", {"host": "pioneer.local", "port": 8102}),
             ("sony-volume", {"host": "sony.local", "port": 10000}),
             ("windows-soundcard-volume", {"endpoint_id": "endpoint-1", "display_name": "Desk speakers"}),
+            ("windows-microphone-gain", {"endpoint_id": "microphone-1", "display_name": "USB microphone"}),
         )
         routes = [
             {"route_id": f"windows-{index}", "name": f"Windows {plugin_id}", "input": {"plugin_id": "windows-volume-keys", "parameters": {}}, "output": {"plugin_id": plugin_id, "parameters": parameters}}
@@ -626,7 +701,7 @@ class PluginManagerTests(unittest.TestCase):
             record(OverlayPlugin(), overlay=True), record(MacOSOverlayPlugin(), overlay=True),
             record(WindowsVolumeInputPlugin(), input_id="windows-volume-keys"), record(KeyboardInputPlugin(), input_id="keyboard-keys"),
             record(DdcVolumePlugin()), record(OnkyoVolumePlugin()), record(DenonMarantzVolumePlugin()), record(YamahaVolumePlugin()),
-            record(PioneerEliteVolumePlugin()), record(SonyVolumePlugin()), record(WindowsSoundcardVolumePlugin()),
+            record(PioneerEliteVolumePlugin()), record(SonyVolumePlugin()), record(WindowsSoundcardVolumePlugin()), record(WindowsMicrophoneGainPlugin()),
         ]
         manager = PluginManager(Mock(), post_to_ui=lambda callback: callback(), on_notice=lambda _message: None, hotkey_factory=_FakeHotkeys)
         with patch("plugin_manager.discover_plugins", return_value=records):
@@ -791,9 +866,22 @@ class PassiveHotkeyTests(unittest.TestCase):
         new = HotkeySpec(MOD_ALT, ord("L"))
         controller._apply_binding("one", old)
         controller._apply_binding("one", new)
-        self.assertEqual(controller._bindings_by_plugin["one"], new)
+        self.assertEqual(controller._bindings_by_plugin["one"].hotkey, new)
         self.assertNotIn(old, controller._plugins_by_hotkey)
         self.assertEqual(controller._plugins_by_hotkey[new], "one")
+
+    def test_consuming_action_consumes_only_its_held_key_pair(self) -> None:
+        controller = self.make_controller()
+        controller._hook_handle = 99
+        controller._active.set()
+        controller._apply_binding("one", HotkeySpec(MOD_CONTROL, ord("K")), consume=True)
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=47):
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, 0x11), 47)
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, ord("K")), 1)
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, ord("K")), 1)
+            self.assertEqual(self._key_event(controller, WM_KEYUP, ord("K")), 1)
+            self.assertEqual(self._key_event(controller, WM_KEYUP, 0x11), 47)
+        self.assertEqual(controller._dispatch_queue.get_nowait(), "one")
 
     def test_repeat_keydown_is_forwarded_but_dispatched_once_until_keyup(self) -> None:
         controller = self.make_controller()
@@ -824,6 +912,90 @@ class PassiveHotkeyTests(unittest.TestCase):
             self._key_event(controller, WM_KEYUP, 0x11)
 
         self.assertEqual(events, [("route/one/up", True), ("route/one/up", False)])
+
+    def test_forwarding_route_forwards_down_repeats_and_matching_up(self) -> None:
+        events: list[tuple[str, bool]] = []
+        controller = PluginHotkeyController(lambda _plugin_id: None, lambda _error: None, lambda binding, pressed: events.append((binding, pressed)))
+        controller._hook_handle = 99
+        controller._active.set()
+        controller.set_route_binding("route/one/down", HotkeySpec(0, ord("J")))
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=47) as next_hook:
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, ord("J")), 47)
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, ord("J")), 47)
+            self.assertEqual(self._key_event(controller, WM_KEYUP, ord("J")), 47)
+
+        self.assertEqual(events, [("route/one/down", True), ("route/one/down", False)])
+        self.assertEqual(next_hook.call_count, 3)
+
+    def test_consuming_route_consumes_only_its_held_configured_key_pair(self) -> None:
+        events: list[tuple[str, bool]] = []
+        controller = PluginHotkeyController(lambda _plugin_id: None, lambda _error: None, lambda binding, pressed: events.append((binding, pressed)))
+        controller._hook_handle = 99
+        controller._active.set()
+        controller.set_route_binding("route/one/down", HotkeySpec(MOD_CONTROL, ord("J")), consume=True)
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=47) as next_hook:
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, 0x11), 47)
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, ord("L")), 47)
+            self.assertEqual(self._key_event(controller, WM_KEYUP, ord("L")), 47)
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, ord("J")), 1)
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, ord("J")), 1)
+            self.assertEqual(self._key_event(controller, WM_KEYUP, ord("J")), 1)
+            self.assertEqual(self._key_event(controller, WM_KEYUP, 0x11), 47)
+
+        self.assertEqual(events, [("route/one/down", True), ("route/one/down", False)])
+        self.assertEqual(next_hook.call_count, 4)
+
+    def test_removing_consuming_route_releases_repeat_before_keyup_is_forwarded(self) -> None:
+        events: list[tuple[str, bool]] = []
+        controller = PluginHotkeyController(lambda _plugin_id: None, lambda _error: None, lambda binding, pressed: events.append((binding, pressed)))
+        controller._hook_handle = 99
+        controller._active.set()
+        controller.set_route_binding("route/one/down", HotkeySpec(0, ord("J")), consume=True)
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=47) as next_hook:
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, ord("J")), 1)
+            controller.set_route_binding("route/one/down", None)
+            self.assertEqual(self._key_event(controller, WM_KEYUP, ord("J")), 47)
+
+        self.assertEqual(events, [("route/one/down", True), ("route/one/down", False)])
+        self.assertEqual(next_hook.call_count, 1)
+
+    def test_consuming_route_releases_on_hook_error_and_shutdown(self) -> None:
+        events: list[tuple[str, bool]] = []
+        fail_pressed = [True]
+
+        def route_key(binding: str, pressed: bool) -> None:
+            events.append((binding, pressed))
+            if pressed and fail_pressed[0]:
+                raise RuntimeError("dispatch failure")
+
+        errors: list[Exception] = []
+        controller = PluginHotkeyController(lambda _plugin_id: None, errors.append, route_key)
+        controller._hook_handle = 99
+        controller._active.set()
+        controller.set_route_binding("route/one/down", HotkeySpec(0, ord("J")), consume=True)
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=47):
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, ord("J")), 47)
+
+        self.assertEqual(events, [("route/one/down", True), ("route/one/down", False)])
+        self.assertEqual(len(errors), 1)
+
+        events.clear()
+        fail_pressed[0] = False
+        controller._stopping.clear()
+        controller._active.set()
+        controller.set_route_binding("route/one/up", HotkeySpec(0, ord("K")), consume=True)
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=47):
+            self.assertEqual(self._key_event(controller, WM_KEYDOWN, ord("K")), 1)
+        controller._request_stop()
+        self.assertEqual(events, [("route/one/up", True), ("route/one/up", False)])
+
+    def test_consuming_route_conflicts_with_passive_action_binding(self) -> None:
+        controller = self.make_controller()
+        controller._active.set()
+        hotkey = HotkeySpec(0, ord("J"))
+        controller._apply_binding("action/one", hotkey)
+        with self.assertRaises(HotkeyConflictError):
+            controller.set_route_binding("route/one/down", hotkey, consume=True)
 
     def test_binding_requires_a_running_observer(self) -> None:
         controller = self.make_controller()

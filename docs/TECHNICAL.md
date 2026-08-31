@@ -16,4 +16,4 @@ Bundled modules are installed in the `plugins` package. The plugin API supports 
 
 Bundled route outputs include DDC monitor volume and network receiver protocols for Onkyo/Integra, Denon/Marantz, Yamaha, Pioneer/Elite, and Sony. The host owns the native Windows volume hook, serializes all output operations, and publishes immutable route-status snapshots to plugins.
 
-External plugin code is trusted in-process Python. Adjacent plugins belong in `external-plugins`; per-user plugins belong in `%APPDATA%\windows-ddc\plugins`. See the architecture document before adding or changing a plugin capability.
+External plugin code is trusted in-process Python. Adjacent plugins belong in `external-plugins`; per-user plugins belong in `%APPDATA%\fensoundswitch\plugins`. `%APPDATA%\windows-ddc\plugins` is retained as a final read-only compatibility location during migration. See the architecture document before adding or changing a plugin capability.

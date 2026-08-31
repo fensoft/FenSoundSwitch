@@ -11,7 +11,8 @@ except ImportError:
 
 
 RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RUN_VALUE_NAME = "windows-ddc"
+RUN_VALUE_NAME = "FenSoundSwitch"
+LEGACY_RUN_VALUE_NAME = "windows-ddc"
 MAX_RUN_COMMAND_LENGTH = 260
 SOURCE_ENTRYPOINT = Path(__file__).resolve().with_name("app.py")
 
@@ -73,7 +74,12 @@ def is_start_with_windows_enabled() -> bool:
             0,
             registry.KEY_QUERY_VALUE,
         ) as key:
-            registry.QueryValueEx(key, RUN_VALUE_NAME)
+            try:
+                registry.QueryValueEx(key, RUN_VALUE_NAME)
+            except FileNotFoundError:
+                # Read the old value for compatibility; only an explicit checkbox
+                # action writes or removes Run values.
+                registry.QueryValueEx(key, LEGACY_RUN_VALUE_NAME)
     except FileNotFoundError:
         return False
     return True
@@ -95,6 +101,10 @@ def set_start_with_windows(enabled: bool) -> None:
                 registry.REG_SZ,
                 current_autostart_command(),
             )
+            try:
+                registry.DeleteValue(key, LEGACY_RUN_VALUE_NAME)
+            except FileNotFoundError:
+                pass
         return
 
     try:
@@ -106,6 +116,10 @@ def set_start_with_windows(enabled: bool) -> None:
         ) as key:
             try:
                 registry.DeleteValue(key, RUN_VALUE_NAME)
+            except FileNotFoundError:
+                pass
+            try:
+                registry.DeleteValue(key, LEGACY_RUN_VALUE_NAME)
             except FileNotFoundError:
                 pass
     except FileNotFoundError:
