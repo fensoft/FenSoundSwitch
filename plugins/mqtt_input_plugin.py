@@ -207,7 +207,7 @@ class MqttInputPlugin:
         window.title("Configure MQTT route")
         window.transient(parent)
         host.prepare_window(window)
-        frame = ttk.Frame(window, padding=12)
+        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
         frame.grid(sticky="nsew")
         frame.columnconfigure(1, weight=1)
         defaults = {"host": "", "port": str(DEFAULT_PORT), "username": "", "password": "", "discovery_prefix": DEFAULT_DISCOVERY_PREFIX, "topic_prefix": "fensoundswitch", "max_value": "100"}
@@ -228,8 +228,8 @@ class MqttInputPlugin:
                 status.set(str(exc))
                 return
             window.destroy()
-        ttk.Button(frame, text="Save", command=save).grid(row=8, column=0, sticky="w", pady=(12, 0))
-        ttk.Button(frame, text="Cancel", command=window.destroy).grid(row=8, column=1, sticky="e", pady=(12, 0))
+        ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=8, column=0, sticky="w", pady=(16, 0))
+        ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(row=8, column=1, sticky="e", pady=(16, 0))
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         window.grab_set()
 

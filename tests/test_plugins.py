@@ -767,6 +767,62 @@ class PluginManagerTests(unittest.TestCase):
         self.assertEqual(manager._route_instances, {})
 
 
+class FluentPanelStateTests(unittest.TestCase):
+    def test_start_controls_refresh_from_one_host_owned_state(self) -> None:
+        manager = PluginManager.__new__(PluginManager)
+        variable = Mock()
+        button = Mock()
+        manager._get_start_with_windows = lambda: True
+        manager._start_controls = [(variable, button)]
+
+        manager.refresh_start_with_windows_controls()
+
+        variable.set.assert_called_once_with(True)
+        button.configure.assert_called_once_with(text="On")
+
+    def test_overlay_controls_share_the_active_renderer_label(self) -> None:
+        manager = PluginManager.__new__(PluginManager)
+        first = Mock()
+        second = Mock()
+        first_owner = Mock()
+        first_owner.winfo_exists.return_value = True
+        second_owner = Mock()
+        second_owner.winfo_exists.return_value = True
+        manager._active_overlay_plugin_id = "windows11-overlay"
+        manager._records_by_id = {"windows11-overlay": Mock(name="Windows 11")}
+        manager._records_by_id["windows11-overlay"].name = "Windows 11"
+        manager._overlay_controls = [(first_owner, first), (second_owner, second)]
+
+        manager._sync_overlay_controls()
+
+        first.set.assert_called_once_with("Windows 11")
+        second.set.assert_called_once_with("Windows 11")
+
+    def test_route_panel_refreshers_drop_destroyed_secondary_windows(self) -> None:
+        manager = PluginManager.__new__(PluginManager)
+        alive = Mock()
+        alive.winfo_exists.return_value = True
+        dead = Mock()
+        dead.winfo_exists.return_value = False
+        rebuild = Mock()
+        refresh_statuses = Mock()
+        dead_rebuild = Mock()
+        dead_statuses = Mock()
+        manager._route_panel_refreshers = [
+            (alive, rebuild, refresh_statuses),
+            (dead, dead_rebuild, dead_statuses),
+        ]
+
+        manager.refresh_routes_panel()
+
+        refresh_statuses.assert_called_once_with()
+        dead_statuses.assert_not_called()
+        self.assertEqual(manager._route_panel_refreshers, [(alive, rebuild, refresh_statuses)])
+
+        manager.refresh_routes_panel(rebuild=True)
+        rebuild.assert_called_once_with()
+
+
 class PluginGuiIntegrationTests(unittest.TestCase):
     def test_embedded_panels_are_built_after_plugin_startup(self) -> None:
         from gui import MonitorVolumeApp
@@ -777,6 +833,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         app._resize_for_content = Mock()
         app.routes_panel = Mock()
         app.plugins_panel = Mock()
+        app.appearance_panel = Mock()
         app._post_to_ui = Mock()
         app._set_status = Mock()
         app.start_with_windows = False
@@ -796,6 +853,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         manager.create_overlay_renderer.assert_called_once_with(app.dark_mode, app.high_contrast)
         manager.build_routes_panel.assert_called_once_with(app.routes_panel)
         manager.build_action_plugins_panel.assert_called_once_with(app.plugins_panel)
+        manager.build_appearance_panel.assert_called_once_with(app.appearance_panel)
 
     def test_plugin_manager_startup_failure_keeps_an_actionable_routes_error_visible(self) -> None:
         from gui import MonitorVolumeApp
@@ -807,6 +865,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         app.root = Mock()
         app.routes_panel = Mock()
         app.plugins_panel = Mock()
+        app.appearance_panel = Mock()
         app._post_to_ui = Mock()
         app._set_status = Mock()
         app.start_with_windows = False

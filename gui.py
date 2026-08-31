@@ -47,10 +47,17 @@ from config_archive import (
 from plugin_api import OverlayRenderer, VolumeStatus
 from settings import load_selected_monitor_key, save_selected_monitor_key
 from theme import (
+    DARK_BORDER,
+    DARK_SURFACE,
+    DARK_TEXT,
+    LIGHT_BORDER,
+    LIGHT_LIST_BG,
+    LIGHT_TEXT,
     apply_app_icon,
     apply_color_scheme,
     apply_theme,
     apply_window_chrome,
+    configure_style_metrics,
     get_tk_window_dpi,
     read_windows_theme_state,
 )
@@ -125,7 +132,7 @@ class MonitorVolumeApp:
     REFRESH_RETRY_DELAYS_MS = (1000, 2000, 4000)
     THEME_CHANGE_DEBOUNCE_MS = 100
     LOG_VIEW_REFRESH_MS = 1000
-    BASE_WINDOW_MIN_WIDTH = 620
+    BASE_WINDOW_MIN_WIDTH = 900
     DECREASE_VOLUME_LABEL = "Decrease volume"
     INCREASE_VOLUME_LABEL = "Increase volume"
 
@@ -226,6 +233,9 @@ class MonitorVolumeApp:
             self.dark_mode,
             self.high_contrast,
         )
+        log_text = getattr(self, "_log_text", None)
+        if log_text is not None:
+            self._style_log_text(log_text)
         self._lock_window_size()
         apply_window_chrome(self.root, self.dark_mode)
         self._bind_keyboard_shortcuts()
@@ -243,51 +253,230 @@ class MonitorVolumeApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        self.content_frame = ttk.Frame(self.root, padding=self._scaled_px(12))
+        self.content_frame = ttk.Frame(self.root, style="App.TFrame")
         self.content_frame.grid(row=0, column=0, sticky="nsew")
-        self.content_frame.columnconfigure(0, weight=1)
-        self.content_frame.rowconfigure(1, weight=1)
+        self.content_frame.columnconfigure(1, weight=1)
+        self.content_frame.rowconfigure(0, weight=1)
 
-        self.monitor_label = ttk.Label(self.content_frame, text="Configure input and output routes to use Volume Up/Down.")
-        self.monitor_label.grid(
-            row=0,
+        self.sidebar = ttk.Frame(
+            self.content_frame,
+            style="Sidebar.TFrame",
+            padding=(self._scaled_px(14), self._scaled_px(22)),
+        )
+        self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.columnconfigure(0, weight=1)
+        self.sidebar.rowconfigure(5, weight=1)
+
+        self.brand_frame = ttk.Frame(self.sidebar, style="Sidebar.TFrame")
+        self.brand_frame.grid(row=0, column=0, sticky="ew", padx=self._scaled_px(8))
+        ttk.Label(
+            self.brand_frame,
+            text="FenSoundSwitch",
+            style="AppTitle.TLabel",
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            self.brand_frame,
+            text="Audio routing control",
+            style="AppSubtitle.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(self._scaled_px(2), 0))
+
+        self.navigation = ttk.Frame(self.sidebar, style="Sidebar.TFrame")
+        self.navigation.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(self._scaled_px(24), 0),
+        )
+        self.navigation.columnconfigure(0, weight=1)
+        self.route_nav_button = ttk.Button(
+            self.navigation,
+            text="Routes",
+            style="Selected.Nav.TButton",
+            command=lambda: self._show_page("routes"),
+        )
+        self.route_nav_button.grid(row=0, column=0, sticky="ew")
+        self.plugin_nav_button = ttk.Button(
+            self.navigation,
+            text="Actions",
+            style="Nav.TButton",
+            command=lambda: self._show_page("plugins"),
+        )
+        self.plugin_nav_button.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(self._scaled_px(4), 0),
+        )
+        self.appearance_nav_button = ttk.Button(
+            self.navigation,
+            text="Appearance",
+            style="Nav.TButton",
+            command=lambda: self._show_page("appearance"),
+        )
+        self.appearance_nav_button.grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            pady=(self._scaled_px(4), 0),
+        )
+        self.settings_nav_button = ttk.Button(
+            self.navigation,
+            text="Settings",
+            style="Nav.TButton",
+            command=lambda: self._show_page("settings"),
+        )
+        self.settings_nav_button.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            pady=(self._scaled_px(4), 0),
+        )
+
+        self.main_frame = ttk.Frame(
+            self.content_frame,
+            style="Content.TFrame",
+            padding=(self._scaled_px(28), self._scaled_px(24)),
+        )
+        self.main_frame.grid(row=0, column=1, sticky="nsew")
+        self.main_frame.columnconfigure(0, weight=1)
+        self.main_frame.rowconfigure(1, weight=1)
+
+        self.page_header = ttk.Frame(self.main_frame, style="Content.TFrame")
+        self.page_header.grid(row=0, column=0, sticky="ew", pady=(0, self._scaled_px(18)))
+        self.page_title_var = tk.StringVar(value="Audio routes")
+        self.page_subtitle_var = tk.StringVar(
+            value="Send each input to the output you want to control."
+        )
+        self.monitor_label = ttk.Label(
+            self.page_header,
+            textvariable=self.page_title_var,
+            style="PageTitle.TLabel",
+        )
+        self.monitor_label.grid(row=0, column=0, sticky="w")
+        self.page_subtitle = ttk.Label(
+            self.page_header,
+            textvariable=self.page_subtitle_var,
+            style="PageSubtitle.TLabel",
+        )
+        self.page_subtitle.grid(
+            row=1,
             column=0,
             sticky="w",
+            pady=(self._scaled_px(4), 0),
         )
+
         # Retained as the nonvisual stable-identity selection model used by tray actions.
         self.monitor_combo = ttk.Combobox(
-            self.content_frame,
+            self.main_frame,
             textvariable=self.monitor_var,
             state="readonly",
         )
         self.monitor_combo.bind("<<ComboboxSelected>>", self.on_monitor_selected)
 
-        self.routes_panel = ttk.Frame(self.content_frame)
-        self.routes_panel.grid(row=1, column=0, sticky="nsew", pady=(self._scaled_px(10), 0))
-        self.plugins_panel = ttk.Frame(self.content_frame)
-        self.plugins_panel.grid(row=2, column=0, sticky="ew", pady=(self._scaled_px(12), 0))
+        self.pages = ttk.Frame(self.main_frame, style="Content.TFrame")
+        self.pages.grid(row=1, column=0, sticky="nsew")
+        self.pages.columnconfigure(0, weight=1)
+        self.pages.rowconfigure(0, weight=1)
+        self.routes_panel = ttk.Frame(self.pages, style="Content.TFrame")
+        self.routes_panel.grid(row=0, column=0, sticky="nsew")
+        self.plugins_panel = ttk.Frame(self.pages, style="Content.TFrame")
+        self.plugins_panel.grid(row=0, column=0, sticky="nsew")
+        self.appearance_panel = ttk.Frame(self.pages, style="Content.TFrame")
+        self.appearance_panel.grid(row=0, column=0, sticky="nsew")
+        self.settings_panel = ttk.Frame(self.pages, style="Content.TFrame")
+        self.settings_panel.grid(row=0, column=0, sticky="nsew")
+
         self.log_button = ttk.Button(
-            self.content_frame,
-            text="Log",
+            self.sidebar,
+            text="Diagnostics",
+            style="Nav.TButton",
             command=self.show_diagnostic_log,
         )
-        self.configuration_actions = ttk.Frame(self.content_frame)
-        self.configuration_actions.grid(row=3, column=0, sticky="e", pady=(self._scaled_px(12), 0))
-        ttk.Button(self.configuration_actions, text="Export", command=self.export_configuration).grid(row=0, column=0)
-        ttk.Button(self.configuration_actions, text="Import", command=self.import_configuration).grid(
-            row=0, column=1, padx=(self._scaled_px(8), 0)
+        self.log_button.grid(row=6, column=0, sticky="ew")
+
+        startup_card = ttk.LabelFrame(
+            self.settings_panel,
+            text="Startup",
+            style="Card.TLabelframe",
+            padding=16,
         )
+        startup_card.grid(row=0, column=0, sticky="ew")
+        startup_card.columnconfigure(0, weight=1)
+        ttk.Label(
+            startup_card,
+            text="Start with Windows",
+            style="Card.TLabel",
+            font=("Segoe UI Variable", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            startup_card,
+            text="Launch quietly in the notification area when you sign in.",
+            style="CardMuted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(self._scaled_px(3), 0))
+        self.start_with_windows_button = ttk.Button(
+            startup_card,
+            text="On" if self.start_with_windows_var.get() else "Off",
+            command=self._toggle_start_with_windows_from_button,
+            style="Toggle.TButton",
+        )
+        self.start_with_windows_button.grid(
+            row=0,
+            column=1,
+            rowspan=2,
+            sticky="e",
+            padx=(self._scaled_px(18), 0),
+        )
+
+        self.configuration_actions = ttk.LabelFrame(
+            self.settings_panel,
+            text="Configuration",
+            style="Card.TLabelframe",
+            padding=16,
+        )
+        self.configuration_actions.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(self._scaled_px(14), 0),
+        )
+        self.configuration_actions.columnconfigure(0, weight=1)
+        ttk.Label(
+            self.configuration_actions,
+            text="Export a backup, import one, or restore the bundled defaults.",
+            style="CardMuted.TLabel",
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, self._scaled_px(12)))
+        ttk.Button(
+            self.configuration_actions,
+            text="Export",
+            style="Accent.TButton",
+            command=self.export_configuration,
+        ).grid(row=1, column=0, sticky="w")
+        ttk.Button(
+            self.configuration_actions,
+            text="Import",
+            style="Quiet.TButton",
+            command=self.import_configuration,
+        ).grid(row=1, column=1, sticky="w", padx=(self._scaled_px(8), 0))
         self.import_history_button = ttk.Button(
             self.configuration_actions,
-            text="▼",
+            text="Recent",
+            style="Quiet.TButton",
             command=self.show_import_history,
             takefocus=False,
         )
-        self.import_history_button.grid(row=0, column=2)
-        ttk.Button(self.configuration_actions, text="Default", command=self.import_default_configuration).grid(
-            row=0, column=3, padx=(self._scaled_px(8), 0)
+        self.import_history_button.grid(
+            row=1,
+            column=2,
+            sticky="w",
+            padx=(self._scaled_px(8), 0),
         )
-        self.log_button.grid(row=0, column=4, padx=(self._scaled_px(8), 0))
+        ttk.Button(
+            self.configuration_actions,
+            text="Restore default",
+            style="Quiet.TButton",
+            command=self.import_default_configuration,
+        ).grid(row=2, column=0, sticky="w", pady=(self._scaled_px(10), 0))
+        self.settings_panel.columnconfigure(0, weight=1)
 
         self.status_bar = tk.Label(
             self.root,
@@ -298,16 +487,59 @@ class MonitorVolumeApp:
             padx=self._scaled_px(6),
         )
         self.status_bar.grid(row=1, column=0, sticky="ew")
+        self._show_page("routes")
 
     def _scaled_px(self, value: int) -> int:
         return max(1, round(value * self._ui_dpi / 96))
 
     def _apply_scaled_layout(self) -> None:
-        self.content_frame.configure(padding=self._scaled_px(12))
-        self.routes_panel.grid_configure(pady=(self._scaled_px(10), 0))
-        self.plugins_panel.grid_configure(pady=(self._scaled_px(12), 0))
-        self.configuration_actions.grid_configure(pady=(self._scaled_px(12), 0))
-        self.status_bar.configure(padx=self._scaled_px(6))
+        configure_style_metrics(self.style, self._ui_dpi)
+        self.sidebar.configure(padding=(self._scaled_px(14), self._scaled_px(22)))
+        self.sidebar.grid_propagate(True)
+        self.content_frame.columnconfigure(0, minsize=self._scaled_px(190))
+        self.main_frame.configure(padding=(self._scaled_px(28), self._scaled_px(24)))
+        self.page_header.grid_configure(pady=(0, self._scaled_px(18)))
+        self.navigation.grid_configure(pady=(self._scaled_px(24), 0))
+        self.configuration_actions.grid_configure(pady=(self._scaled_px(14), 0))
+        self.status_bar.configure(padx=self._scaled_px(10), pady=self._scaled_px(4))
+
+    def _show_page(self, page: str) -> None:
+        pages = {
+            "routes": (
+                self.routes_panel,
+                self.route_nav_button,
+                "Audio routes",
+                "Send each input to the output you want to control.",
+            ),
+            "plugins": (
+                self.plugins_panel,
+                self.plugin_nav_button,
+                "Action plugins",
+                "Configure trusted integrations and their keyboard shortcuts.",
+            ),
+            "appearance": (
+                self.appearance_panel,
+                self.appearance_nav_button,
+                "Appearance",
+                "Choose how volume changes are presented on screen.",
+            ),
+            "settings": (
+                self.settings_panel,
+                self.settings_nav_button,
+                "Settings",
+                "Manage startup behavior and configuration backups.",
+            ),
+        }
+        selected_page, selected_button, title, subtitle = pages.get(page, pages["routes"])
+        for candidate_page, candidate_button, _title, _subtitle in pages.values():
+            if candidate_page is selected_page:
+                candidate_page.grid()
+                candidate_button.configure(style="Selected.Nav.TButton")
+            else:
+                candidate_page.grid_remove()
+                candidate_button.configure(style="Nav.TButton")
+        self.page_title_var.set(title)
+        self.page_subtitle_var.set(subtitle)
 
     def show_diagnostic_log(self) -> None:
         """Open the bounded diagnostic history without mutating its files."""
@@ -410,34 +642,89 @@ class MonitorVolumeApp:
         window.protocol("WM_DELETE_WINDOW", self._close_diagnostic_log)
         apply_window_chrome(window, self.dark_mode)
 
-        content = ttk.Frame(window, padding=self._scaled_px(12))
+        content = ttk.Frame(
+            window,
+            padding=self._scaled_px(20),
+            style="Dialog.TFrame",
+        )
         content.grid(sticky="nsew")
         window.columnconfigure(0, weight=1)
         window.rowconfigure(0, weight=1)
         content.columnconfigure(0, weight=1)
-        content.rowconfigure(0, weight=1)
+        content.rowconfigure(2, weight=1)
 
-        text = tk.Text(content, wrap="none", state="disabled")
+        ttk.Label(
+            content,
+            text="Diagnostic log",
+            style="DialogTitle.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(
+            content,
+            text="Live application events. Sensitive credentials are never written here.",
+            style="DialogSubtitle.TLabel",
+        ).grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(self._scaled_px(4), self._scaled_px(14)),
+        )
+
+        text = tk.Text(
+            content,
+            wrap="none",
+            state="disabled",
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            padx=self._scaled_px(10),
+            pady=self._scaled_px(10),
+            font=("Cascadia Mono", 9),
+        )
         vertical_scrollbar = ttk.Scrollbar(content, orient="vertical", command=text.yview)
         horizontal_scrollbar = ttk.Scrollbar(content, orient="horizontal", command=text.xview)
         text.configure(
             yscrollcommand=vertical_scrollbar.set,
             xscrollcommand=horizontal_scrollbar.set,
         )
-        text.grid(row=0, column=0, sticky="nsew")
-        vertical_scrollbar.grid(row=0, column=1, sticky="ns")
-        horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+        text.grid(row=2, column=0, sticky="nsew")
+        vertical_scrollbar.grid(row=2, column=1, sticky="ns")
+        horizontal_scrollbar.grid(row=3, column=0, sticky="ew")
+        self._style_log_text(text)
 
         actions = ttk.Frame(content)
-        actions.grid(row=2, column=0, columnspan=2, sticky="e", pady=(self._scaled_px(10), 0))
-        ttk.Button(actions, text="Refresh", command=self._refresh_diagnostic_log).grid(row=0, column=0)
-        ttk.Button(actions, text="Close", command=self._close_diagnostic_log).grid(
+        actions.grid(row=4, column=0, columnspan=2, sticky="e", pady=(self._scaled_px(14), 0))
+        ttk.Button(actions, text="Refresh", style="Accent.TButton", command=self._refresh_diagnostic_log).grid(row=0, column=0)
+        ttk.Button(actions, text="Close", style="Quiet.TButton", command=self._close_diagnostic_log).grid(
             row=0,
             column=1,
             padx=(self._scaled_px(8), 0),
         )
         self._log_window = window
         self._log_text = text
+
+    def _style_log_text(self, text: tk.Text) -> None:
+        if self.high_contrast:
+            background = LIGHT_LIST_BG
+            foreground = LIGHT_TEXT
+            border = LIGHT_TEXT
+        elif self.dark_mode:
+            background = DARK_SURFACE
+            foreground = DARK_TEXT
+            border = DARK_BORDER
+        else:
+            background = LIGHT_LIST_BG
+            foreground = LIGHT_TEXT
+            border = LIGHT_BORDER
+        text.configure(
+            bg=background,
+            fg=foreground,
+            insertbackground=foreground,
+            highlightbackground=border,
+            highlightcolor=border,
+            selectbackground="#3A7BD5" if self.dark_mode else "SystemHighlight",
+            selectforeground=DARK_TEXT if self.dark_mode else "SystemHighlightText",
+        )
 
     def _refresh_diagnostic_log(self, record_event: bool = True) -> None:
         if self._log_text is None:
@@ -591,6 +878,7 @@ class MonitorVolumeApp:
             )
             manager.build_routes_panel(self.routes_panel)
             manager.build_action_plugins_panel(self.plugins_panel)
+            manager.build_appearance_panel(self.appearance_panel)
             # Panels are added after the initial window-size lock. Measure them
             # now so a tray-first window never opens at the pre-plugin height.
             self._resize_for_content(force=True)
@@ -690,6 +978,22 @@ class MonitorVolumeApp:
     def set_start_with_windows_enabled(self, enabled: bool) -> None:
         self.start_with_windows_var.set(bool(enabled))
         self.on_start_with_windows_toggled()
+        button = getattr(self, "start_with_windows_button", None)
+        if button is not None:
+            button.configure(text="On" if self.start_with_windows_var.get() else "Off")
+        manager = getattr(self, "_plugin_manager", None)
+        if manager is not None:
+            manager.refresh_start_with_windows_controls()
+
+    def _toggle_start_with_windows_from_button(self) -> None:
+        self.start_with_windows_var.set(not bool(self.start_with_windows_var.get()))
+        self.on_start_with_windows_toggled()
+        self.start_with_windows_button.configure(
+            text="On" if self.start_with_windows_var.get() else "Off"
+        )
+        manager = getattr(self, "_plugin_manager", None)
+        if manager is not None:
+            manager.refresh_start_with_windows_controls()
 
     def _handle_display_change_from_thread(self) -> None:
         self._invalidate_topology_generation()
@@ -726,6 +1030,16 @@ class MonitorVolumeApp:
             self.dark_mode,
             self.high_contrast,
         )
+        log_text = getattr(self, "_log_text", None)
+        if log_text is not None:
+            self._style_log_text(log_text)
+        log_window = getattr(self, "_log_window", None)
+        if log_window is not None:
+            try:
+                if log_window.winfo_exists():
+                    apply_window_chrome(log_window, self.dark_mode)
+            except tk.TclError:
+                pass
         if self._overlay is not None:
             self._render_overlay("apply_theme", self.dark_mode, self.high_contrast)
         plugin_manager = getattr(self, "_plugin_manager", None)
@@ -1301,6 +1615,7 @@ class MonitorVolumeApp:
             for status_id, status in self._volume_statuses.items()
             if status_id in relevant
         }
+        manager.refresh_routes_panel()
 
     def _ensure_relevant_volume_statuses(self) -> None:
         manager = getattr(self, "_plugin_manager", None)

@@ -94,7 +94,7 @@ class KeyboardInputPlugin:
         window.title("Configure keyboard route")
         window.transient(parent)
         host.prepare_window(window)
-        frame = ttk.Frame(window, padding=12)
+        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
         frame.grid(sticky="nsew")
         values: dict[str, HotkeySpec | None] = {"volume_down": None, "volume_up": None}
         forward_keys = tk.BooleanVar(value=parameters.get("forward_keys", True) is not False)
@@ -133,8 +133,8 @@ class KeyboardInputPlugin:
             except ValueError as exc:
                 status.set(str(exc)); return
             window.destroy()
-        ttk.Button(frame, text="Save", command=save).grid(row=4, column=1, sticky="e", pady=(12, 0))
-        ttk.Button(frame, text="Cancel", command=window.destroy).grid(row=4, column=2, sticky="e", padx=(8, 0), pady=(12, 0))
+        ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=4, column=1, sticky="e", pady=(16, 0))
+        ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(row=4, column=2, sticky="e", padx=(8, 0), pady=(16, 0))
         window.bind("<KeyPress>", capture)
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         window.grab_set()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from gui import MonitorVolumeApp
 from plugins.windows11_overlay_plugin import VolumeOverlay
@@ -14,6 +14,7 @@ from theme import (
     apply_color_scheme,
     apply_theme,
     apply_window_chrome,
+    configure_style_metrics,
     read_windows_theme_state,
 )
 from windows_platform import (
@@ -47,6 +48,30 @@ class WindowsThemeTests(unittest.TestCase):
         settings = style.theme_create.call_args.kwargs["settings"]
         self.assertIn("Treeview", settings)
         self.assertIn("Treeview.Heading", settings)
+        self.assertIn("TEntry", settings)
+        self.assertIn("TRadiobutton", settings)
+
+    def test_dark_theme_configures_the_fluent_application_styles(self) -> None:
+        style = Mock()
+        style.theme_names.return_value = ("clam",)
+
+        apply_theme(style, True, False)
+
+        configured_styles = {call.args[0] for call in style.configure.call_args_list}
+        self.assertTrue(
+            {
+                "Sidebar.TFrame",
+                "Card.TLabelframe",
+                "PageTitle.TLabel",
+                "Nav.TButton",
+                "Selected.Nav.TButton",
+                "Accent.TButton",
+                "Stat.TFrame",
+                "RouteCard.TFrame",
+                "Selected.RouteCard.TFrame",
+                "Modern.Treeview",
+            }.issubset(configured_styles)
+        )
 
     def test_color_scheme_can_return_from_dark_to_system_colors(self) -> None:
         root = Mock()
@@ -77,6 +102,10 @@ class WindowsThemeTests(unittest.TestCase):
         app.style = Mock()
         app.root = Mock()
         app.status_bar = Mock()
+        app._log_text = Mock()
+        app._log_window = Mock()
+        app._log_window.winfo_exists.return_value = True
+        app._style_log_text = Mock()
         app._overlay = Mock()
         app._plugin_manager = Mock()
         app._apply_scaled_layout = Mock()
@@ -97,9 +126,13 @@ class WindowsThemeTests(unittest.TestCase):
         self.assertEqual(app.active_theme, "vista")
         apply_ttk_theme.assert_called_once_with(app.style, False, True)
         apply_colors.assert_called_once_with(app.root, app.status_bar, False, True)
+        app._style_log_text.assert_called_once_with(app._log_text)
         app._overlay.apply_theme.assert_called_once_with(False, True)
         app._plugin_manager.apply_theme.assert_called_once_with(False)
-        apply_chrome.assert_called_once_with(app.root, False)
+        self.assertEqual(
+            apply_chrome.call_args_list,
+            [call(app._log_window, False), call(app.root, False)],
+        )
         app._apply_scaled_layout.assert_called_once_with()
         app._resize_for_content.assert_called_once_with()
 
@@ -130,6 +163,37 @@ class NativeAccessibilityTests(unittest.TestCase):
 
 
 class KeyboardAccessibilityTests(unittest.TestCase):
+    def test_page_navigation_updates_visible_surface_and_heading(self) -> None:
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app.routes_panel = Mock()
+        app.plugins_panel = Mock()
+        app.route_nav_button = Mock()
+        app.plugin_nav_button = Mock()
+        app.appearance_panel = Mock()
+        app.settings_panel = Mock()
+        app.appearance_nav_button = Mock()
+        app.settings_nav_button = Mock()
+        app.page_title_var = Mock()
+        app.page_subtitle_var = Mock()
+
+        app._show_page("plugins")
+
+        app.routes_panel.grid_remove.assert_called_once_with()
+        app.plugins_panel.grid.assert_called_once_with()
+        app.plugin_nav_button.configure.assert_called_with(style="Selected.Nav.TButton")
+        app.route_nav_button.configure.assert_called_with(style="Nav.TButton")
+        app.appearance_nav_button.configure.assert_called_with(style="Nav.TButton")
+        app.settings_nav_button.configure.assert_called_with(style="Nav.TButton")
+        app.page_title_var.set.assert_called_with("Action plugins")
+
+        app._show_page("routes")
+
+        app.plugins_panel.grid_remove.assert_called_once_with()
+        app.routes_panel.grid.assert_called_once_with()
+        app.route_nav_button.configure.assert_called_with(style="Selected.Nav.TButton")
+        app.plugin_nav_button.configure.assert_called_with(style="Nav.TButton")
+        app.page_title_var.set.assert_called_with("Audio routes")
+
     def test_keyboard_shortcuts_only_include_the_remaining_window_action(self) -> None:
         app = MonitorVolumeApp.__new__(MonitorVolumeApp)
         app.root = Mock()
@@ -175,6 +239,15 @@ class KeyboardAccessibilityTests(unittest.TestCase):
 
 
 class ScalingTests(unittest.TestCase):
+    def test_named_style_metrics_scale_with_window_dpi(self) -> None:
+        style = Mock()
+
+        configure_style_metrics(style, 144)
+
+        style.configure.assert_any_call("Card.TLabelframe", padding=21)
+        style.configure.assert_any_call("Modern.Treeview", rowheight=51)
+        style.configure.assert_any_call("Accent.TButton", padding=(18, 10))
+
     def test_pixel_scaling_tracks_the_current_window_dpi(self) -> None:
         app = MonitorVolumeApp.__new__(MonitorVolumeApp)
         app._ui_dpi = 144

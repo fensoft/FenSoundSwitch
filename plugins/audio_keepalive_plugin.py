@@ -155,7 +155,7 @@ class AudioKeepalivePlugin:
         window.title("Configure audio output keep-alive")
         window.transient(parent)
         host.prepare_window(window)
-        frame = ttk.Frame(window, padding=12)
+        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
         frame.grid(sticky="nsew")
         playback = tk.BooleanVar(window, value=bool(settings["playback_output"]))
         voice = tk.BooleanVar(window, value=bool(settings["voice_output"]))
@@ -187,8 +187,8 @@ class AudioKeepalivePlugin:
                 return
             window.destroy()
 
-        ttk.Button(frame, text="Save", command=save).grid(row=6, column=0, sticky="w", pady=(12, 0))
-        ttk.Button(frame, text="Cancel", command=window.destroy).grid(row=6, column=0, sticky="e", pady=(12, 0))
+        ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=6, column=0, sticky="w", pady=(16, 0))
+        ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(row=6, column=0, sticky="e", pady=(16, 0))
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         window.grab_set()
 

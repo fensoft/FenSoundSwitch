@@ -692,7 +692,7 @@ class DiscordOutputPlugin:
         secret_var = tk.StringVar(window)
         client_id_var = tk.StringVar(window)
         error_var = tk.StringVar(window)
-        frame = ttk.Frame(window, padding=16)
+        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
         frame.grid(sticky="nsew")
         ttk.Label(
             frame,
@@ -763,13 +763,13 @@ class DiscordOutputPlugin:
                 return
             window.destroy()
 
-        ttk.Button(frame, text="Open Developer Portal", command=open_portal).grid(
+        ttk.Button(frame, text="Open Developer Portal", style="Quiet.TButton", command=open_portal).grid(
             row=8, column=0, sticky="w", pady=(14, 0)
         )
-        ttk.Button(frame, text="Cancel", command=window.destroy).grid(
+        ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(
             row=8, column=1, sticky="e", padx=(8, 0), pady=(14, 0)
         )
-        ttk.Button(frame, text="Save and authorize", command=save).grid(
+        ttk.Button(frame, text="Save and authorize", style="Accent.TButton", command=save).grid(
             row=8, column=2, sticky="e", padx=(8, 0), pady=(14, 0)
         )
         frame.columnconfigure(0, weight=1)
@@ -792,7 +792,7 @@ class DiscordOutputPlugin:
         window.resizable(False, False)
         self._host.prepare_window(window)
         status_var = tk.StringVar(window, value=self._current_status())
-        frame = ttk.Frame(window, padding=16)
+        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
         frame.grid(sticky="nsew")
         ttk.Label(frame, text=self.description, wraplength=560, justify="left").grid(
             row=0, column=0, columnspan=3, sticky="w"
@@ -848,10 +848,10 @@ class DiscordOutputPlugin:
                 self._operation_lock.release()
             self._set_status("Setup required")
 
-        ttk.Button(frame, text="Set up / reauthorize…", command=setup_authorization).grid(
+        ttk.Button(frame, text="Set up / reauthorize…", style="Accent.TButton", command=setup_authorization).grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(14, 0)
         )
-        ttk.Button(frame, text="Reset authorization", command=reset_authorization).grid(
+        ttk.Button(frame, text="Reset authorization", style="Quiet.TButton", command=reset_authorization).grid(
             row=2, column=2, sticky="e", padx=(8, 0), pady=(14, 0)
         )
 
@@ -865,7 +865,7 @@ class DiscordOutputPlugin:
                     pass
             window.destroy()
 
-        ttk.Button(frame, text="Close", command=close).grid(row=3, column=2, sticky="e", pady=(16, 0))
+        ttk.Button(frame, text="Close", style="Quiet.TButton", command=close).grid(row=3, column=2, sticky="e", pady=(16, 0))
         frame.columnconfigure(1, weight=1)
 
         def poll_status() -> None:

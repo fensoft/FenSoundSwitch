@@ -15,16 +15,16 @@ from windows_platform import (
 )
 
 
-OVERLAY_BG = "#111111"
-OVERLAY_BORDER = "#2A2A2A"
-OVERLAY_TEXT = "#FFFFFF"
-OVERLAY_SUBTEXT = "#D0D0D0"
-OVERLAY_ACCENT = "#4CC2FF"
+OVERLAY_BG = "#171A1F"
+OVERLAY_BORDER = "#343C49"
+OVERLAY_TEXT = "#F6F8FB"
+OVERLAY_SUBTEXT = "#9AA5B5"
+OVERLAY_ACCENT = "#62A7FF"
 OVERLAY_ERROR = "#FF6B6B"
-OVERLAY_TRACK = "#2A2A2A"
-LIGHT_OVERLAY_BG = "#F7F7F7"
-LIGHT_OVERLAY_BORDER = "#C8C8C8"
-LIGHT_OVERLAY_TEXT = "#111111"
+OVERLAY_TRACK = "#0B0E12"
+LIGHT_OVERLAY_BG = "#FFFFFF"
+LIGHT_OVERLAY_BORDER = "#D5DAE1"
+LIGHT_OVERLAY_TEXT = "#191A1C"
 LIGHT_OVERLAY_SUBTEXT = "#404040"
 LIGHT_OVERLAY_ACCENT = "#0067C0"
 LIGHT_OVERLAY_ERROR = "#B10E1E"
@@ -33,12 +33,12 @@ AUTO_HIDE_MS = 1400
 ERROR_AUTO_HIDE_MS = 2800
 OVERLAY_BOTTOM_MARGIN = 88
 OVERLAY_SIDE_MARGIN = 24
-OVERLAY_CONTENT_PADX = 12
-OVERLAY_CONTENT_PADY = 10
-OVERLAY_LABEL_FONT = ("Segoe UI", 9)
-OVERLAY_VALUE_FONT = ("Segoe UI", 20, "bold")
-OVERLAY_BAR_LENGTH = 176
-OVERLAY_BAR_THICKNESS = 5
+OVERLAY_CONTENT_PADX = 16
+OVERLAY_CONTENT_PADY = 13
+OVERLAY_LABEL_FONT = ("Segoe UI Variable", 9)
+OVERLAY_VALUE_FONT = ("Segoe UI Variable", 22, "bold")
+OVERLAY_BAR_LENGTH = 196
+OVERLAY_BAR_THICKNESS = 6
 OVERLAY_ERROR_WRAP = 240
 PROGRESS_STYLE = "VolumeOverlay.Horizontal.TProgressbar"
 LOGGER = get_logger(__name__)
@@ -229,7 +229,7 @@ class VolumeOverlay:
                 accent=OVERLAY_ACCENT,
                 error=OVERLAY_ERROR,
                 track=OVERLAY_TRACK,
-                alpha=0.7,
+                alpha=0.96,
             )
         return OverlayPalette(
             background=LIGHT_OVERLAY_BG,
@@ -239,7 +239,7 @@ class VolumeOverlay:
             accent=LIGHT_OVERLAY_ACCENT,
             error=LIGHT_OVERLAY_ERROR,
             track=LIGHT_OVERLAY_TRACK,
-            alpha=0.85,
+            alpha=0.97,
         )
 
     def apply_theme(self, dark_mode: bool, high_contrast: bool = False) -> None:
@@ -556,7 +556,7 @@ class OverlayPlugin:
         window.title("Windows 11 overlay settings")
         window.transient(parent)
         self._host.prepare_window(window)
-        frame = ttk.Frame(window, padding=12)
+        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
         frame.grid(sticky="nsew")
         value = tk.StringVar(value=self._mode)
         ttk.Label(frame, text="Show:").grid(row=0, column=0, sticky="w")
@@ -566,8 +566,8 @@ class OverlayPlugin:
             self._mode = value.get()
             self._host.save_plugin_settings({"schema_version": 1, "mode": self._mode})
             window.destroy()
-        ttk.Button(frame, text="Save", command=save).grid(row=2, column=0, sticky="w", pady=(12, 0))
-        ttk.Button(frame, text="Cancel", command=window.destroy).grid(row=2, column=1, sticky="e", pady=(12, 0))
+        ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=2, column=0, sticky="w", pady=(16, 0))
+        ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(row=2, column=1, sticky="e", pady=(16, 0))
         window.grab_set()
 
     def create_overlay_renderer(self, dark_mode: bool, high_contrast: bool) -> OverlayRenderer:

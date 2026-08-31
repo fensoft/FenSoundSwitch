@@ -63,7 +63,15 @@ from settings import (
     normalize_route_name,
 )
 from plugin_hotkeys import PluginHotkeyController
-from theme import apply_app_icon, apply_window_chrome, read_windows_theme_state
+from theme import (
+    DARK_BG,
+    DARK_SURFACE,
+    LIGHT_BG,
+    LIGHT_LIST_BG,
+    apply_app_icon,
+    apply_window_chrome,
+    read_windows_theme_state,
+)
 
 
 LOGGER = get_logger(__name__)
@@ -505,6 +513,12 @@ class PluginManager:
         self._route_input_instances: dict[str, object] = {}
         self._route_hotkeys: dict[str, int] = {}
         self._active_overlay_plugin_id = DEFAULT_OVERLAY_PLUGIN_ID
+        self._route_panel_refreshers: list[
+            tuple[tk.Misc, Callable[[], None], Callable[[], None]]
+        ] = []
+        self._start_controls: list[tuple[tk.Variable, ttk.Button]] = []
+        self._overlay_controls: list[tuple[tk.Misc, tk.Variable]] = []
+        self._scroll_canvases: list[tk.Canvas] = []
 
     @property
     def records(self) -> tuple[PluginRecord, ...]:
@@ -619,7 +633,108 @@ class PluginManager:
             return False
         self._active_overlay_plugin_id = plugin_id
         self._on_overlay_renderer_changed()
+        self._sync_overlay_controls()
+        self.refresh_routes_panel()
         return True
+
+    def _sync_overlay_controls(self) -> None:
+        record = self._records_by_id.get(self._active_overlay_plugin_id)
+        label = record.name if record is not None else "Unavailable"
+        for owner, variable in tuple(self._overlay_controls):
+            try:
+                if not owner.winfo_exists():
+                    self._overlay_controls.remove((owner, variable))
+                    continue
+                variable.set(label)
+            except tk.TclError:
+                self._overlay_controls.remove((owner, variable))
+
+    def refresh_start_with_windows_controls(self) -> None:
+        if self._get_start_with_windows is None:
+            return
+        enabled = bool(self._get_start_with_windows())
+        for variable, button in tuple(self._start_controls):
+            try:
+                variable.set(enabled)
+                button.configure(text="On" if enabled else "Off")
+            except tk.TclError:
+                self._start_controls.remove((variable, button))
+
+    def refresh_routes_panel(self, rebuild: bool = False) -> None:
+        for panel, rebuild_panel, refresh_statuses in tuple(self._route_panel_refreshers):
+            try:
+                if not panel.winfo_exists():
+                    self._route_panel_refreshers.remove((panel, rebuild_panel, refresh_statuses))
+                    continue
+                (rebuild_panel if rebuild else refresh_statuses)()
+            except tk.TclError:
+                self._route_panel_refreshers.remove((panel, rebuild_panel, refresh_statuses))
+
+    def _create_scrollable_card_list(
+        self,
+        parent: tk.Misc,
+        *,
+        height: int,
+    ) -> tuple[ttk.Frame, ttk.Frame, tk.Canvas]:
+        container = ttk.Frame(parent, style="Card.TFrame")
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+        theme_state = read_windows_theme_state()
+        canvas = tk.Canvas(
+            container,
+            height=height,
+            bd=0,
+            highlightthickness=0,
+            background=DARK_SURFACE if theme_state.dark_mode else LIGHT_LIST_BG,
+        )
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        content = ttk.Frame(canvas, style="Card.TFrame")
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        def update_scrollbar() -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            if content.winfo_reqheight() > canvas.winfo_height():
+                scrollbar.grid()
+            else:
+                scrollbar.grid_remove()
+
+        content.bind("<Configure>", lambda _event: canvas.after_idle(update_scrollbar))
+
+        def resize_content(event: Any) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+            canvas.after_idle(update_scrollbar)
+
+        canvas.bind("<Configure>", resize_content)
+        canvas.bind(
+            "<MouseWheel>",
+            lambda event: canvas.yview_scroll(-1 if event.delta > 0 else 1, "units"),
+        )
+        self._scroll_canvases.append(canvas)
+
+        def forget(_event: Any = None) -> None:
+            try:
+                self._scroll_canvases.remove(canvas)
+            except ValueError:
+                pass
+
+        canvas.bind("<Destroy>", forget, add="+")
+        return container, content, canvas
+
+    @staticmethod
+    def _scroll_card_into_view(canvas: tk.Canvas, content: ttk.Frame, card: ttk.Frame) -> None:
+        canvas.update_idletasks()
+        total_height = max(1, content.winfo_reqheight())
+        top = canvas.canvasy(0)
+        bottom = top + canvas.winfo_height()
+        card_top = card.winfo_y()
+        card_bottom = card_top + card.winfo_height()
+        if card_top < top:
+            canvas.yview_moveto(card_top / total_height)
+        elif card_bottom > bottom:
+            canvas.yview_moveto(max(0.0, (card_bottom - canvas.winfo_height()) / total_height))
 
     def add_route(self, input_id: str, provider_id: str, name: str | None = None, input_parameters: dict[str, object] | None = None, output_parameters: dict[str, object] | None = None) -> bool:
         if not any(record.initialized and record.input_id == input_id for record in self._records):
@@ -674,6 +789,7 @@ class PluginManager:
         self._input_routes = routes
         self._rebuild_route_instances()
         self._on_volume_routes_changed()
+        self.refresh_routes_panel(rebuild=True)
         return True
 
     def _input_label(self, input_id: str) -> str:
@@ -1071,15 +1187,31 @@ class PluginManager:
         )
         window.transient(parent)
         self.prepare_window(window)
-        frame = ttk.Frame(window, padding=12)
+        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
         frame.grid(sticky="nsew")
-        tree = ttk.Treeview(frame, columns=("shortcut",), show="tree headings", height=8)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        ttk.Label(frame, text="Keyboard shortcuts", style="DialogTitle.TLabel").grid(
+            row=0, column=0, columnspan=3, sticky="w"
+        )
+        ttk.Label(
+            frame,
+            text="Select an action, then capture the key combination you want to use.",
+            style="DialogSubtitle.TLabel",
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 14))
+        tree = ttk.Treeview(
+            frame,
+            columns=("shortcut",),
+            show="tree headings",
+            height=8,
+            style="Modern.Treeview",
+        )
         tree.heading("#0", text="Action" if selected_record is not None else "Plugin action")
         tree.heading("shortcut", text="Shortcut")
         tree.column("shortcut", width=180)
-        tree.grid(row=0, column=0, columnspan=3, sticky="nsew")
+        tree.grid(row=2, column=0, columnspan=3, sticky="nsew")
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
         pending: tuple[PluginRecord, ShortcutAction] | None = None
 
         def refresh() -> None:
@@ -1103,7 +1235,7 @@ class PluginManager:
                     tree.insert("", "end", iid=binding_id, text=action_text, values=(binding.hotkey.label if binding.hotkey else "Not set",))
 
         message = tk.StringVar(window)
-        ttk.Label(frame, textvariable=message, wraplength=560).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Label(frame, textvariable=message, wraplength=560, style="Muted.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", pady=(10, 0))
         def selected() -> tuple[PluginRecord, ShortcutAction] | None:
             value = tree.selection()
             if not value: return None
@@ -1156,10 +1288,11 @@ class PluginManager:
             message.set("Shortcut cleared."); refresh()
         capture_button = ttk.Button(frame, text="Capture", command=begin_capture)
         forward_checkbox = ttk.Checkbutton(frame, text="Forward keys to other applications", variable=forward_keys, command=save_forward_keys)
-        forward_checkbox.grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
-        capture_button.grid(row=3, column=0, sticky="w", pady=(10, 0)); capture_button.bind("<KeyPress>", capture)
-        ttk.Button(frame, text="Clear", command=clear).grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
-        ttk.Button(frame, text="Close", command=window.destroy).grid(row=3, column=2, sticky="e", pady=(10, 0))
+        forward_checkbox.grid(row=4, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        capture_button.configure(style="Accent.TButton")
+        capture_button.grid(row=5, column=0, sticky="w", pady=(14, 0)); capture_button.bind("<KeyPress>", capture)
+        ttk.Button(frame, text="Clear", style="Quiet.TButton", command=clear).grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(14, 0))
+        ttk.Button(frame, text="Close", style="Quiet.TButton", command=window.destroy).grid(row=5, column=2, sticky="e", pady=(14, 0))
         window.bind("<Escape>", lambda _event: window.destroy()); window.protocol("WM_DELETE_WINDOW", window.destroy)
         refresh()
         tree.bind("<<TreeviewSelect>>", sync_forward_keys)
@@ -1254,6 +1387,10 @@ class PluginManager:
     def prepare_window(self, window: Any) -> None:
         apply_app_icon(window)
         theme_state = read_windows_theme_state()
+        try:
+            window.configure(bg=DARK_BG if theme_state.dark_mode else LIGHT_BG)
+        except (AttributeError, tk.TclError):
+            pass
         window.after_idle(lambda: apply_window_chrome(window, theme_state.dark_mode))
         window.after_idle(lambda: self._center_window_over_parent(window))
         self._windows.append(window)
@@ -1284,79 +1421,146 @@ class PluginManager:
             pass
 
     def apply_theme(self, dark_mode: bool) -> None:
+        for canvas in tuple(self._scroll_canvases):
+            try:
+                if canvas.winfo_exists():
+                    canvas.configure(background=DARK_SURFACE if dark_mode else LIGHT_LIST_BG)
+            except tk.TclError:
+                try:
+                    self._scroll_canvases.remove(canvas)
+                except ValueError:
+                    pass
         for window in tuple(self._windows):
             try:
                 if window.winfo_exists():
+                    window.configure(bg=DARK_BG if dark_mode else LIGHT_BG)
                     apply_window_chrome(window, dark_mode)
             except tk.TclError:
                 pass
 
     def build_action_plugins_panel(self, parent: tk.Misc) -> Any:
-        frame = ttk.LabelFrame(parent, text="Action plugins", padding=12)
+        frame = ttk.Frame(parent, style="Content.TFrame")
         frame.grid(row=0, column=0, sticky="nsew")
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(1, weight=1)
+        frame.rowconfigure(0, weight=1)
+
+        card = ttk.LabelFrame(
+            frame,
+            text="Installed action plugins",
+            padding=14,
+            style="Card.TLabelframe",
+        )
+        card.grid(row=0, column=0, sticky="nsew")
+        card.columnconfigure(0, weight=1)
+        card.rowconfigure(1, weight=1)
 
         ttk.Label(
-            frame,
+            card,
             text=(
-                "Action plugins run as trusted in-process Python code. New or removed "
-                "plugin files are detected after FenSoundSwitch restarts. Configure volume "
-                "providers and input routes below."
+                "Trusted integrations can switch devices or run focused audio actions. "
+                "Plugin file changes are detected after FenSoundSwitch restarts."
             ),
             wraplength=700,
             justify="left",
-        ).grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+            style="CardMuted.TLabel",
+        ).grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 12))
 
-        tree = ttk.Treeview(
-            frame,
-            columns=("source", "status", "shortcut"),
-            show="tree headings",
-            selectmode="browse",
-            height=max(5, min(12, len(self._records) + 1)),
-        )
-        tree.heading("#0", text="Plugin")
-        tree.heading("source", text="Source")
-        tree.heading("status", text="Status")
-        tree.heading("shortcut", text="Active shortcuts")
-        tree.column("#0", width=155, stretch=True)
-        tree.column("source", width=115, stretch=False)
-        tree.column("status", width=190, stretch=True)
-        tree.column("shortcut", width=260, stretch=True)
-        tree.grid(row=1, column=0, columnspan=3, sticky="nsew")
+        plugin_scroller, plugin_list, plugin_canvas = self._create_scrollable_card_list(card, height=360)
+        plugin_scroller.grid(row=1, column=0, columnspan=4, sticky="nsew")
+        plugin_list.columnconfigure(0, weight=1)
+        action_records = [record for record in self.records if self._is_action_plugin(record)]
+        selected_plugin_key = tk.StringVar(value=action_records[0].key if action_records else "")
+        plugin_widgets: dict[str, tuple[Any, ...]] = {}
 
-        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
-        scrollbar.grid(row=1, column=3, sticky="ns")
-        tree.configure(yscrollcommand=scrollbar.set)
-
-        def refresh_tree() -> None:
-            selected = tree.selection()
-            selected_key = selected[0] if selected else None
-            for item in tree.get_children():
-                tree.delete(item)
-            for record in self.records:
-                if not self._is_action_plugin(record):
-                    continue
-                tree.insert(
-                    "",
-                    "end",
-                    iid=record.key,
-                    text=record.name,
-                    values=(record.source, record.display_status, record.shortcut_label),
-                )
-            if selected_key and tree.exists(selected_key):
-                tree.selection_set(selected_key)
-            elif tree.get_children():
-                tree.selection_set(tree.get_children()[0])
+        def apply_selection() -> None:
+            selected_key = selected_plugin_key.get()
+            for record_key, widgets in plugin_widgets.items():
+                selected = record_key == selected_key
+                widgets[0].configure(style="Selected.RouteCard.TFrame" if selected else "RouteCard.TFrame")
+                widgets[1].configure(style="Selected.RouteName.TLabel" if selected else "RouteName.TLabel")
+                widgets[2].configure(style="Selected.RouteMuted.TLabel" if selected else "RouteMuted.TLabel")
+                widgets[3].configure(style="Selected.RouteMuted.TLabel" if selected else "RouteMuted.TLabel")
+                widgets[4].configure(style="Selected.RouteState.TLabel" if selected else "RouteState.TLabel")
             update_buttons()
 
+        def choose_plugin(record_key: str) -> None:
+            selected_plugin_key.set(record_key)
+            apply_selection()
+
+        def activate_plugin(record_key: str) -> str:
+            choose_plugin(record_key)
+            configure_selected()
+            return "break"
+
+        def focus_plugin(record_key: str, delta: int) -> str:
+            keys = [record.key for record in self.records if self._is_action_plugin(record)]
+            if not keys:
+                return "break"
+            try:
+                index = keys.index(record_key)
+            except ValueError:
+                index = 0
+            target_key = keys[max(0, min(len(keys) - 1, index + delta))]
+            choose_plugin(target_key)
+            target = plugin_widgets.get(target_key)
+            if target is not None:
+                target[0].focus_set()
+                self._scroll_card_into_view(plugin_canvas, plugin_list, target[0])
+            return "break"
+
+        def refresh_tree() -> None:
+            plugin_widgets.clear()
+            for child in plugin_list.winfo_children():
+                child.destroy()
+            records = [record for record in self.records if self._is_action_plugin(record)]
+            for row, record in enumerate(records):
+                plugin_card = ttk.Frame(plugin_list, style="RouteCard.TFrame", padding=13, takefocus=True)
+                plugin_card.grid(row=row, column=0, sticky="ew", pady=(0, 9))
+                plugin_card.columnconfigure(0, weight=1)
+                name = ttk.Label(plugin_card, text=record.name, style="RouteName.TLabel")
+                name.grid(row=0, column=0, sticky="w")
+                source = ttk.Label(
+                    plugin_card,
+                    text=f"{record.source}  /  {record.display_status}",
+                    style="RouteMuted.TLabel",
+                )
+                source.grid(row=1, column=0, sticky="w", pady=(4, 0))
+                shortcut = ttk.Label(
+                    plugin_card,
+                    text=record.shortcut_label or "No shortcut",
+                    style="RouteMuted.TLabel",
+                )
+                shortcut.grid(row=0, column=1, sticky="e", padx=(12, 0))
+                enabled = ttk.Label(
+                    plugin_card,
+                    text="ENABLED" if record.enabled else "DISABLED",
+                    style="RouteState.TLabel",
+                )
+                enabled.grid(row=1, column=1, sticky="e", padx=(12, 0), pady=(4, 0))
+                for widget in (plugin_card, name, source, shortcut, enabled):
+                    widget.bind("<Button-1>", lambda _event, key=record.key: choose_plugin(key))
+                    widget.bind(
+                        "<MouseWheel>",
+                        lambda event: plugin_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units"),
+                    )
+                plugin_card.bind("<Return>", lambda _event, key=record.key: activate_plugin(key))
+                plugin_card.bind("<space>", lambda _event, key=record.key: choose_plugin(key))
+                plugin_card.bind("<FocusIn>", lambda _event, key=record.key: choose_plugin(key))
+                plugin_card.bind("<Up>", lambda _event, key=record.key: focus_plugin(key, -1))
+                plugin_card.bind("<Down>", lambda _event, key=record.key: focus_plugin(key, 1))
+                plugin_card.bind("<Double-1>", lambda _event, key=record.key: activate_plugin(key))
+                plugin_widgets[record.key] = (plugin_card, name, source, shortcut, enabled)
+            if records and selected_plugin_key.get() not in plugin_widgets:
+                selected_plugin_key.set(records[0].key)
+            apply_selection()
+
         def selected_record() -> PluginRecord | None:
-            selection = tree.selection()
-            if not selection:
-                return None
-            return next((record for record in self.records if record.key == selection[0]), None)
+            return next(
+                (record for record in self.records if record.key == selected_plugin_key.get()),
+                None,
+            )
 
         def update_buttons(_event: Any = None) -> None:
             record = selected_record()
@@ -1416,34 +1620,35 @@ class PluginManager:
             refresh_tree()
 
         configure_button = ttk.Button(
-            frame,
+            card,
             text="Configure",
             underline=0,
             command=configure_selected,
+            style="Accent.TButton",
         )
         configure_button.grid(row=2, column=0, sticky="w", pady=(10, 0))
         shortcuts_button = ttk.Button(
-            frame,
+            card,
             text="Configure shortcuts",
             command=configure_selected_shortcut,
+            style="Quiet.TButton",
         )
         shortcuts_button.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
         enable_button = ttk.Button(
-            frame,
+            card,
             text="Disable",
             command=toggle_selected,
+            style="Quiet.TButton",
         )
         enable_button.grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(10, 0))
         open_button = ttk.Button(
-            frame,
+            card,
             text="Open plugins folder",
             underline=0,
             command=open_user_folder,
+            style="Quiet.TButton",
         )
         open_button.grid(row=2, column=3, sticky="w", padx=(8, 0), pady=(10, 0))
-        tree.bind("<<TreeviewSelect>>", update_buttons)
-        tree.bind("<Double-1>", lambda _event: configure_selected())
-        tree.bind("<Return>", lambda _event: configure_selected())
         refresh_tree()
         return frame
 
@@ -1462,20 +1667,59 @@ class PluginManager:
         window.wait_window()
 
     def build_routes_panel(self, parent: tk.Misc) -> Any:
-        frame = ttk.LabelFrame(parent, text="Routes", padding=12)
+        frame = ttk.Frame(parent, style="Content.TFrame")
         frame.grid(sticky="nsew")
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(1, weight=1)
-        routes = ttk.Treeview(frame, columns=("input", "output"), show="tree headings", selectmode="browse", height=8)
-        routes.heading("#0", text="Route name")
-        routes.heading("input", text="Input")
-        routes.heading("output", text="Assigned output")
-        routes.column("#0", width=220, stretch=True)
-        routes.column("input", width=180, stretch=True)
-        routes.column("output", width=220, stretch=True)
-        routes.grid(row=1, column=0, columnspan=3, sticky="nsew")
+
+        summary = ttk.Frame(frame, style="Content.TFrame")
+        summary.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        for column in range(3):
+            summary.columnconfigure(column, weight=1)
+
+        system_state = tk.StringVar(value="Checking routes")
+        active_routes = tk.StringVar(value=str(len(self._input_routes)))
+        overlay_name = tk.StringVar(value="Unavailable")
+
+        def summary_card(column: int, label: str, value: tk.StringVar) -> None:
+            card = ttk.Frame(summary, style="Stat.TFrame", padding=14)
+            card.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0, 10) if column < 2 else 0,
+            )
+            ttk.Label(card, text=label.upper(), style="StatLabel.TLabel").grid(sticky="w")
+            ttk.Label(card, textvariable=value, style="StatValue.TLabel").grid(
+                sticky="w", pady=(5, 0)
+            )
+
+        summary_card(0, "System state", system_state)
+        summary_card(1, "Active routes", active_routes)
+        summary_card(2, "Overlay", overlay_name)
+
+        body = ttk.Frame(frame, style="Content.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
+
+        routes_card = ttk.LabelFrame(
+            body,
+            text="Configured routes",
+            style="Card.TLabelframe",
+            padding=14,
+        )
+        routes_card.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        routes_card.columnconfigure(0, weight=1)
+        routes_card.rowconfigure(0, weight=1)
+        route_scroller, route_list, route_canvas = self._create_scrollable_card_list(routes_card, height=300)
+        route_scroller.grid(row=0, column=0, sticky="nsew")
+        route_list.columnconfigure(0, weight=1)
+        selected_route_id = tk.StringVar(value=self._input_routes[0].route_id if self._input_routes else "")
+        route_widgets: dict[str, tuple[Any, ...]] = {}
 
         def providers() -> list[PluginRecord]:
             return [record for record in self.records if record.initialized and record.is_volume_provider and record.plugin_id]
@@ -1484,29 +1728,143 @@ class PluginManager:
             record = self._records_by_id.get(provider_id or "")
             return record.name if record is not None and record.initialized and record.is_volume_provider else "Not assigned"
 
-        def refresh() -> None:
-            for tree in (routes,):
-                for item in tree.get_children():
-                    tree.delete(item)
-            for route in self._input_routes:
-                input_record = next((record for record in self.records if record.initialized and record.input_id == route.input_id), None)
-                routes.insert("", "end", iid=route.route_id, text=route.name, values=(input_record.input_name if input_record is not None else route.input_id, provider_label(route.provider_id)))
+        def apply_route_selection() -> None:
+            selected_id = selected_route_id.get()
+            for route_id, widgets in route_widgets.items():
+                selected = route_id == selected_id
+                frame_style = "Selected.RouteCard.TFrame" if selected else "RouteCard.TFrame"
+                name_style = "Selected.RouteName.TLabel" if selected else "RouteName.TLabel"
+                muted_style = "Selected.RouteMuted.TLabel" if selected else "RouteMuted.TLabel"
+                value_style = "Selected.RouteValue.TLabel" if selected else "RouteValue.TLabel"
+                widgets[0].configure(style=frame_style)
+                widgets[1].configure(style=name_style)
+                widgets[2].configure(style=muted_style)
+                widgets[3].configure(style=value_style)
+                widgets[4].configure(style="Selected.RouteState.TLabel" if selected else "RouteState.TLabel")
             update_buttons()
 
+        def choose_route(route_id: str) -> None:
+            selected_route_id.set(route_id)
+            apply_route_selection()
+
+        def focus_route(route_id: str, delta: int) -> str:
+            keys = [route.route_id for route in self._input_routes]
+            if not keys:
+                return "break"
+            try:
+                index = keys.index(route_id)
+            except ValueError:
+                index = 0
+            target_id = keys[max(0, min(len(keys) - 1, index + delta))]
+            choose_route(target_id)
+            target = route_widgets.get(target_id)
+            if target is not None:
+                target[0].focus_set()
+                self._scroll_card_into_view(route_canvas, route_list, target[0])
+            return "break"
+
+        def refresh() -> None:
+            route_widgets.clear()
+            for child in route_list.winfo_children():
+                child.destroy()
+            for row, route in enumerate(self._input_routes):
+                input_record = next(
+                    (
+                        record
+                        for record in self.records
+                        if record.initialized and record.input_id == route.input_id
+                    ),
+                    None,
+                )
+                input_name = input_record.input_name if input_record is not None else route.input_id
+                path = f"{input_name}  ->  {provider_label(route.provider_id)}"
+                value = "--"
+                state = "CHECKING"
+                card = ttk.Frame(route_list, style="RouteCard.TFrame", padding=13, takefocus=True)
+                card.grid(row=row, column=0, sticky="ew", pady=(0, 9))
+                card.columnconfigure(0, weight=1)
+                name = ttk.Label(card, text=route.name, style="RouteName.TLabel")
+                name.grid(row=0, column=0, sticky="w")
+                details = ttk.Label(card, text=path, style="RouteMuted.TLabel")
+                details.grid(row=1, column=0, sticky="w", pady=(4, 0))
+                level = ttk.Label(card, text=value, style="RouteValue.TLabel")
+                level.grid(row=0, column=1, sticky="e", padx=(12, 0))
+                state_label = ttk.Label(card, text=state, style="RouteState.TLabel")
+                state_label.grid(row=1, column=1, sticky="e", padx=(12, 0), pady=(4, 0))
+                for widget in (card, name, details, level, state_label):
+                    widget.bind("<Button-1>", lambda _event, route_id=route.route_id: choose_route(route_id))
+                    widget.bind(
+                        "<MouseWheel>",
+                        lambda event: route_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units"),
+                    )
+                card.bind("<Return>", lambda _event, route_id=route.route_id: choose_route(route_id))
+                card.bind("<space>", lambda _event, route_id=route.route_id: choose_route(route_id))
+                card.bind("<FocusIn>", lambda _event, route_id=route.route_id: choose_route(route_id))
+                card.bind("<Up>", lambda _event, route_id=route.route_id: focus_route(route_id, -1))
+                card.bind("<Down>", lambda _event, route_id=route.route_id: focus_route(route_id, 1))
+                card.bind("<Double-1>", lambda _event, route_id=route.route_id: edit(next((candidate for candidate in self._input_routes if candidate.route_id == route_id), None)))
+                route_widgets[route.route_id] = (card, name, details, level, state_label)
+            if self._input_routes and selected_route_id.get() not in route_widgets:
+                selected_route_id.set(self._input_routes[0].route_id)
+            refresh_statuses()
+            apply_route_selection()
+
+        def refresh_statuses() -> None:
+            active_overlay = self._records_by_id.get(self._active_overlay_plugin_id)
+            active_overlay_name = active_overlay.name if active_overlay is not None else "Unavailable"
+            overlay_name.set(active_overlay_name)
+            overlay_value.set(active_overlay_name)
+            statuses = {status.provider_id: status for status in self._get_volume_statuses()}
+            ready_count = 0
+            for route in self._input_routes:
+                widgets = route_widgets.get(route.route_id)
+                if widgets is None:
+                    continue
+                status = statuses.get(route.route_id)
+                if status is not None and status.confirmed_volume is not None:
+                    value = f"{status.confirmed_volume}%"
+                    state = "READY"
+                    ready_count += 1
+                elif status is not None:
+                    value = "--"
+                    state = "UNAVAILABLE"
+                else:
+                    value = "--"
+                    state = "CHECKING"
+                widgets[3].configure(text=value)
+                widgets[4].configure(text=state)
+            active_routes.set(str(len(self._input_routes)))
+            if not self._input_routes:
+                system_state.set("No routes configured")
+            elif ready_count == len(self._input_routes):
+                system_state.set("All routes ready")
+            elif ready_count:
+                system_state.set(f"{ready_count} of {len(self._input_routes)} ready")
+            else:
+                system_state.set("Checking routes")
+
         def update_buttons(_event: Any = None) -> None:
-            edit_button.state(["!disabled"] if routes.selection() else ["disabled"])
-            remove_button.state(["!disabled"] if routes.selection() else ["disabled"])
+            state = ["!disabled"] if selected_route() is not None else ["disabled"]
+            edit_button.state(state)
+            duplicate_button.state(state)
+            remove_button.state(state)
 
         def selected_route() -> VolumeRoute | None:
-            return next((route for route in self._input_routes if routes.selection() and route.route_id == routes.selection()[0]), None)
+            return next(
+                (route for route in self._input_routes if route.route_id == selected_route_id.get()),
+                None,
+            )
 
         def edit(route: VolumeRoute | None = None) -> None:
             dialog = tk.Toplevel(parent)
             dialog.title("Add route" if route is None else "Edit route")
             dialog.transient(parent)
             self.prepare_window(dialog)
-            dialog_frame = ttk.Frame(dialog, padding=12)
+            dialog_frame = ttk.Frame(dialog, padding=20, style="Dialog.TFrame")
             dialog_frame.grid(sticky="nsew")
+            dialog.columnconfigure(0, weight=1)
+            dialog.rowconfigure(0, weight=1)
+            dialog_frame.columnconfigure(0, weight=1)
             inputs = [(record.input_name or record.input_id, record.input_id) for record in self.records if record.initialized and record.input_id]
             outputs = [(candidate.name, candidate.plugin_id) for candidate in providers()]
             input_value = tk.StringVar(value=next((name for name, value in inputs if route is not None and value == route.input_id), inputs[0][0] if inputs else ""))
@@ -1514,23 +1872,40 @@ class PluginManager:
             name_value = tk.StringVar(value=route.name if route is not None else default_route_name(input_value.get(), output_value.get()))
             input_drafts = {route.input_id: dict(route.input.parameters)} if route is not None else {}
             output_drafts = {route.provider_id: dict(route.output.parameters)} if route is not None else {}
-            ttk.Label(dialog_frame, text="Route name:").grid(row=0, column=0, sticky="w")
-            ttk.Entry(dialog_frame, textvariable=name_value, width=36).grid(row=1, column=0, sticky="ew", pady=(4, 10))
-            ttk.Label(dialog_frame, text="Input source:").grid(row=2, column=0, sticky="w")
-            ttk.Combobox(dialog_frame, textvariable=input_value, values=[name for name, _ in inputs], state="readonly", width=36).grid(row=3, column=0, sticky="ew", pady=(4, 10))
-            ttk.Label(dialog_frame, text="Output/provider:").grid(row=4, column=0, sticky="w")
-            ttk.Combobox(dialog_frame, textvariable=output_value, values=[name for name, _ in outputs], state="readonly", width=36).grid(row=5, column=0, sticky="ew", pady=(4, 10))
+            ttk.Label(
+                dialog_frame,
+                text="Add audio route" if route is None else "Edit audio route",
+                style="DialogTitle.TLabel",
+            ).grid(row=0, column=0, columnspan=3, sticky="w")
+            ttk.Label(
+                dialog_frame,
+                text="Choose which input controls which output.",
+                style="DialogSubtitle.TLabel",
+            ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 16))
+            ttk.Label(dialog_frame, text="Route name", style="Muted.TLabel").grid(row=2, column=0, sticky="w")
+            ttk.Entry(dialog_frame, textvariable=name_value, width=42).grid(row=3, column=0, columnspan=3, sticky="ew", pady=(5, 12))
+            ttk.Label(dialog_frame, text="Input source", style="Muted.TLabel").grid(row=4, column=0, sticky="w")
             message = tk.StringVar(dialog)
-            input_details = ttk.Label(dialog_frame, wraplength=460)
-            input_details.grid(row=6, column=0, columnspan=3, sticky="w")
-            input_button = ttk.Button(dialog_frame, text="Configure input...")
-            input_button.grid(row=7, column=0, sticky="w", pady=(8, 0))
-            output_details = ttk.Label(dialog_frame, wraplength=460)
-            output_details.grid(row=8, column=0, columnspan=3, sticky="w", pady=(10, 0))
-            output_button = ttk.Button(dialog_frame, text="Configure output...")
-            output_button.grid(row=9, column=0, sticky="w", pady=(8, 0))
-            status = ttk.Label(dialog_frame, textvariable=message, wraplength=460)
-            status.grid(row=10, column=0, columnspan=3, sticky="w", pady=(10, 0))
+            input_card = ttk.Frame(dialog_frame, style="Inset.TFrame", padding=10)
+            input_card.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(5, 12))
+            input_card.columnconfigure(0, weight=1)
+            ttk.Combobox(input_card, textvariable=input_value, values=[name for name, _ in inputs], state="readonly", width=34).grid(row=0, column=0, sticky="ew")
+            input_details = ttk.Label(input_card, wraplength=350, style="InsetMuted.TLabel")
+            input_details.grid(row=1, column=0, sticky="w", pady=(7, 0))
+            input_button = ttk.Button(input_card, text="Configure", style="Quiet.TButton")
+            input_button.grid(row=0, column=1, rowspan=2, sticky="e", padx=(10, 0))
+
+            ttk.Label(dialog_frame, text="Output / provider", style="Muted.TLabel").grid(row=6, column=0, sticky="w")
+            output_card = ttk.Frame(dialog_frame, style="Inset.TFrame", padding=10)
+            output_card.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(5, 0))
+            output_card.columnconfigure(0, weight=1)
+            ttk.Combobox(output_card, textvariable=output_value, values=[name for name, _ in outputs], state="readonly", width=34).grid(row=0, column=0, sticky="ew")
+            output_details = ttk.Label(output_card, wraplength=350, style="InsetMuted.TLabel")
+            output_details.grid(row=1, column=0, sticky="w", pady=(7, 0))
+            output_button = ttk.Button(output_card, text="Configure", style="Quiet.TButton")
+            output_button.grid(row=0, column=1, rowspan=2, sticky="e", padx=(10, 0))
+            status = ttk.Label(dialog_frame, textvariable=message, wraplength=500, style="Muted.TLabel")
+            status.grid(row=8, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
             def selected_input_id() -> str | None:
                 return dict(inputs).get(input_value.get())
@@ -1615,8 +1990,8 @@ class PluginManager:
                     )
                 ):
                     dialog.destroy(); refresh()
-            ttk.Button(dialog_frame, text="OK", command=save).grid(row=11, column=0, sticky="w", pady=(12, 0))
-            ttk.Button(dialog_frame, text="Cancel", command=dialog.destroy).grid(row=11, column=2, sticky="e", pady=(12, 0))
+            ttk.Button(dialog_frame, text="Cancel", style="Quiet.TButton", command=dialog.destroy).grid(row=9, column=1, sticky="e", pady=(16, 0))
+            ttk.Button(dialog_frame, text="Save route", style="Accent.TButton", command=save).grid(row=9, column=2, sticky="e", padx=(8, 0), pady=(16, 0))
             input_value.trace_add("write", refresh_input_details)
             output_value.trace_add("write", refresh_output_details)
             input_button.configure(command=configure_input)
@@ -1635,36 +2010,89 @@ class PluginManager:
             if route is not None and self.add_route(route.input_id, route.provider_id, copied_route_name(route.name), dict(route.input.parameters), dict(route.output.parameters)):
                 refresh()
 
-        ttk.Button(frame, text="Add route", command=lambda: edit()).grid(row=4, column=0, sticky="w", pady=(10, 0))
-        edit_button = ttk.Button(frame, text="Edit", command=lambda: edit(selected_route()))
-        ttk.Button(frame, text="Duplicate route", command=duplicate).grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
-        edit_button.grid(row=4, column=2, sticky="w", padx=(8, 0), pady=(10, 0))
-        remove_button = ttk.Button(frame, text="Remove", command=remove)
-        remove_button.grid(row=4, column=3, sticky="w", padx=(8, 0), pady=(10, 0))
+        route_actions = ttk.Frame(routes_card, style="Card.TFrame")
+        route_actions.grid(row=1, column=0, sticky="ew", pady=(5, 0))
+        ttk.Button(
+            route_actions,
+            text="Add route",
+            style="Accent.TButton",
+            command=lambda: edit(),
+        ).grid(row=0, column=0, sticky="w")
+        edit_button = ttk.Button(
+            route_actions,
+            text="Edit",
+            style="Quiet.TButton",
+            command=lambda: edit(selected_route()),
+        )
+        edit_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        duplicate_button = ttk.Button(
+            route_actions,
+            text="Duplicate",
+            style="Quiet.TButton",
+            command=duplicate,
+        )
+        duplicate_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
+        remove_button = ttk.Button(
+            route_actions,
+            text="Remove",
+            style="Quiet.TButton",
+            command=remove,
+        )
+        remove_button.grid(row=0, column=3, sticky="w", padx=(8, 0))
+
+        side = ttk.Frame(body, style="Content.TFrame")
+        side.grid(row=0, column=1, sticky="nsew")
+        side.columnconfigure(0, weight=1)
+        quick_settings = ttk.LabelFrame(
+            side,
+            text="Quick settings",
+            padding=12,
+            style="Card.TLabelframe",
+        )
+        quick_settings.grid(row=0, column=0, sticky="ew")
+        quick_settings.columnconfigure(0, weight=1)
         if self._get_start_with_windows is not None and self._set_start_with_windows is not None:
             start_var = tk.BooleanVar(value=bool(self._get_start_with_windows()))
             def toggle_start() -> None:
+                start_var.set(not bool(self._get_start_with_windows()))
                 try:
                     self._set_start_with_windows(bool(start_var.get()))
-                    start_var.set(bool(self._get_start_with_windows()))
                 except Exception:
-                    start_var.set(not bool(start_var.get()))
-            ttk.Checkbutton(frame, text="Start with Windows", variable=start_var, command=toggle_start).grid(row=6, column=0, sticky="w", pady=(10, 0))
-        overlay_frame = ttk.LabelFrame(frame, text="Overlay", padding=8)
-        overlay_frame.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(12, 0))
-        overlay_frame.columnconfigure(1, weight=1)
+                    pass
+                self.refresh_start_with_windows_controls()
+            ttk.Label(
+                quick_settings,
+                text="Start with Windows",
+                style="Card.TLabel",
+            ).grid(row=0, column=0, sticky="w")
+            ttk.Label(
+                quick_settings,
+                text="Launch quietly in the tray",
+                style="CardMuted.TLabel",
+            ).grid(row=1, column=0, sticky="w", pady=(3, 0))
+            start_button = ttk.Button(
+                quick_settings,
+                text="On" if start_var.get() else "Off",
+                command=toggle_start,
+                style="Toggle.TButton",
+            )
+            start_button.grid(row=0, column=1, rowspan=2, sticky="e", padx=(10, 0))
+            self._start_controls.append((start_var, start_button))
         overlay_records = [record for record in self.records if record.initialized and record.is_overlay_renderer and record.plugin_id]
         labels = {record.name: record for record in overlay_records}
         active = self._records_by_id.get(self._active_overlay_plugin_id)
         overlay_value = tk.StringVar(value=active.name if active is not None else "Unavailable")
-        ttk.Label(overlay_frame, text="Renderer:").grid(row=0, column=0, sticky="w")
-        selector = ttk.Combobox(overlay_frame, textvariable=overlay_value, values=list(labels), state="readonly", width=28)
-        selector.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self._overlay_controls.append((frame, overlay_value))
+        overlay_name.set(overlay_value.get())
+        ttk.Label(quick_settings, text="Volume overlay", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=(12, 0))
+        selector = ttk.Combobox(quick_settings, textvariable=overlay_value, values=list(labels), state="readonly", width=20)
+        selector.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(5, 0))
         def choose_overlay(*_args: Any) -> None:
             record = labels.get(overlay_value.get())
             if record is not None and record.plugin_id is not None and not self.set_active_overlay_plugin_id(record.plugin_id):
                 current = self._records_by_id.get(self._active_overlay_plugin_id)
                 overlay_value.set(current.name if current is not None else "Unavailable")
+            overlay_name.set(overlay_value.get())
         selector.bind("<<ComboboxSelected>>", choose_overlay)
         def configure_overlay() -> None:
             record = labels.get(overlay_value.get())
@@ -1674,10 +2102,124 @@ class PluginManager:
                 record.plugin.configure(parent)
             except Exception as exc:
                 record.status = f"Configuration failed: {self._format_error(exc)}"
-        ttk.Button(overlay_frame, text="Overlay settings...", command=configure_overlay).grid(row=0, column=2, sticky="w", padx=(8, 0))
-        routes.bind("<<TreeviewSelect>>", update_buttons)
-        routes.bind("<Double-1>", lambda _event: edit(selected_route()))
+        ttk.Button(quick_settings, text="Overlay settings", style="Quiet.TButton", command=configure_overlay).grid(row=4, column=0, sticky="w", pady=(10, 0))
+
+        action_summary = ttk.LabelFrame(
+            side,
+            text="Action plugins",
+            padding=12,
+            style="Card.TLabelframe",
+        )
+        action_summary.grid(row=1, column=0, sticky="ew", pady=(14, 0))
+        action_summary.columnconfigure(0, weight=1)
+        action_records = [record for record in self.records if self._is_action_plugin(record)]
+        for row, record in enumerate(action_records[:4]):
+            ttk.Label(
+                action_summary,
+                text=record.name,
+                style="Card.TLabel",
+            ).grid(row=row, column=0, sticky="w", pady=(0, 7) if row < len(action_records[:4]) - 1 else 0)
+            ttk.Label(
+                action_summary,
+                text="Enabled" if record.enabled else "Disabled",
+                style="CardMuted.TLabel",
+            ).grid(row=row, column=1, sticky="e", padx=(10, 0), pady=(0, 7) if row < len(action_records[:4]) - 1 else 0)
         refresh()
+        self._route_panel_refreshers.append((frame, refresh, refresh_statuses))
+        return frame
+
+    def build_appearance_panel(self, parent: tk.Misc) -> Any:
+        frame = ttk.Frame(parent, style="Content.TFrame")
+        frame.grid(sticky="nsew")
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=3)
+        frame.columnconfigure(1, weight=2)
+
+        preview_card = ttk.LabelFrame(
+            frame,
+            text="Preview",
+            padding=18,
+            style="Card.TLabelframe",
+        )
+        preview_card.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        preview_card.columnconfigure(0, weight=1)
+        preview = ttk.Frame(preview_card, style="RouteCard.TFrame", padding=18)
+        preview.grid(row=0, column=0, sticky="ew", padx=20, pady=30)
+        preview.columnconfigure(0, weight=1)
+        ttk.Label(preview, text="OUTPUT", style="RouteMuted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(preview, text="66%", style="RouteValue.TLabel").grid(row=0, column=1, sticky="e")
+        progress = ttk.Progressbar(preview, maximum=100, value=66, mode="determinate")
+        progress.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        ttk.Label(
+            preview_card,
+            text="The real overlay appears without taking focus from the active application.",
+            style="CardMuted.TLabel",
+            wraplength=430,
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", padx=20, pady=(0, 20))
+
+        renderer_card = ttk.LabelFrame(
+            frame,
+            text="Volume overlay",
+            padding=16,
+            style="Card.TLabelframe",
+        )
+        renderer_card.grid(row=0, column=1, sticky="new")
+        renderer_card.columnconfigure(0, weight=1)
+        ttk.Label(
+            renderer_card,
+            text="Renderer",
+            style="Card.TLabel",
+            font=("Segoe UI Variable", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            renderer_card,
+            text="Choose the visual style shown when a route changes.",
+            style="CardMuted.TLabel",
+            wraplength=300,
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
+
+        overlay_records = [
+            record
+            for record in self.records
+            if record.initialized and record.is_overlay_renderer and record.plugin_id
+        ]
+        labels = {record.name: record for record in overlay_records}
+        active = self._records_by_id.get(self._active_overlay_plugin_id)
+        value = tk.StringVar(value=active.name if active is not None else "Unavailable")
+        self._overlay_controls.append((frame, value))
+        selector = ttk.Combobox(
+            renderer_card,
+            textvariable=value,
+            values=list(labels),
+            state="readonly",
+        )
+        selector.grid(row=2, column=0, sticky="ew")
+
+        def choose_overlay(*_args: Any) -> None:
+            record = labels.get(value.get())
+            if record is not None and record.plugin_id is not None and not self.set_active_overlay_plugin_id(record.plugin_id):
+                current = self._records_by_id.get(self._active_overlay_plugin_id)
+                value.set(current.name if current is not None else "Unavailable")
+
+        def configure_overlay() -> None:
+            record = labels.get(value.get())
+            if record is None or record.plugin is None:
+                return
+            try:
+                record.plugin.configure(parent)
+            except Exception as exc:
+                record.status = f"Configuration failed: {self._format_error(exc)}"
+
+        selector.bind("<<ComboboxSelected>>", choose_overlay)
+        ttk.Button(
+            renderer_card,
+            text="Overlay settings",
+            style="Accent.TButton",
+            command=configure_overlay,
+        ).grid(row=3, column=0, sticky="w", pady=(14, 0))
         return frame
 
     def show_routing_configuration(self, parent: tk.Misc | None = None) -> None:

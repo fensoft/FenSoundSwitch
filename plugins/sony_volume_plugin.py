@@ -152,7 +152,7 @@ class SonyVolumePlugin:
         window.title("Configure Sony network AVR volume")
         window.transient(parent)
         host.prepare_window(window)
-        frame = ttk.Frame(window, padding=12)
+        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
         frame.grid(sticky="nsew")
         window.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
@@ -181,7 +181,7 @@ class SonyVolumePlugin:
             host.request_volume_refresh()
             window.destroy()
 
-        ttk.Button(frame, text="Save", command=save).grid(row=3, column=1, sticky="e", pady=(12, 0))
+        ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=3, column=1, sticky="e", pady=(16, 0))
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         window.grab_set()
 

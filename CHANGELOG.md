@@ -51,6 +51,7 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Changed
 
+- Redesigned the complete Tk interface around a refined Windows 11 visual system matching the approved Fluent Command Center concept: the persistent sidebar now exposes Routes, Actions, Appearance, Settings, and Diagnostics; route and plugin tables are replaced by selectable status cards; live route values, summary cards, quick settings, overlay preview, configuration management, dialogs, and the Windows 11 overlay share one surface and accent system while retaining light, dark, High Contrast, DPI, keyboard, tray, and no-activate behavior.
 - Moved bundled first-party plugins into the `plugins` package and reserved the adjacent `external-plugins\` directory for dynamically discovered trusted external plugins; `%APPDATA%\fensoundswitch\plugins\` is the per-user external location.
 - Replaced the single active volume provider and root volume slider with ordered independent routes. Schema version 5 persists stable route IDs and migrates schema-4 input maps; one input may fan out to several outputs while writes remain serialized.
 - Split configuration into **Plugins** for initialized action-only plugins and **Routes** for volume-provider setup, input assignment, overlay configuration, and Start with Windows.

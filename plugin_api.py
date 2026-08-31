@@ -404,7 +404,7 @@ def show_host_port_route_editor(
     window.title(title)
     window.transient(parent)
     prepare_window(window)
-    frame = ttk.Frame(window, padding=12)
+    frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
     frame.grid(sticky="nsew")
     window.columnconfigure(0, weight=1)
     frame.columnconfigure(1, weight=1)
@@ -412,11 +412,19 @@ def show_host_port_route_editor(
     host_value = tk.StringVar(value=values["host"])
     port_value = tk.StringVar(value=values["port"])
     status = tk.StringVar(value="Enter the receiver hostname or IP address and TCP port.")
-    ttk.Label(frame, text="Host or IP address:").grid(row=0, column=0, sticky="w")
-    ttk.Entry(frame, textvariable=host_value, width=40).grid(row=0, column=1, sticky="ew")
-    ttk.Label(frame, text="TCP port:").grid(row=1, column=0, sticky="w", pady=(8, 0))
-    ttk.Entry(frame, textvariable=port_value, width=8).grid(row=1, column=1, sticky="w", pady=(8, 0))
-    ttk.Label(frame, textvariable=status, wraplength=460).grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+    ttk.Label(frame, text=title, style="DialogTitle.TLabel").grid(
+        row=0, column=0, columnspan=2, sticky="w"
+    )
+    ttk.Label(
+        frame,
+        text="Connect this route to a receiver on your local network.",
+        style="DialogSubtitle.TLabel",
+    ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 16))
+    ttk.Label(frame, text="Host or IP address", style="Muted.TLabel").grid(row=2, column=0, columnspan=2, sticky="w")
+    ttk.Entry(frame, textvariable=host_value, width=44).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(5, 12))
+    ttk.Label(frame, text="TCP port", style="Muted.TLabel").grid(row=4, column=0, columnspan=2, sticky="w")
+    ttk.Entry(frame, textvariable=port_value, width=12).grid(row=5, column=0, sticky="w", pady=(5, 0))
+    ttk.Label(frame, textvariable=status, wraplength=480, style="Muted.TLabel").grid(row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
     def save() -> None:
         try:
@@ -426,8 +434,8 @@ def show_host_port_route_editor(
             return
         window.destroy()
 
-    ttk.Button(frame, text="Save", command=save).grid(row=3, column=0, sticky="w", pady=(12, 0))
-    ttk.Button(frame, text="Cancel", command=window.destroy).grid(row=3, column=1, sticky="e", pady=(12, 0))
+    ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(row=7, column=0, sticky="e", pady=(16, 0))
+    ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=7, column=1, sticky="e", padx=(8, 0), pady=(16, 0))
     window.protocol("WM_DELETE_WINDOW", window.destroy)
     window.grab_set()
 
