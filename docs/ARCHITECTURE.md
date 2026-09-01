@@ -1,15 +1,15 @@
 # Architecture
 
-This document describes the tagged `0.1.0` release and the current repository sources. `FenSoundSwitch` is a small Windows desktop process: Tk owns the UI, native Win32 message loops provide display-change protection, the tray icon, and the global volume-key hook, and short-lived workers perform DDC/CI operations against physical monitors.
+This document describes the tagged `0.1.0` release and the current repository sources. `FenSoundSwitch` uses a two-process presentation architecture: the primary process retains a withdrawn Tk coordination loop plus native Win32 controllers and hardware workers, while a local WebView2 child renders the complete HTML interface. They communicate only through an authenticated Windows named pipe; no HTTP server or TCP port exists.
 
 There is no server-side tier. The project has no HTTP API, listening port, database, container, service, application account system, embedded broker, cron process, or telemetry client. The bundled Discord plugin is an OAuth client that can use Discord's local named pipe and HTTPS token endpoint; the optional MQTT input is a client of a user-configured broker.
 
 ## High-level flow
 
 1. The supported entrypoint, `app.py`, first recognizes the strictly validated internal elevated audio-rename request. Ordinary launches acquire a session-local named mutex; a duplicate broadcasts a restore request and exits before creating Tk or application subsystems.
-2. The primary instance configures a rotating per-user diagnostic log, creates one `tk.Tk`, constructs `gui.MonitorVolumeApp`, and enters `root.mainloop()` while retaining the mutex handle.
+2. The primary instance configures a rotating per-user diagnostic log, creates one withdrawn `tk.Tk`, constructs `gui.MonitorVolumeApp`, and enters `root.mainloop()` while retaining the mutex handle. The root remains the coordinator for queues, native controllers, plugins, and the focus-safe overlay, not a user-facing window.
 3. `MonitorVolumeApp.__init__()` samples the Windows app-theme and High Contrast state, reads the optional current-user autostart value, and loads saved monitor selection and route settings from `settings.py`.
-4. It builds the keyboard-navigable, DPI-scaled control window and status bar on the Tk thread. A persistent Fluent-style sidebar maps only one of four gridded pages at a time: Routes, Actions, Appearance, or Settings. Routes and plugins use composed focusable cards rather than tables; the hidden monitor combobox remains a nonvisual stable-identity model for tray monitor commands.
+4. It starts a `PresentationController` that launches the same executable in strict internal child mode when a visible interface is required. The child authenticates before creating WebView2, loads packaged `web/` assets, and renders Routes, Actions, Appearance, Settings, Diagnostics, and declarative plugin forms. Presentation requests cross back into the Tk queue before touching authoritative state.
 5. It dynamically imports `plugin_manager` only after the mutex/Tk boundary, directly imports first-party modules from the bundled `plugins` package, then loads adjacent `external-plugins\*.py` and per-user Python files in isolation, and starts the shared passive shortcut observer. After plugin initialization, the selected renderer-only bundled overlay creates the hidden, native-no-activate overlay on the Tk thread. The bundled package is never dynamically scanned. The bundled Discord plugin opens its app-owned setup modal only when Credential Manager has no valid configuration, then validates or creates its grant on a worker.
 6. It starts a dedicated `DisplayChangeListener` hidden window for topology and live theme/system-color broadcasts. Failure leaves all monitor-volume writes disabled; the app can still enumerate and display status.
 7. It independently starts the tray controller and low-level global Volume Up/Down hook. Tk publishes immutable menu snapshots to the tray, while tray Refresh/selection/restore/exit actions enqueue Tk callbacks. Their failures remain nonfatal to the other subsystems.
@@ -21,7 +21,7 @@ There is no server-side tier. The project has no HTTP API, listening port, datab
 13. The readback becomes authoritative. A coalesced follow-up starts another worker and therefore performs another fresh discovery/match.
 14. Display/device notifications invalidate a thread-safe topology generation immediately, release key consumption, clear pending writes and audio reconciliation, and schedule debounced discovery with bounded retries.
 15. A 10-second watchdog fails a stalled DDC operation closed without releasing its serialization slot; when the worker eventually returns, its result is ignored and read-only rediscovery follows.
-16. Shutdown stops plugin shortcut observation first, rejects new plugin triggers, signals Discord's one-second wait so restoration can finish within the shared two-second plugin budget, then stops display/hook/tray loops, reports missed deadlines, closes the overlay, destroys Tk, closes diagnostics, and releases the mutex.
+16. Shutdown first asks the presentation child to close within a bounded interval, then stops plugin shortcut observation, rejects new plugin triggers, signals Discord's one-second wait so restoration can finish within the shared two-second plugin budget, stops display/hook/tray loops, reports missed deadlines, closes the overlay, destroys Tk, closes diagnostics, and releases the mutex.
 
 ## Runtime process and thread ownership
 
@@ -371,7 +371,7 @@ External plugins can use arbitrary network paths. The bundled Discord plugin con
 app, audio_outputs, autostart, diagnostics, plugins.discord_output_plugin, plugins.windows11_overlay_plugin, plugins.macos_overlay_plugin, gui, ddc, settings, theme, plugin_api, plugin_hotkeys, plugin_manager, windows_platform
 ```
 
-The direct runtime dependency is pinned to `monitorcontrol==4.2.0`. The `build` extra pins `Nuitka==2.4.8`. There is no lockfile; build-system requirements and transitive build dependencies are not fully pinned.
+Direct runtime dependencies pin `monitorcontrol==4.2.0`, `paho-mqtt==2.1.0`, `pywebview==6.1`, and `pythonnet==3.0.5`. The latter two host the local Windows WebView2 presentation child. The `build` extra pins `Nuitka==2.4.8`. There is no lockfile; build-system requirements and transitive build dependencies are not fully pinned.
 
 `gui.py`'s function-local import is still a direct Python import, and `plugin_manager.py` directly imports every bundled provider from `plugins`; `build_exe.ps1` also passes `--include-package=plugins`, so Nuitka embeds the bundled framework/plugins. Files discovered from adjacent `external-plugins`, per-user `%APPDATA%\fensoundswitch\plugins`, or the legacy trusted `%APPDATA%\windows-ddc\plugins` fallback are deliberately not build inputs or embedded data; the executable imports them from disk after restart.
 

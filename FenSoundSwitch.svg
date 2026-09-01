@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">FenSoundSwitch Audio Portal icon</title>
+  <rect x="8" y="8" width="240" height="240" rx="58" fill="#0d6b63"/>
+  <path d="M48 105h36l48-40v126l-48-40H48z" fill="#fff"/>
+  <path d="M158 96c17 17 17 47 0 64M181 74c30 30 30 78 0 108" fill="none" stroke="#fff" stroke-width="15" stroke-linecap="round"/>
+  <path d="M32 61V43h48M224 195v18h-48" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round"/>
+</svg>

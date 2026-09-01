@@ -78,10 +78,6 @@ class MacOSOverlayPlugin:
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
 
-    def configure(self, parent: object) -> None:
-        # This renderer intentionally has a fixed all-routes presentation.
-        return None
-
     def create_overlay_renderer(self, dark_mode: bool, high_contrast: bool) -> OverlayRenderer:
         if self._host is None:
             raise RuntimeError("Overlay plugin has not been initialized.")

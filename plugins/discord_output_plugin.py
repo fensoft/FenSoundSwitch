@@ -7,20 +7,20 @@ import struct
 import sys
 import threading
 import time
-import tkinter as tk
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
 from pathlib import Path
-from tkinter import messagebox, ttk
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Mapping
 
 from plugin_api import (
     PLUGIN_API_VERSION as HOST_PLUGIN_API_VERSION,
     PluginHostContext,
     ShortcutAction,
+    plugin_ui_document,
+    plugin_ui_result,
 )
 
 
@@ -574,11 +574,8 @@ class DiscordOutputPlugin:
         self._host = host
         saved = _load_saved_oauth()
         if saved is None:
-            saved = self._show_setup_dialog(host.ui_parent)
-            if saved is None:
-                self._set_status("Setup required")
-                return
-            _save_oauth(saved)
+            self._set_status("Setup required")
+            return
         self._set_status("Checking Discord authorization…")
         self._start_worker(self._validate_authorization, not _has_tokens(saved))
 
@@ -678,207 +675,52 @@ class DiscordOutputPlugin:
                 self._untrack_client(client)
             self._operation_lock.release()
 
-    def _show_setup_dialog(self, parent: Any) -> dict[str, object] | None:
-        if self._host is None:
-            return None
-        webbrowser.open(_DEVELOPER_PORTAL_URL, new=2)
-        window = tk.Toplevel(parent)
-        window.title("Discord RPC setup")
-        window.transient(parent)
-        window.resizable(False, False)
-        self._host.prepare_window(window)
+    def get_plugin_ui(self) -> dict[str, object]:
+        return plugin_ui_document("Configure Discord output switch", [
+            {"id": "client_secret", "type": "password", "label": "Client secret", "value": "", "required": True, "write_only": True, "description": "Reset the secret in Discord's Developer Portal before copying it here."},
+            {"id": "client_id", "type": "text", "label": "Application ID", "value": "", "required": True},
+        ], [
+            {"id": "open_portal", "label": "Open Developer Portal", "kind": "action", "async": False},
+            {"id": "setup", "label": "Save and authorize", "kind": "submit", "async": True},
+            {"id": "reset", "label": "Reset authorization", "kind": "action", "async": True, "confirm": "Remove the saved Discord client secret and OAuth grant from Windows Credential Manager?"},
+        ], f"OAuth status: {self._current_status()}. Add {_DEFAULT_REDIRECT_URI} exactly and request only rpc, rpc.voice.read, and rpc.voice.write. Discord's first consent prompt cannot be skipped.")
 
-        result: dict[str, object] | None = None
-        secret_var = tk.StringVar(window)
-        client_id_var = tk.StringVar(window)
-        error_var = tk.StringVar(window)
-        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
-        frame.grid(sticky="nsew")
-        ttk.Label(
-            frame,
-            text=(
-                "In Discord's Developer Portal, select or create an application. Under OAuth2 > "
-                "Client Information choose Reset Secret (Réinitialiser le secret), then copy the "
-                "new secret now. Resetting invalidates the previous secret."
-            ),
-            wraplength=610,
-            justify="left",
-        ).grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Label(frame, text="Client secret:", underline=7).grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=(12, 4)
-        )
-        secret_entry = ttk.Entry(frame, textvariable=secret_var, show="•", width=72)
-        secret_entry.grid(row=2, column=0, columnspan=3, sticky="ew")
-        ttk.Label(
-            frame,
-            text=(
-                "Then copy General Information > Application ID. This public ID is not a bot token."
-            ),
-            wraplength=610,
-            justify="left",
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(12, 0))
-        ttk.Label(frame, text="Application ID:", underline=0).grid(
-            row=4, column=0, columnspan=3, sticky="w", pady=(8, 4)
-        )
-        client_id_entry = ttk.Entry(frame, textvariable=client_id_var, width=72)
-        client_id_entry.grid(row=5, column=0, columnspan=3, sticky="ew")
-        ttk.Label(
-            frame,
-            text=(
-                f"Under OAuth2 > Redirects add {_DEFAULT_REDIRECT_URI} exactly and save it. "
-                "The app requests restricted rpc, rpc.voice.read, and rpc.voice.write scopes. "
-                "Your Discord application must be approved or your account must be an RPC tester. "
-                "Discord's first consent prompt cannot be skipped."
-            ),
-            wraplength=610,
-            justify="left",
-        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(12, 0))
-        ttk.Label(frame, textvariable=error_var, wraplength=610).grid(
-            row=7, column=0, columnspan=3, sticky="w", pady=(6, 0)
-        )
-
-        def open_portal() -> None:
-            client_id = client_id_var.get().strip()
+    def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        if action_id == "open_portal":
+            client_id = values.get("client_id", "")
             url = _DEVELOPER_PORTAL_URL
-            try:
-                if client_id:
-                    url = f"{_DEVELOPER_PORTAL_URL}/{_validate_client_id(client_id)}/oauth2"
-            except DiscordRpcError as exc:
-                error_var.set(str(exc))
-                return
+            if isinstance(client_id, str) and client_id.strip():
+                url = f"{url}/{_validate_client_id(client_id)}/oauth2"
             webbrowser.open(url, new=2)
-
-        def save() -> None:
-            nonlocal result
-            secret = secret_var.get().strip()
-            if not secret:
-                error_var.set("Client secret is required.")
-                secret_entry.focus_set()
-                return
-            try:
-                result = _saved_client_configuration(client_id_var.get(), secret)
-            except DiscordRpcError as exc:
-                error_var.set(str(exc))
-                client_id_entry.focus_set()
-                return
-            window.destroy()
-
-        ttk.Button(frame, text="Open Developer Portal", style="Quiet.TButton", command=open_portal).grid(
-            row=8, column=0, sticky="w", pady=(14, 0)
-        )
-        ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(
-            row=8, column=1, sticky="e", padx=(8, 0), pady=(14, 0)
-        )
-        ttk.Button(frame, text="Save and authorize", style="Accent.TButton", command=save).grid(
-            row=8, column=2, sticky="e", padx=(8, 0), pady=(14, 0)
-        )
-        frame.columnconfigure(0, weight=1)
-        window.bind("<Alt-s>", lambda _event: secret_entry.focus_set())
-        window.bind("<Alt-a>", lambda _event: client_id_entry.focus_set())
-        window.bind("<Return>", lambda _event: save())
-        window.bind("<Escape>", lambda _event: window.destroy())
-        window.protocol("WM_DELETE_WINDOW", window.destroy)
-        window.grab_set()
-        secret_entry.focus_set()
-        window.wait_window()
-        return result
-
-    def configure(self, parent: Any) -> None:
-        if self._host is None:
-            raise RuntimeError("Discord output plugin is not initialized")
-        window = tk.Toplevel(parent)
-        window.title("Configure Discord output switch")
-        window.transient(parent)
-        window.resizable(False, False)
-        self._host.prepare_window(window)
-        status_var = tk.StringVar(window, value=self._current_status())
-        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
-        frame.grid(sticky="nsew")
-        ttk.Label(frame, text=self.description, wraplength=560, justify="left").grid(
-            row=0, column=0, columnspan=3, sticky="w"
-        )
-        ttk.Label(frame, text="OAuth status:").grid(row=1, column=0, sticky="w", pady=(14, 0))
-        ttk.Label(frame, textvariable=status_var, wraplength=430).grid(
-            row=1, column=1, columnspan=2, sticky="w", pady=(14, 0)
-        )
-        def setup_authorization() -> None:
+            return plugin_ui_result("complete", message="Discord Developer Portal opened.")
+        if action_id == "setup":
+            secret = values.get("client_secret")
+            client_id = values.get("client_id")
+            if not isinstance(secret, str) or not secret.strip():
+                raise DiscordRpcError("Client secret is required.")
+            if not isinstance(client_id, str):
+                raise DiscordRpcError("Discord Application ID must be text.")
             if not self._operation_lock.acquire(blocking=False):
-                self._set_status("Wait for the current Discord operation before reauthorizing")
-                return
-            saved: dict[str, object] | None = None
+                raise DiscordRpcError("Wait for the current Discord operation before reauthorizing")
             try:
-                saved = self._show_setup_dialog(window)
-                try:
-                    window.grab_set()
-                except tk.TclError:
-                    return
-                if saved is None:
-                    return
-                try:
-                    _save_oauth(saved)
-                except (DiscordRpcError, OSError) as exc:
-                    self._set_status(
-                        f"Setup required: {str(exc).strip() or exc.__class__.__name__}"
-                    )
-                    saved = None
+                saved = _saved_client_configuration(client_id, secret)
+                _save_oauth(saved)
             finally:
                 self._operation_lock.release()
-            if saved is None:
-                return
             self._set_status("Checking Discord authorization…")
             self._start_worker(self._validate_authorization, True)
-
-        def reset_authorization() -> None:
-            if not messagebox.askyesno(
-                "Reset Discord authorization",
-                "Remove the saved Discord client secret and OAuth grant from Windows Credential Manager?",
-                parent=window,
-            ):
-                return
+            return plugin_ui_result("complete", message="Discord authorization started.")
+        if action_id == "reset":
             if not self._operation_lock.acquire(blocking=False):
-                self._set_status("Wait for the current Discord operation before resetting")
-                return
+                raise DiscordRpcError("Wait for the current Discord operation before resetting")
             try:
                 _delete_credential(_CREDENTIAL_TARGET)
                 _delete_credential(_PROTOTYPE_CREDENTIAL_TARGET)
-            except OSError as exc:
-                self._set_status(f"Setup required: {str(exc).strip() or exc.__class__.__name__}")
-                return
             finally:
                 self._operation_lock.release()
             self._set_status("Setup required")
-
-        ttk.Button(frame, text="Set up / reauthorize…", style="Accent.TButton", command=setup_authorization).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(14, 0)
-        )
-        ttk.Button(frame, text="Reset authorization", style="Quiet.TButton", command=reset_authorization).grid(
-            row=2, column=2, sticky="e", padx=(8, 0), pady=(14, 0)
-        )
-
-        poll_id: str | None = None
-
-        def close() -> None:
-            if poll_id is not None:
-                try:
-                    window.after_cancel(poll_id)
-                except tk.TclError:
-                    pass
-            window.destroy()
-
-        ttk.Button(frame, text="Close", style="Quiet.TButton", command=close).grid(row=3, column=2, sticky="e", pady=(16, 0))
-        frame.columnconfigure(1, weight=1)
-
-        def poll_status() -> None:
-            nonlocal poll_id
-            status_var.set(self._current_status())
-            poll_id = window.after(200, poll_status)
-
-        window.bind("<Escape>", lambda _event: close())
-        window.protocol("WM_DELETE_WINDOW", close)
-        poll_status()
-        window.grab_set()
-        window.focus_set()
-        window.wait_window()
+            return plugin_ui_result("complete", message="Discord authorization was reset.")
+        raise ValueError(f"Unknown Discord UI action {action_id!r}.")
 
     def shutdown(self, timeout: float) -> bool:
         if timeout < 0:

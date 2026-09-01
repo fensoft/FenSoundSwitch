@@ -42,6 +42,8 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("plugin_api.py", self.workflow)
         self.assertIn("plugin_hotkeys.py", self.workflow)
         self.assertIn("plugin_manager.py", self.workflow)
+        self.assertIn("web_presentation.py", self.workflow)
+        self.assertIn("web_ui_host.py", self.workflow)
 
     def test_workflow_never_launches_the_app_or_hardware_tools(self) -> None:
         forbidden_commands = (

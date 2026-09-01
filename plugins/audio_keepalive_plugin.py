@@ -4,12 +4,10 @@ import ctypes
 from ctypes import wintypes
 import threading
 import time
-import tkinter as tk
-from tkinter import ttk
-from typing import Any
+from typing import Mapping
 
 import core_audio
-from plugin_api import PLUGIN_API_VERSION as HOST_PLUGIN_API_VERSION, PluginHostContext
+from plugin_api import PLUGIN_API_VERSION as HOST_PLUGIN_API_VERSION, PluginHostContext, plugin_ui_document, plugin_ui_result
 
 
 PLUGIN_API_VERSION = HOST_PLUGIN_API_VERSION
@@ -146,51 +144,25 @@ class AudioKeepalivePlugin:
                 host.logger.exception("%s keep-alive worker failed.", label)
                 host.report_status(f"{label} keep-alive failed: {str(exc).strip() or exc.__class__.__name__}")
 
-    def configure(self, parent: Any) -> None:
-        host = self._host
-        if host is None:
-            raise RuntimeError("Audio keep-alive plugin is not initialized.")
+    def get_plugin_ui(self) -> dict[str, object]:
         settings = self._settings_snapshot()
-        window = tk.Toplevel(parent)
-        window.title("Configure audio output keep-alive")
-        window.transient(parent)
-        host.prepare_window(window)
-        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
-        frame.grid(sticky="nsew")
-        playback = tk.BooleanVar(window, value=bool(settings["playback_output"]))
-        voice = tk.BooleanVar(window, value=bool(settings["voice_output"]))
-        mode = tk.StringVar(window, value=str(settings["mode"]))
-        mouse_seconds = tk.StringVar(window, value=str(settings["mouse_seconds"]))
-        status = tk.StringVar(window, value="Rendering silence keeps an audio endpoint active without changing its volume.")
-        ttk.Checkbutton(frame, text="Default playback output", variable=playback).grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(frame, text="Default voice output", variable=voice).grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Radiobutton(frame, text="Keep selected outputs active all the time", variable=mode, value=MODE_ALWAYS).grid(row=2, column=0, sticky="w", pady=(12, 0))
-        ttk.Radiobutton(frame, text="Keep active only after recent mouse movement", variable=mode, value=MODE_RECENT_MOUSE).grid(row=3, column=0, sticky="w", pady=(6, 0))
-        interval = ttk.Frame(frame)
-        interval.grid(row=4, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(interval, text="Keep active for").grid(row=0, column=0, sticky="w")
-        ttk.Entry(interval, textvariable=mouse_seconds, width=7).grid(row=0, column=1, padx=6)
-        ttk.Label(interval, text="seconds after the pointer last moved.").grid(row=0, column=2, sticky="w")
-        ttk.Label(frame, textvariable=status, wraplength=520).grid(row=5, column=0, sticky="w", pady=(10, 0))
+        return plugin_ui_document("Configure audio output keep-alive", [
+            {"id": "playback_output", "type": "boolean", "label": "Default playback output", "value": settings["playback_output"]},
+            {"id": "voice_output", "type": "boolean", "label": "Default voice output", "value": settings["voice_output"]},
+            {"id": "mode", "type": "choice", "label": "Mode", "value": settings["mode"], "options": [{"label": "Always", "value": MODE_ALWAYS}, {"label": "After recent mouse movement", "value": MODE_RECENT_MOUSE}]},
+            {"id": "mouse_seconds", "type": "integer", "label": "Mouse activity interval (seconds)", "value": settings["mouse_seconds"], "minimum": 1, "maximum": 3600},
+        ], [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Rendering silence keeps an audio endpoint active without changing its volume.")
 
-        def save() -> None:
-            try:
-                self._save_settings({
-                    "schema_version": SETTINGS_VERSION,
-                    "playback_output": playback.get(),
-                    "voice_output": voice.get(),
-                    "mode": mode.get(),
-                    "mouse_seconds": int(mouse_seconds.get()),
-                })
-            except (ValueError, OSError) as exc:
-                status.set(str(exc))
-                return
-            window.destroy()
-
-        ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=6, column=0, sticky="w", pady=(16, 0))
-        ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(row=6, column=0, sticky="e", pady=(16, 0))
-        window.protocol("WM_DELETE_WINDOW", window.destroy)
-        window.grab_set()
+    def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        if action_id != "save":
+            raise ValueError(f"Unknown audio keep-alive UI action {action_id!r}.")
+        candidate = dict(values)
+        seconds = candidate.get("mouse_seconds")
+        if isinstance(seconds, str):
+            candidate["mouse_seconds"] = int(seconds)
+        normalized = validate_settings(candidate)
+        self._save_settings(normalized)
+        return plugin_ui_result("save", values=normalized)
 
     def get_shortcut_actions(self) -> list[object]:
         return []

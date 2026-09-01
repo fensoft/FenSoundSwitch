@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
-
 import core_audio
 from plugin_api import PLUGIN_API_VERSION as HOST_PLUGIN_API_VERSION, PluginHostContext, ShortcutAction
 
@@ -136,9 +134,6 @@ class WindowsDefaultDevicePlugin:
                 self._host.report_status(f"Switch failed: {exc.__class__.__name__}")
         finally:
             self._operation_lock.release()
-
-    def configure(self, parent: Any) -> None:
-        return None
 
     def shutdown(self, timeout: float) -> bool:
         if timeout < 0:

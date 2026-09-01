@@ -1,0 +1,185 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1120" viewBox="0 0 1200 1120" role="img" aria-labelledby="title description">
+  <title id="title">FenSoundSwitch icon concepts</title>
+  <desc id="description">Eight application and tray icon concepts with two coordinated sidebar icon treatments.</desc>
+  <defs>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#36a7f3"/>
+      <stop offset="1" stop-color="#075b9d"/>
+    </linearGradient>
+    <linearGradient id="violet" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#64d4ff"/>
+      <stop offset="1" stop-color="#6957d9"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="7" stdDeviation="8" flood-color="#071b2f" flood-opacity=".25"/>
+    </filter>
+
+    <symbol id="switchwave" viewBox="0 0 64 64">
+      <path d="M12 23h34m0 0-8-8m8 8-8 8M52 41H18m0 0 8-8m-8 8 8 8" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M12 32c5-8 10 8 15 0s10 8 15 0 7 2 10 0" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity=".7"/>
+    </symbol>
+    <symbol id="fader-f" viewBox="0 0 64 64">
+      <path d="M19 13v38M19 18h29M19 32h22" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+      <circle cx="37" cy="18" r="5" fill="currentColor"/>
+      <circle cx="29" cy="32" r="5" fill="currentColor"/>
+    </symbol>
+    <symbol id="monitor-pulse" viewBox="0 0 64 64">
+      <rect x="9" y="11" width="46" height="34" rx="5" fill="none" stroke="currentColor" stroke-width="4"/>
+      <path d="M22 53h20M32 45v8M15 29h8l4-8 8 17 5-9h9" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="audio-portal" viewBox="0 0 64 64">
+      <path d="M12 26h9l12-10v32L21 38h-9z" fill="currentColor"/>
+      <path d="M40 24c4 4 4 12 0 16M46 18c8 8 8 20 0 28" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+      <path d="M8 15v-4h12M56 49v4H44" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="split-signal" viewBox="0 0 64 64">
+      <circle cx="14" cy="32" r="6" fill="currentColor"/>
+      <circle cx="50" cy="17" r="6" fill="currentColor"/>
+      <circle cx="50" cy="47" r="6" fill="currentColor"/>
+      <path d="M20 32h8c9 0 8-15 16-15M20 32h8c9 0 8 15 16 15" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+      <path d="m38 12 6 5-6 5m0 20 6 5-6 5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="dial-switch" viewBox="0 0 64 64">
+      <circle cx="32" cy="32" r="21" fill="none" stroke="currentColor" stroke-width="5" stroke-dasharray="108 24" stroke-linecap="round" transform="rotate(110 32 32)"/>
+      <path d="m32 32 12-12" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="32" cy="32" r="5" fill="currentColor"/>
+      <path d="M19 48h26" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".7"/>
+    </symbol>
+    <symbol id="fen-wave" viewBox="0 0 64 64">
+      <path d="M17 50V14h32M17 31h24" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M12 42c5-9 9 9 14 0s9 9 14 0 8 5 12-1" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="route-nodes" viewBox="0 0 64 64">
+      <circle cx="16" cy="18" r="6" fill="currentColor"/>
+      <circle cx="48" cy="18" r="6" fill="currentColor"/>
+      <circle cx="32" cy="47" r="7" fill="currentColor"/>
+      <path d="M22 18h20M19 24l10 17m16-17L35 41" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+      <path d="m35 12 7 6-7 6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+
+    <symbol id="nav-routes" viewBox="0 0 24 24">
+      <path d="M4 7h13m0 0-3-3m3 3-3 3M20 17H7m0 0 3-3m-3 3 3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="nav-actions" viewBox="0 0 24 24">
+      <path d="m13 2-8 12h7l-1 8 8-12h-7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="nav-appearance" viewBox="0 0 24 24">
+      <path d="M12 3a9 9 0 1 0 0 18 4 4 0 0 0 0-8h-1a2 2 0 0 1 0-4h6.5A8.9 8.9 0 0 0 12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="7.5" cy="10" r="1" fill="currentColor"/><circle cx="9.5" cy="6.5" r="1" fill="currentColor"/><circle cx="14" cy="6.5" r="1" fill="currentColor"/>
+    </symbol>
+    <symbol id="nav-settings" viewBox="0 0 24 24">
+      <path d="M9.8 3h4.4l.7 2.2 2 .9 2.1-1 2 3.8-1.8 1.5v2.3l1.8 1.5-2 3.8-2.1-1-2 .9-.7 2.1H9.8l-.7-2.1-2-.9-2.1 1-2-3.8 1.8-1.5v-2.3L3 8.9 5 5.1l2.1 1 2-.9z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+      <circle cx="12" cy="11.6" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/>
+    </symbol>
+    <symbol id="nav-diagnostics" viewBox="0 0 24 24">
+      <path d="M4 19V9m5 10V5m5 14v-7m5 7V3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <rect width="1200" height="1120" fill="#eef3f8"/>
+  <text x="70" y="70" fill="#152333" font-family="Segoe UI, sans-serif" font-size="30" font-weight="700">FenSoundSwitch icon directions</text>
+  <text x="70" y="101" fill="#627184" font-family="Segoe UI, sans-serif" font-size="15">App and tray concepts, each checked at a Windows notification-area scale</text>
+
+  <g font-family="Segoe UI, sans-serif">
+    <g transform="translate(70 145)">
+      <rect width="250" height="220" rx="18" fill="#fff" stroke="#d5dee8"/>
+      <rect x="28" y="24" width="96" height="96" rx="24" fill="url(#blue)" filter="url(#shadow)"/>
+      <use href="#switchwave" x="44" y="40" width="64" height="64" color="#fff"/>
+      <rect x="183" y="49" width="24" height="24" rx="6" fill="url(#blue)"/>
+      <use href="#switchwave" x="187" y="53" width="16" height="16" color="#fff"/>
+      <text x="28" y="157" fill="#172536" font-size="17" font-weight="700">01 Switchwave</text>
+      <text x="28" y="184" fill="#69788a" font-size="13">Switching plus live audio</text>
+    </g>
+    <g transform="translate(340 145)">
+      <rect width="250" height="220" rx="18" fill="#fff" stroke="#d5dee8"/>
+      <rect x="28" y="24" width="96" height="96" rx="24" fill="#152333" filter="url(#shadow)"/>
+      <use href="#fader-f" x="44" y="40" width="64" height="64" color="#58bcff"/>
+      <rect x="183" y="49" width="24" height="24" rx="6" fill="#152333"/>
+      <use href="#fader-f" x="187" y="53" width="16" height="16" color="#58bcff"/>
+      <text x="28" y="157" fill="#172536" font-size="17" font-weight="700">02 Fader F</text>
+      <text x="28" y="184" fill="#69788a" font-size="13">Distinctive product monogram</text>
+    </g>
+    <g transform="translate(610 145)">
+      <rect width="250" height="220" rx="18" fill="#fff" stroke="#d5dee8"/>
+      <rect x="28" y="24" width="96" height="96" rx="24" fill="url(#violet)" filter="url(#shadow)"/>
+      <use href="#monitor-pulse" x="44" y="40" width="64" height="64" color="#fff"/>
+      <rect x="183" y="49" width="24" height="24" rx="6" fill="url(#violet)"/>
+      <use href="#monitor-pulse" x="187" y="53" width="16" height="16" color="#fff"/>
+      <text x="28" y="157" fill="#172536" font-size="17" font-weight="700">03 Monitor Pulse</text>
+      <text x="28" y="184" fill="#69788a" font-size="13">Best link to DDC origins</text>
+    </g>
+    <g transform="translate(880 145)">
+      <rect width="250" height="220" rx="18" fill="#fff" stroke="#d5dee8"/>
+      <rect x="28" y="24" width="96" height="96" rx="24" fill="#0d6b63" filter="url(#shadow)"/>
+      <use href="#audio-portal" x="44" y="40" width="64" height="64" color="#fff"/>
+      <rect x="183" y="49" width="24" height="24" rx="6" fill="#0d6b63"/>
+      <use href="#audio-portal" x="187" y="53" width="16" height="16" color="#fff"/>
+      <text x="28" y="157" fill="#172536" font-size="17" font-weight="700">04 Audio Portal</text>
+      <text x="28" y="184" fill="#69788a" font-size="13">Friendly and immediately audio</text>
+    </g>
+
+    <g transform="translate(70 385)">
+      <rect width="250" height="220" rx="18" fill="#fff" stroke="#d5dee8"/>
+      <rect x="28" y="24" width="96" height="96" rx="24" fill="#6b4dc4" filter="url(#shadow)"/>
+      <use href="#split-signal" x="44" y="40" width="64" height="64" color="#fff"/>
+      <rect x="183" y="49" width="24" height="24" rx="6" fill="#6b4dc4"/>
+      <use href="#split-signal" x="187" y="53" width="16" height="16" color="#fff"/>
+      <text x="28" y="157" fill="#172536" font-size="17" font-weight="700">05 Split Signal</text>
+      <text x="28" y="184" fill="#69788a" font-size="13">Strong route-management story</text>
+    </g>
+    <g transform="translate(340 385)">
+      <rect width="250" height="220" rx="18" fill="#fff" stroke="#d5dee8"/>
+      <rect x="28" y="24" width="96" height="96" rx="48" fill="#d9582b" filter="url(#shadow)"/>
+      <use href="#dial-switch" x="44" y="40" width="64" height="64" color="#fff"/>
+      <circle cx="195" cy="61" r="12" fill="#d9582b"/>
+      <use href="#dial-switch" x="187" y="53" width="16" height="16" color="#fff"/>
+      <text x="28" y="157" fill="#172536" font-size="17" font-weight="700">06 Dial Switch</text>
+      <text x="28" y="184" fill="#69788a" font-size="13">Hardware control, less literal</text>
+    </g>
+    <g transform="translate(610 385)">
+      <rect width="250" height="220" rx="18" fill="#fff" stroke="#d5dee8"/>
+      <rect x="28" y="24" width="96" height="96" rx="24" fill="#1260a1" filter="url(#shadow)"/>
+      <use href="#fen-wave" x="44" y="40" width="64" height="64" color="#fff"/>
+      <rect x="183" y="49" width="24" height="24" rx="6" fill="#1260a1"/>
+      <use href="#fen-wave" x="187" y="53" width="16" height="16" color="#fff"/>
+      <text x="28" y="157" fill="#172536" font-size="17" font-weight="700">07 Fen Wave</text>
+      <text x="28" y="184" fill="#69788a" font-size="13">Branded and energetic</text>
+    </g>
+    <g transform="translate(880 385)">
+      <rect width="250" height="220" rx="18" fill="#fff" stroke="#d5dee8"/>
+      <rect x="28" y="24" width="96" height="96" rx="24" fill="#172536" filter="url(#shadow)"/>
+      <use href="#route-nodes" x="44" y="40" width="64" height="64" color="#8bd3ff"/>
+      <rect x="183" y="49" width="24" height="24" rx="6" fill="#172536"/>
+      <use href="#route-nodes" x="187" y="53" width="16" height="16" color="#8bd3ff"/>
+      <text x="28" y="157" fill="#172536" font-size="17" font-weight="700">08 Route Nodes</text>
+      <text x="28" y="184" fill="#69788a" font-size="13">Technical command-center feel</text>
+    </g>
+
+    <text x="70" y="680" fill="#152333" font-size="25" font-weight="700">Coordinated sidebar options</text>
+    <text x="70" y="708" fill="#627184" font-size="14">The same five metaphors in two visual treatments</text>
+
+    <g transform="translate(70 745)">
+      <rect width="1060" height="130" rx="18" fill="#fff" stroke="#d5dee8"/>
+      <text x="25" y="34" fill="#627184" font-size="12" font-weight="700" letter-spacing="1.5">A  LINEAR</text>
+      <g transform="translate(25 56)" color="#246fa9">
+        <use href="#nav-routes" width="24" height="24"/><text x="34" y="18" fill="#172536" font-size="14">Routes</text>
+        <g transform="translate(195)"><use href="#nav-actions" width="24" height="24"/><text x="34" y="18" fill="#172536" font-size="14">Actions</text></g>
+        <g transform="translate(390)"><use href="#nav-appearance" width="24" height="24"/><text x="34" y="18" fill="#172536" font-size="14">Appearance</text></g>
+        <g transform="translate(610)"><use href="#nav-settings" width="24" height="24"/><text x="34" y="18" fill="#172536" font-size="14">Settings</text></g>
+        <g transform="translate(805)"><use href="#nav-diagnostics" width="24" height="24"/><text x="34" y="18" fill="#172536" font-size="14">Diagnostics</text></g>
+      </g>
+    </g>
+
+    <g transform="translate(70 895)">
+      <rect width="1060" height="155" rx="18" fill="#17212c"/>
+      <text x="25" y="34" fill="#91a2b5" font-size="12" font-weight="700" letter-spacing="1.5">B  ICON TILES</text>
+      <g transform="translate(25 55)" color="#fff">
+        <g><rect width="42" height="42" rx="10" fill="#0f6cbd"/><use href="#nav-routes" x="9" y="9" width="24" height="24"/><text x="51" y="27" fill="#eef5fb" font-size="14">Routes</text></g>
+        <g transform="translate(195)"><rect width="42" height="42" rx="10" fill="#273646"/><use href="#nav-actions" x="9" y="9" width="24" height="24"/><text x="51" y="27" fill="#eef5fb" font-size="14">Actions</text></g>
+        <g transform="translate(390)"><rect width="42" height="42" rx="10" fill="#273646"/><use href="#nav-appearance" x="9" y="9" width="24" height="24"/><text x="51" y="27" fill="#eef5fb" font-size="14">Appearance</text></g>
+        <g transform="translate(610)"><rect width="42" height="42" rx="10" fill="#273646"/><use href="#nav-settings" x="9" y="9" width="24" height="24"/><text x="51" y="27" fill="#eef5fb" font-size="14">Settings</text></g>
+        <g transform="translate(805)"><rect width="42" height="42" rx="10" fill="#273646"/><use href="#nav-diagnostics" x="9" y="9" width="24" height="24"/><text x="51" y="27" fill="#eef5fb" font-size="14">Diagnostics</text></g>
+      </g>
+    </g>
+  </g>
+</svg>

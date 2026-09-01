@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import threading
-import tkinter as tk
-from typing import Any
-from tkinter import ttk
+from typing import Mapping
 
 import core_audio
-from plugin_api import PLUGIN_API_VERSION, PluginHostContext
+from plugin_api import PLUGIN_API_VERSION, PluginHostContext, plugin_ui_document, plugin_ui_result
 
 
 def validate_parameters(parameters: object) -> dict[str, object]:
@@ -31,71 +28,28 @@ class WindowsMicrophoneGainPlugin:
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
 
-    def configure(self, parent: Any) -> None:
-        return None
-
     def create_output(self, parameters: object) -> "WindowsMicrophoneGainPlugin":
         return WindowsMicrophoneGainPlugin(validate_parameters(parameters))
 
-    def configure_route_output(self, parent: Any, parameters: dict[str, object], on_save: Any) -> None:
-        host = self._host
-        if host is None:
-            raise RuntimeError("Windows capture gain plugin is not initialized.")
-        window = tk.Toplevel(parent)
-        window.title("Configure Windows capture gain")
-        window.transient(parent)
-        host.prepare_window(window)
-        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
-        frame.grid(sticky="nsew")
-        frame.columnconfigure(0, weight=1)
-        status = tk.StringVar(value="Discovering capture endpoints...")
-        selector = ttk.Combobox(frame, state="readonly", width=58)
-        selector.grid(row=0, column=0, sticky="ew")
-        ttk.Label(frame, textvariable=status, wraplength=520).grid(row=1, column=0, sticky="w", pady=(8, 0))
-        discovered = [
-            core_audio.RenderEndpoint(core_audio.DEFAULT_ENDPOINT_ID, "Default input"),
-            core_audio.RenderEndpoint(core_audio.VOICE_ENDPOINT_ID, "Voice input"),
-        ]
-        selector["values"] = [endpoint.display_name for endpoint in discovered]
+    def get_route_output_ui(self, parameters: Mapping[str, object]) -> dict[str, object]:
+        selected = None
+        if isinstance(parameters.get("endpoint_id"), str) and isinstance(parameters.get("display_name"), str):
+            selected = {"endpoint_id": parameters["endpoint_id"], "display_name": parameters["display_name"]}
+        options = [{"label": str(selected["display_name"]), "value": selected}] if selected is not None else []
+        return plugin_ui_document("Configure Windows capture gain", [
+            {"id": "endpoint", "type": "select", "label": "Capture endpoint", "value": selected, "options": options, "required": True},
+        ], [{"id": "discover", "label": "Refresh", "kind": "action", "async": True}, {"id": "save", "label": "Save", "kind": "submit", "async": False}], "Select the Windows capture endpoint controlled by this route.")
 
-        def discover() -> None:
-            try:
-                endpoints = core_audio.enumerate_capture_endpoints()
-            except Exception as exc:
-                host.post_to_ui(lambda error=exc: status.set(f"Capture endpoint discovery failed: {error}"))
-                return
-
-            def finish() -> None:
-                discovered[:] = [
-                    core_audio.RenderEndpoint(core_audio.DEFAULT_ENDPOINT_ID, "Default input"),
-                    core_audio.RenderEndpoint(core_audio.VOICE_ENDPOINT_ID, "Voice input"),
-                    *endpoints,
-                ]
-                selector["values"] = [endpoint.display_name for endpoint in discovered]
-                selected_id = parameters.get("endpoint_id")
-                if isinstance(selected_id, str):
-                    for index, endpoint in enumerate(discovered):
-                        if endpoint.endpoint_id == selected_id:
-                            selector.current(index)
-                            break
-                status.set(f"{len(endpoints)} capture endpoint(s) found.")
-
-            host.post_to_ui(finish)
-
-        def save() -> None:
-            index = selector.current()
-            if not 0 <= index < len(discovered):
-                status.set("Select a Windows capture endpoint.")
-                return
-            endpoint = discovered[index]
-            on_save({"endpoint_id": endpoint.endpoint_id, "display_name": endpoint.display_name})
-            window.destroy()
-
-        ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=2, column=0, sticky="e", pady=(16, 0))
-        ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(row=2, column=0, sticky="w", pady=(16, 0))
-        window.protocol("WM_DELETE_WINDOW", window.destroy)
-        window.grab_set()
-        threading.Thread(target=discover, name="microphone-route-discovery", daemon=True).start()
+    def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        if action_id == "discover":
+            endpoints = [core_audio.RenderEndpoint(core_audio.DEFAULT_ENDPOINT_ID, "Default input"), core_audio.RenderEndpoint(core_audio.VOICE_ENDPOINT_ID, "Voice input"), *core_audio.enumerate_capture_endpoints()]
+            document = plugin_ui_document("Configure Windows capture gain", [
+                {"id": "endpoint", "type": "select", "label": "Capture endpoint", "value": values.get("endpoint"), "options": [{"label": endpoint.display_name, "value": {"endpoint_id": endpoint.endpoint_id, "display_name": endpoint.display_name}} for endpoint in endpoints], "required": True},
+            ], [{"id": "discover", "label": "Refresh", "kind": "action", "async": True}, {"id": "save", "label": "Save", "kind": "submit", "async": False}], "Select the Windows capture endpoint controlled by this route.")
+            return plugin_ui_result("update", document=document, message=f"{len(endpoints) - 2} capture endpoint(s) found.")
+        if action_id == "save":
+            return plugin_ui_result("save", values=validate_parameters(values.get("endpoint")))
+        raise ValueError(f"Unknown Windows capture UI action {action_id!r}.")
 
     def route_output_summary(self, parameters: dict[str, object]) -> str:
         try:

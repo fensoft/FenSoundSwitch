@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>FenSoundSwitch Command Center</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#workspace">Skip to content</a>
+  <div class="shell">
+    <aside class="rail" aria-label="Primary navigation">
+      <div class="brand" aria-label="FenSoundSwitch">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M12 26h9l12-10v32L21 38h-9z"/><path d="M40 24c4 4 4 12 0 16M46 18c8 8 8 20 0 28" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><path d="M8 15v-4h12M56 49v4H44" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></span>
+        <span><strong>FenSoundSwitch</strong><small>Command Center</small></span>
+      </div>
+      <nav id="navigation">
+        <button class="nav-item is-active" type="button" data-page="routes" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h13m0 0-3-3m3 3-3 3M20 17H7m0 0 3-3m-3 3 3 3"/></svg></span>Routes</button>
+        <button class="nav-item" type="button" data-page="actions"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m13 2-8 12h7l-1 8 8-12h-7z"/></svg></span>Actions</button>
+        <button class="nav-item" type="button" data-page="appearance"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18 4 4 0 0 0 0-8h-1a2 2 0 0 1 0-4h6.5A8.9 8.9 0 0 0 12 3Z"/><circle cx="7.5" cy="10" r="1" fill="currentColor" stroke="none"/><circle cx="9.5" cy="6.5" r="1" fill="currentColor" stroke="none"/><circle cx="14" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg></span>Appearance</button>
+        <button class="nav-item" type="button" data-page="settings"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9.8 3h4.4l.7 2.2 2 .9 2.1-1 2 3.8-1.8 1.5v2.3l1.8 1.5-2 3.8-2.1-1-2 .9-.7 2.1H9.8l-.7-2.1-2-.9-2.1 1-2-3.8 1.8-1.5v-2.3L3 8.9 5 5.1l2.1 1 2-.9z"/><circle cx="12" cy="11.6" r="3"/></svg></span>Settings</button>
+        <button class="nav-item diagnostics-link" type="button" data-page="diagnostics"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3"/></svg></span>Diagnostics</button>
+      </nav>
+      <div class="connection" id="connection-status" role="status"><span class="status-dot"></span><span>Connecting</span></div>
+    </aside>
+
+    <main id="workspace" tabindex="-1">
+      <header class="topbar">
+        <div><p class="eyebrow">AUDIO CONTROL</p><h1 id="page-title">Routes</h1><p id="page-description">Connect an input to the volume output it controls.</p></div>
+        <button class="primary" id="primary-action" type="button">New route</button>
+      </header>
+      <div id="notice-region" class="notice-region" aria-live="polite"></div>
+      <section id="content" aria-labelledby="page-title" aria-busy="true">
+        <div class="loading-card"><span class="spinner" aria-hidden="true"></span><p>Loading command center…</p></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="editor-dialog" aria-labelledby="editor-title">
+    <form method="dialog" id="editor-form">
+      <header><div><p class="eyebrow" id="editor-kicker">EDIT</p><h2 id="editor-title">Edit item</h2></div><button class="icon-button" id="editor-close" type="button" aria-label="Close">×</button></header>
+      <div id="editor-fields" class="dialog-body"></div>
+      <div id="editor-error" class="inline-error" role="alert" hidden></div>
+      <footer><button class="secondary" id="editor-cancel" type="button">Cancel</button><button class="primary" id="editor-save" value="default">Save changes</button></footer>
+    </form>
+  </dialog>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <header><div><p class="eyebrow">CONFIRM</p><h2 id="confirm-title">Are you sure?</h2></div></header>
+      <p id="confirm-message" class="dialog-body"></p>
+      <footer><button class="secondary" value="cancel">Cancel</button><button class="danger" value="confirm">Continue</button></footer>
+    </form>
+  </dialog>
+</body>
+</html>

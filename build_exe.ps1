@@ -15,12 +15,17 @@ try {
         throw "FenSoundSwitch.ico was not found in $repoRoot"
     }
 
+    if (-not (Test-Path "web\index.html")) {
+        throw "web\index.html was not found in $repoRoot"
+    }
+
     Write-Host "Building dist\\FenSoundSwitch.exe with Nuitka..."
 
     & $pythonExe -m nuitka `
         --onefile `
         --windows-console-mode=disable `
         --enable-plugins=tk-inter `
+        --include-package-data=webview `
         --include-package=plugins `
         --include-module=plugins.windows11_overlay_plugin `
         --include-module=plugins.macos_overlay_plugin `
@@ -28,6 +33,7 @@ try {
         --include-module=plugins.windows_soundcard_volume_plugin `
         --windows-icon-from-ico=FenSoundSwitch.ico `
         --include-data-files=FenSoundSwitch.ico=FenSoundSwitch.ico `
+        --include-data-dir=web=web `
         --output-dir=dist `
         --output-filename=FenSoundSwitch.exe `
         --remove-output `

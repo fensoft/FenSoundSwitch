@@ -7,12 +7,11 @@ import re
 import socket
 import threading
 import time
-import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import ttk
+from typing import Mapping
 
-from plugin_api import PLUGIN_API_VERSION, HotkeySpec, PluginHostContext, show_host_port_route_editor
+from plugin_api import PLUGIN_API_VERSION, HotkeySpec, PluginHostContext, plugin_ui_document, plugin_ui_result
 
 
 CONFIG_SCHEMA_VERSION = 1
@@ -174,52 +173,21 @@ class YamahaVolumePlugin:
             raise ValueError("Enter a valid Yamaha hostname or IP address and a TCP port from 1 through 65535.")
         return {"host": config.host, "port": config.port}
 
-    def configure_route_output(self, parent: tk.Misc, parameters: dict[str, object], on_save: callable) -> None:
-        host = self._require_host()
-        show_host_port_route_editor(parent, host.prepare_window, "Configure Yamaha YNCA route", parameters, self.route_output_form_values, self.validate_route_output_form, on_save)
+    def get_route_output_ui(self, parameters: Mapping[str, object]) -> dict[str, object]:
+        values = self.route_output_form_values(dict(parameters))
+        return plugin_ui_document("Configure Yamaha YNCA route", [
+            {"id": "host", "type": "text", "label": "Host or IP address", "value": values["host"], "required": True},
+            {"id": "port", "type": "integer", "label": "TCP port", "value": int(values["port"]), "minimum": 1, "maximum": 65535, "required": True},
+        ], [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Connect this route to a receiver on your local network.")
+
+    def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        if action_id != "save":
+            raise ValueError(f"Unknown Yamaha UI action {action_id!r}.")
+        return plugin_ui_result("save", values=self.validate_route_output_form(str(values.get("host", "")), str(values.get("port", ""))))
 
     def route_output_summary(self, parameters: dict[str, object]) -> str:
         values = self.route_output_form_values(parameters)
         return f"Configured: {values['host']}:{values['port']}" if values["host"] else "Not configured."
-
-    def configure(self, parent: tk.Misc) -> None:
-        host = self._require_host()
-        window = tk.Toplevel(parent)
-        window.title("Configure Yamaha YNCA volume")
-        window.transient(parent)
-        host.prepare_window(window)
-        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
-        frame.grid(sticky="nsew")
-        window.columnconfigure(0, weight=1)
-        frame.columnconfigure(1, weight=1)
-        configured = self._config or ReceiverConfig("")
-        host_value = tk.StringVar(value=configured.host)
-        port_value = tk.StringVar(value=str(configured.port))
-        status = tk.StringVar(value="Enter the Yamaha YNCA receiver hostname or IP address. Only the main zone is controlled.")
-        ttk.Label(frame, text="Receiver host:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=host_value, width=40).grid(row=0, column=1, sticky="ew")
-        ttk.Label(frame, text="Port:").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(frame, textvariable=port_value, width=8).grid(row=1, column=1, sticky="w", pady=(8, 0))
-        ttk.Label(frame, textvariable=status, wraplength=460).grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
-
-        def save() -> None:
-            candidate = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, "host": host_value.get(), "port": _parse_port(port_value.get())})
-            if candidate is None:
-                status.set("Enter a hostname or IP address and a port from 1 through 65535.")
-                return
-            try:
-                _save_config(host.config_path, candidate)
-            except OSError as exc:
-                status.set(f"Could not save configuration: {exc}")
-                return
-            with self._lock:
-                self._config = candidate
-            host.request_volume_refresh()
-            window.destroy()
-
-        ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=3, column=1, sticky="e", pady=(16, 0))
-        window.protocol("WM_DELETE_WINDOW", window.destroy)
-        window.grab_set()
 
     def get_hotkey(self) -> HotkeySpec | None:
         return None

@@ -6,7 +6,7 @@ Run hardware-free checks from the repository root:
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m compileall -q app.py audio_outputs.py autostart.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py windows_platform.py plugins
+python -m compileall -q app.py audio_outputs.py autostart.py core_audio.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py web_presentation.py web_ui_host.py windows_platform.py plugins
 python -m pip check
 git diff --check
 git diff --cached --check

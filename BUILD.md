@@ -5,6 +5,7 @@
 - Windows 10 or Windows 11.
 - Python 3.10 or newer.
 - A working Python installation on `PATH`.
+- [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section). It is included with current Windows 10/11 installations and is required for the HTML control window.
 
 ## Build The Executable
 
@@ -25,7 +26,7 @@ Run the hardware-free checks first:
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m compileall -q app.py audio_outputs.py autostart.py core_audio.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py windows_platform.py plugins
+python -m compileall -q app.py audio_outputs.py autostart.py core_audio.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py web_presentation.py web_ui_host.py windows_platform.py plugins
 python -m pip check
 git diff --check
 git diff --cached --check

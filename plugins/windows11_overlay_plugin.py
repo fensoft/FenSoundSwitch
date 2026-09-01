@@ -3,9 +3,10 @@ from __future__ import annotations
 import tkinter as tk
 from dataclasses import dataclass
 from tkinter import ttk
+from typing import Mapping
 
 from diagnostics import get_logger
-from plugin_api import PLUGIN_API_VERSION, OverlayRenderer, PluginHostContext, VolumeStatus
+from plugin_api import PLUGIN_API_VERSION, OverlayRenderer, PluginHostContext, VolumeStatus, plugin_ui_document, plugin_ui_result
 from windows_platform import (
     DisplayArea,
     configure_no_activate_window,
@@ -549,26 +550,23 @@ class OverlayPlugin:
         else:
             self._mode = mode
 
-    def configure(self, parent: object) -> None:
+    def get_plugin_ui(self) -> dict[str, object]:
+        return plugin_ui_document("Windows 11 overlay settings", [
+            {"id": "mode", "type": "choice", "label": "Show", "value": self._mode, "options": [{"label": "Every route", "value": "all"}, {"label": "Only the route that changed", "value": "current"}]},
+        ], [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Choose which routed volume statuses appear in the overlay.")
+
+    def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        if action_id != "save":
+            raise ValueError(f"Unknown Windows 11 overlay UI action {action_id!r}.")
+        mode = values.get("mode")
+        if mode not in ("all", "current"):
+            raise ValueError("Windows 11 overlay mode must be all or current.")
         if self._host is None:
-            return
-        window = tk.Toplevel(parent)
-        window.title("Windows 11 overlay settings")
-        window.transient(parent)
-        self._host.prepare_window(window)
-        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
-        frame.grid(sticky="nsew")
-        value = tk.StringVar(value=self._mode)
-        ttk.Label(frame, text="Show:").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(frame, textvariable=value, values=("all", "current"), state="readonly", width=18).grid(row=0, column=1, padx=(8, 0))
-        ttk.Label(frame, text="All shows every route. Current shows only the route that changed.", wraplength=360, justify="left").grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        def save() -> None:
-            self._mode = value.get()
-            self._host.save_plugin_settings({"schema_version": 1, "mode": self._mode})
-            window.destroy()
-        ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=2, column=0, sticky="w", pady=(16, 0))
-        ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(row=2, column=1, sticky="e", pady=(16, 0))
-        window.grab_set()
+            raise RuntimeError("Overlay plugin has not been initialized.")
+        self._mode = str(mode)
+        settings = {"schema_version": 1, "mode": self._mode}
+        self._host.save_plugin_settings(settings)
+        return plugin_ui_result("save", values=settings)
 
     def create_overlay_renderer(self, dark_mode: bool, high_contrast: bool) -> OverlayRenderer:
         if self._host is None:

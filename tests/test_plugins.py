@@ -31,7 +31,6 @@ class Plugin:
     name = {name!r}
     description = "external test plugin"
     def initialize(self, host): self.host = host
-    def configure(self, parent): pass
     def get_shortcut_actions(self): return []
     def trigger_shortcut(self, action_id): raise ValueError(action_id)
     def shutdown(self, timeout): return True

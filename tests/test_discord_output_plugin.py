@@ -217,10 +217,16 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
         plugin = discord.DiscordOutputPlugin()
         with tempfile.TemporaryDirectory() as temporary_directory, patch(
             "plugins.discord_output_plugin._load_saved_oauth", return_value=None
-        ), patch.object(plugin, "_show_setup_dialog", return_value=saved), patch(
+        ), patch(
             "plugins.discord_output_plugin._save_oauth"
         ) as save, patch.object(plugin, "_start_worker", return_value=True) as start_worker:
             plugin.initialize(self.make_host(Path(temporary_directory) / "settings.json"))
+            self.assertEqual("Setup required", plugin._current_status())
+            result = plugin.invoke_ui_action("setup", {
+                "client_id": " 123456789012345 ",
+                "client_secret": " secret ",
+            })
+        self.assertEqual("complete", result["status"])
         save.assert_called_once_with(saved)
         start_worker.assert_called_once_with(plugin._validate_authorization, True)
 

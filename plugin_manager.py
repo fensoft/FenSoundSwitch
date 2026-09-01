@@ -50,6 +50,8 @@ from plugin_api import (
     ActionHotkeyBinding,
     OverlayRenderer,
     VolumeProvider,
+    validate_plugin_ui_document,
+    validate_plugin_ui_result,
 )
 from settings import (
     clear_legacy_overlay_mode,
@@ -284,7 +286,7 @@ def _validate_plugin(plugin: object) -> tuple[str, str, str]:
         raise ValueError("Plugin name must be a non-empty string.")
     if not isinstance(description, str):
         raise ValueError("Plugin description must be a string.")
-    for method_name in ("initialize", "configure", "shutdown"):
+    for method_name in ("initialize", "shutdown"):
         if not callable(getattr(plugin, method_name, None)):
             raise ValueError(f"Plugin does not implement {method_name}().")
     named = (callable(getattr(plugin, "get_shortcut_actions", None)), callable(getattr(plugin, "trigger_shortcut", None)))
@@ -528,6 +530,52 @@ class PluginManager:
     @property
     def input_routes(self) -> tuple[VolumeRoute, ...]:
         return self._input_routes
+
+    def get_plugin_ui(self, plugin_id: str) -> dict[str, object] | None:
+        record = self._records_by_id.get(plugin_id)
+        getter = getattr(record.plugin, "get_plugin_ui", None) if record is not None else None
+        if not callable(getter):
+            return None
+        return validate_plugin_ui_document(getter())
+
+    def invoke_plugin_ui_action(
+        self,
+        plugin_id: str,
+        action_id: str,
+        values: Mapping[str, object],
+    ) -> dict[str, object]:
+        record = self._records_by_id.get(plugin_id)
+        invoke = getattr(record.plugin, "invoke_ui_action", None) if record is not None else None
+        if not callable(invoke):
+            raise ValueError("That plugin has no web configuration action.")
+        result = validate_plugin_ui_result(invoke(action_id, values))
+        if record is not None and "message" in result:
+            record.status = str(result["message"])
+        return result
+
+    def get_route_ui(self, route_id: str, endpoint: str) -> dict[str, object] | None:
+        route = next((item for item in self._input_routes if item.route_id == route_id), None)
+        if route is None or endpoint not in ("input", "output"):
+            return None
+        route_endpoint = route.input if endpoint == "input" else route.output
+        record = next((item for item in self._records if (item.input_id if endpoint == "input" else item.plugin_id) == route_endpoint.plugin_id), None)
+        getter = getattr(record.plugin, f"get_route_{endpoint}_ui", None) if record is not None else None
+        return validate_plugin_ui_document(getter(route_endpoint.parameters)) if callable(getter) else None
+
+    def invoke_route_ui_action(self, route_id: str, endpoint: str, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        route = next((item for item in self._input_routes if item.route_id == route_id), None)
+        if route is None: raise ValueError("The route no longer exists.")
+        route_endpoint = route.input if endpoint == "input" else route.output
+        record = next((item for item in self._records if (item.input_id if endpoint == "input" else item.plugin_id) == route_endpoint.plugin_id), None)
+        invoke = getattr(record.plugin, "invoke_ui_action", None) if record is not None else None
+        if not callable(invoke): raise ValueError("That endpoint has no web configuration action.")
+        return validate_plugin_ui_result(invoke(action_id, values))
+
+    def set_plugin_shortcut(self, plugin_id: str, action_id: str, value: object, forward_keys: bool) -> None:
+        record = self._records_by_id.get(plugin_id)
+        if record is None or not any(action.action_id == action_id for action in record.shortcut_actions):
+            raise ValueError("That plugin shortcut is unavailable.")
+        self._set_named_shortcut(record, action_id, HotkeySpec.from_json(value), forward_keys)
 
     def volume_providers_for_input(self, input_id: str) -> tuple[tuple[VolumeRoute, VolumeProvider], ...]:
         resolved: list[tuple[VolumeRoute, VolumeProvider]] = []

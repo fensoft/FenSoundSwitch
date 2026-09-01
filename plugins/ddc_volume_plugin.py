@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import threading
-import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
+from typing import Mapping
 
 from audio_outputs import reconcile_monitor_audio_outputs
 from ddc import (
@@ -18,7 +17,7 @@ from ddc import (
     read_monitor_volume,
     set_monitor_volume,
 )
-from plugin_api import PLUGIN_API_VERSION, HotkeySpec, PluginHostContext
+from plugin_api import PLUGIN_API_VERSION, HotkeySpec, PluginHostContext, plugin_ui_document, plugin_ui_result
 from settings import load_selected_monitor_key
 
 
@@ -103,73 +102,45 @@ class DdcVolumePlugin:
             return instance
         return instance
 
-    def configure(self, parent: tk.Misc) -> None:
-        # Definitions are configured through the route editor, never globally.
-        return None
+    def get_route_output_ui(self, parameters: Mapping[str, object]) -> dict[str, object]:
+        selected = parameters.get("selected_monitor") if _selection_from_json(parameters.get("selected_monitor")) is not None else None
+        selection = _selection_from_json(selected)
+        options = [{"label": selection.description, "value": selected}] if selection is not None else []
+        return self._route_ui(selected, options)
 
-    def configure_route_output(
-        self,
-        parent: tk.Misc,
-        parameters: dict[str, object],
-        on_save: callable,
-    ) -> None:
-        host = self._require_host()
-        window = tk.Toplevel(parent)
-        window.title("Configure DDC monitor volume")
-        window.transient(parent)
-        host.prepare_window(window)
-        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
-        frame.grid(sticky="nsew")
-        window.columnconfigure(0, weight=1)
-        frame.columnconfigure(0, weight=1)
-        value = tk.StringVar(value="Discovering monitors…")
-        combo = ttk.Combobox(frame, state="readonly", width=56)
-        ttk.Label(frame, textvariable=value, wraplength=520).grid(row=0, column=0, columnspan=2, sticky="w")
-        combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        discovered: list[MonitorRef] = []
+    def _route_ui(self, selected: object, options: list[dict[str, object]]) -> dict[str, object]:
+        return plugin_ui_document("Configure DDC monitor volume", [
+            {"id": "selected_monitor", "type": "select", "label": "Monitor", "value": selected, "options": options, "required": True},
+        ], [{"id": "discover", "label": "Refresh", "kind": "action", "async": True}, {"id": "save", "label": "Save", "kind": "submit", "async": False}], "Select one exact DDC/CI monitor for this route.")
 
-        def refresh() -> None:
-            value.set("Discovering monitors…")
-
-            def worker() -> None:
-                try:
-                    monitors = enumerate_monitors()
-                except Exception as exc:
-                    host.post_to_ui(lambda error=exc: value.set(f"Discovery failed: {error}"))
-                    return
-                def finish() -> None:
-                    discovered[:] = monitors
-                    combo["values"] = [monitor.display_name for monitor in monitors]
-                    match = match_selected_monitor(monitors, _selection_from_json(parameters.get("selected_monitor")))
-                    if match.status == SelectionMatchStatus.FOUND and match.index is not None:
-                        combo.current(match.index)
-                    value.set(f"{len(monitors)} monitor(s) found.")
-                host.post_to_ui(finish)
-            threading.Thread(target=worker, name="ddc-plugin-discovery", daemon=True).start()
-
-        def save() -> None:
-            index = combo.current()
-            if index < 0 or index >= len(discovered):
-                value.set("Select a monitor.")
-                return
-            selected = discovered[index]
-            selection = selected.selection_key
+    def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        if action_id == "discover":
+            monitors = enumerate_monitors()
+            selected_selection = _selection_from_json(values.get("selected_monitor"))
+            match = match_selected_monitor(monitors, selected_selection)
+            selected: object = values.get("selected_monitor")
+            options: list[dict[str, object]] = []
+            for monitor in monitors:
+                selection = monitor.selection_key
+                if selection is None:
+                    if sum(item.description == monitor.description for item in monitors) != 1:
+                        continue
+                    selection = SavedMonitorSelection(description=monitor.description, legacy_ordinal=monitor.description_ordinal)
+                option_value = _selection_to_json(selection)
+                options.append({"label": monitor.display_name, "value": option_value})
+            if match.status == SelectionMatchStatus.FOUND and match.index is not None:
+                matched = monitors[match.index]
+                matched_selection = matched.selection_key
+                if matched_selection is None:
+                    matched_selection = SavedMonitorSelection(description=matched.description, legacy_ordinal=matched.description_ordinal)
+                selected = _selection_to_json(matched_selection)
+            return plugin_ui_result("update", document=self._route_ui(selected, options), message=f"{len(monitors)} monitor(s) found.")
+        if action_id == "save":
+            selection = _selection_from_json(values.get("selected_monitor"))
             if selection is None:
-                if sum(monitor.description == selected.description for monitor in discovered) != 1:
-                    value.set("This monitor description is ambiguous; a stable identity is required.")
-                    return
-                selection = SavedMonitorSelection(
-                    description=selected.description,
-                    legacy_ordinal=selected.description_ordinal,
-                )
-            on_save({"selected_monitor": _selection_to_json(selection)})
-            window.destroy()
-
-        ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=2, column=1, sticky="e", pady=(16, 0))
-        ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(row=2, column=2, sticky="e", padx=(8, 0), pady=(16, 0))
-        window.protocol("WM_DELETE_WINDOW", window.destroy)
-        window.grab_set()
-        refresh()
+                raise ValueError("Select a monitor.")
+            return plugin_ui_result("save", values={"selected_monitor": _selection_to_json(selection)})
+        raise ValueError(f"Unknown DDC UI action {action_id!r}.")
 
     def route_output_summary(self, parameters: dict[str, object]) -> str:
         selection = _selection_from_json(parameters.get("selected_monitor"))

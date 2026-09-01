@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from plugin_api import PLUGIN_API_VERSION, PluginHostContext
 
 
@@ -16,9 +14,6 @@ class WindowsVolumeInputPlugin:
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
-
-    def configure(self, parent: Any) -> None:
-        return None
 
     def create_input(self, parameters: object) -> object:
         if not isinstance(parameters, dict) or parameters:

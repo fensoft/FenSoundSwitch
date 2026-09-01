@@ -8,7 +8,7 @@ import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Any, Callable, TypeAlias
+from typing import Any, Callable, Mapping, TypeAlias
 
 from audio_outputs import (
     AudioOutputMatchError,
@@ -68,6 +68,7 @@ from windows_platform import (
     TrayMenuState,
     TrayMonitorMenuItem,
 )
+from web_presentation import PresentationSnapshot, WebPresentationController
 
 
 RefreshResult: TypeAlias = tuple[list[MonitorRef], SelectionMatch, int | None, Exception | None]
@@ -244,6 +245,7 @@ class MonitorVolumeApp:
         self._start_plugins()
         self._start_display_listener()
         self._start_tray_icon()
+        self._start_web_presentation()
         self._start_minimized()
         self._start_keyboard_listener()
         self._poll_after_id = self.root.after(50, self._poll_queues)
@@ -934,6 +936,173 @@ class MonitorVolumeApp:
         if self._tray_icon is None:
             return
         self.minimize_to_tray()
+
+    def _start_web_presentation(self) -> None:
+        self._presentation_revision = 0
+        self._presentation_requested_visible = False
+        self._presentation = WebPresentationController(
+            Path(__file__).resolve().with_name("web_ui_host.py"),
+            post_to_ui=self._post_to_ui,
+            get_snapshot=self._web_snapshot,
+            dispatch_action=self._dispatch_web_action,
+            allowed_actions={"route.save", "route.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
+            on_exit=self.on_close,
+            on_minimize=self._on_web_minimize,
+            on_visibility=self._on_web_visibility,
+            on_tray_recovery=self._recover_web_tray,
+            on_child_failure=lambda reason: self._set_status(f"Command center unavailable: {reason}"),
+        )
+        if self._tray_icon is None:
+            if not self._presentation.launch():
+                self.root.deiconify()
+                self.root.state("normal")
+
+    def _web_snapshot(self) -> PresentationSnapshot:
+        self._presentation_revision += 1
+        manager = self._plugin_manager
+        statuses = {item.provider_id: item for item in self._get_volume_statuses()}
+        inputs = [{"label": r.input_name, "value": r.input_id} for r in manager.records if r.initialized and r.input_id]
+        outputs = [{"label": r.name, "value": r.plugin_id} for r in manager.records if r.initialized and r.is_volume_provider and r.plugin_id]
+        routes = []
+        for route in manager.input_routes:
+            status = statuses.get(route.route_id)
+            input_name = next((v["label"] for v in inputs if v["value"] == route.input_id), route.input_id)
+            output_name = next((v["label"] for v in outputs if v["value"] == route.provider_id), route.provider_id)
+            route_fields = [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]
+            route_values: dict[str, object] = {"name": route.name, "input_id": route.input_id, "provider_id": route.provider_id}
+            for endpoint in ("input", "output"):
+                try: document = manager.get_route_ui(route.route_id, endpoint)
+                except Exception: document = None
+                if document is None: continue
+                for field in document["fields"]:
+                    assert isinstance(field, dict)
+                    key = f"{endpoint}__{field['id']}"; type_map = {"integer": "number", "choice": "select"}
+                    route_fields.append({"key": key, "type": type_map.get(str(field["type"]), field["type"]), "label": f"{endpoint.title()}: {field['label']}", "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", [])})
+                    if not field.get("write_only"): route_values[key] = field.get("value")
+            routes.append({"id": route.route_id, "name": route.name, "description": "Audio volume route", "input": {"name": input_name, "summary": ""}, "output": {"name": output_name, "summary": ""}, "summary": f"{status.confirmed_volume}%" if status and status.confirmed_volume is not None else (status.reason if status else "Checking"), "enabled": bool(status and status.confirmed_volume is not None), "values": route_values, "form": {"method": "route.save", "fields": route_fields}})
+        actions = []
+        for record in manager.records:
+            if not manager._is_action_plugin(record) or not record.plugin_id:
+                continue
+            try:
+                document = manager.get_plugin_ui(record.plugin_id)
+            except Exception as exc:
+                record.status = f"Configuration unavailable: {exc}"
+                document = None
+            fields = [{"key": "enabled", "type": "boolean", "label": "Enabled", "default": record.enabled}]
+            values: dict[str, object] = {"enabled": record.enabled}
+            ui_action = ""
+            if document is not None:
+                type_map = {"integer": "number", "choice": "select"}
+                fields = []
+                for field in document["fields"]:
+                    assert isinstance(field, dict)
+                    fields.append({"key": field["id"], "type": type_map.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", [])})
+                    if not field.get("write_only"): values[str(field["id"])] = field.get("value")
+                submit = next((item for item in document["actions"] if isinstance(item, dict) and item.get("kind") == "submit"), None)
+                ui_action = str(submit.get("id", "")) if isinstance(submit, dict) else ""
+            for shortcut_action in record.shortcut_actions:
+                binding_id = manager._binding_id(record.plugin_id, shortcut_action.action_id)
+                binding = (record.configured_hotkeys or {}).get(binding_id)
+                shortcut_key = f"shortcut__{shortcut_action.action_id}"
+                forward_key = f"forward__{shortcut_action.action_id}"
+                fields.extend([{"key": shortcut_key, "type": "hotkey", "label": shortcut_action.label, "required": False}, {"key": forward_key, "type": "boolean", "label": f"Forward {shortcut_action.label} to other applications"}])
+                values[shortcut_key] = binding.hotkey.to_json() if binding and binding.hotkey else None
+                values[forward_key] = binding.forward_keys if binding else True
+            actions.append({"id": record.plugin_id, "name": record.name, "description": record.display_status, "shortcut": record.shortcut_label, "values": values, "ui_actions": document["actions"] if document else [], "form": {"method": "action.save", "ui_action": ui_action, "fields": fields}})
+        renderers = []
+        for record in manager.records:
+            if not record.initialized or not record.is_overlay_renderer or not record.plugin_id: continue
+            document = manager.get_plugin_ui(record.plugin_id)
+            fields = []; values = {}
+            if document:
+                type_map = {"integer": "number", "choice": "select"}
+                for field in document["fields"]:
+                    if not isinstance(field, dict): continue
+                    fields.append({"key": field["id"], "type": type_map.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "options": field.get("options", [])})
+                    if not field.get("write_only"): values[str(field["id"])] = field.get("value")
+            renderers.append({"id": record.plugin_id, "name": record.name, "description": record.display_status, "selected": record.plugin_id == manager._active_overlay_plugin_id, "values": values, "form": {"method": "action.save", "fields": fields} if fields else None})
+        diagnostic_text = read_log_contents()
+        if len(diagnostic_text) > 12000: diagnostic_text = diagnostic_text[-12000:]
+        recent_archives = [{"name": path.stem, "path": str(path)} for path in recent_configurations()]
+        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "routes": routes, "actions": actions, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}}}
+        return PresentationSnapshot(self._presentation_revision, snapshot)
+
+    def _dispatch_web_action(self, action: str, arguments: Mapping[str, Any]) -> Any:
+        manager = self._plugin_manager
+        if action == "route.save":
+            values = arguments.get("values", {})
+            if not isinstance(values, dict): raise ValueError("Route values are invalid.")
+            route_id = arguments.get("id")
+            if isinstance(route_id, str):
+                existing = next((route for route in manager.input_routes if route.route_id == route_id), None)
+                if existing is None: raise ValueError("The route no longer exists.")
+                input_parameters = existing.input.parameters if values.get("input_id") == existing.input_id else {}
+                output_parameters = existing.output.parameters if values.get("provider_id") == existing.provider_id else {}
+                for endpoint in ("input", "output"):
+                    if endpoint == "input" and values.get("input_id") != existing.input_id: continue
+                    if endpoint == "output" and values.get("provider_id") != existing.provider_id: continue
+                    document = manager.get_route_ui(route_id, endpoint)
+                    if document is None: continue
+                    submit = next((item for item in document["actions"] if isinstance(item, dict) and item.get("kind") == "submit"), None)
+                    if submit is None: continue
+                    submitted = {str(field["id"]): values.get(f"{endpoint}__{field['id']}") for field in document["fields"] if isinstance(field, dict)}
+                    result = manager.invoke_route_ui_action(route_id, endpoint, str(submit["id"]), submitted)
+                    if result.get("status") == "save":
+                        if endpoint == "input": input_parameters = dict(result["values"])
+                        else: output_parameters = dict(result["values"])
+                ok = manager.update_route(route_id, str(values.get("input_id", "")), str(values.get("provider_id", "")), str(values.get("name", "")), input_parameters, output_parameters)
+            else:
+                ok = manager.add_route(str(values.get("input_id", "")), str(values.get("provider_id", "")), str(values.get("name", "")))
+            if not ok: raise ValueError("The route could not be saved.")
+        elif action == "route.delete":
+            if not manager.remove_route(str(arguments.get("id", ""))): raise ValueError("The route could not be removed.")
+        elif action == "action.save":
+            values = arguments.get("values", {})
+            plugin_id = str(arguments.get("id", ""))
+            if not isinstance(values, dict): raise ValueError("Plugin values are invalid.")
+            record = manager._records_by_id.get(plugin_id)
+            if record is not None:
+                for shortcut_action in record.shortcut_actions:
+                    manager.set_plugin_shortcut(plugin_id, shortcut_action.action_id, values.get(f"shortcut__{shortcut_action.action_id}"), bool(values.get(f"forward__{shortcut_action.action_id}", True)))
+            document = manager.get_plugin_ui(plugin_id)
+            if document is None:
+                manager.set_action_plugin_enabled(plugin_id, bool(values.get("enabled")))
+            else:
+                submit = next((item for item in document["actions"] if isinstance(item, dict) and item.get("kind") == "submit"), None)
+                if not isinstance(submit, dict): raise ValueError("Plugin configuration has no save action.")
+                manager.invoke_plugin_ui_action(plugin_id, str(submit["id"]), values)
+        elif action == "appearance.save":
+                if not manager.set_active_overlay_plugin_id(str(arguments.get("renderer_id", ""))): raise ValueError("The overlay renderer is unavailable.")
+        elif action == "plugin.action":
+            values = arguments.get("values", {})
+            if not isinstance(values, dict): raise ValueError("Plugin values are invalid.")
+            manager.invoke_plugin_ui_action(str(arguments.get("id", "")), str(arguments.get("action_id", "")), values)
+        elif action == "settings.save": self.set_start_with_windows_enabled(bool(arguments.get("start_with_windows")))
+        elif action == "config.export": export_configuration(Path(str(arguments.get("path", ""))))
+        elif action == "config.import":
+            import_configuration(Path(str(arguments.get("path", "")))); self.restart_requested = True; self.root.after_idle(self.on_close)
+        elif action == "config.restore-default":
+            import_configuration(configuration_directory() / DEFAULT_ARCHIVE_NAME); self.restart_requested = True; self.root.after_idle(self.on_close)
+        elif action != "diagnostics.refresh": raise ValueError("Unknown command-center action.")
+        return {"accepted": True}
+
+    def _on_web_visibility(self, visible: bool) -> None:
+        if visible:
+            self._presentation_requested_visible = True
+            self._in_tray = False
+            if self._tray_icon is not None: self._tray_icon.hide()
+
+    def _on_web_minimize(self) -> None:
+        self._presentation_requested_visible = False
+        if self._tray_icon is not None:
+            self._tray_icon.show(); self._in_tray = True
+
+    def _recover_web_tray(self) -> None:
+        if self._tray_icon is not None:
+            self._tray_icon.show(); self._in_tray = True
+        else:
+            self.root.deiconify(); self.root.state("normal")
 
     def _start_keyboard_listener(self) -> None:
         self._listener = GlobalVolumeKeyListener(
@@ -2615,18 +2784,21 @@ class MonitorVolumeApp:
         self.root.withdraw()
 
     def _show_main_window(self) -> None:
-        self.root.deiconify()
-        self.root.state("normal")
-        apply_window_chrome(self.root, self.dark_mode)
-        self.root.lift()
-        self.root.focus_force()
+        self._presentation_requested_visible = True
+        presentation = getattr(self, "_presentation", None)
+        if presentation is None:
+            self.root.deiconify()
+            self.root.state("normal")
+            apply_window_chrome(self.root, self.dark_mode)
+            self.root.lift()
+            self.root.focus_force()
+            return
+        if not presentation.launch():
+            self._presentation_revision += 1
 
     def restore_from_tray(self) -> None:
         if self._closing or not self._in_tray:
             return
-        self._in_tray = False
-        if self._tray_icon is not None:
-            self._tray_icon.hide()
         self._show_main_window()
 
     def on_window_unmap(self, _event: Any = None) -> None:
@@ -2649,6 +2821,9 @@ class MonitorVolumeApp:
             return
         self._cancel_route_repeats()
         self._closing = True
+        presentation = getattr(self, "_presentation", None)
+        if presentation is not None:
+            presentation.shutdown()
         self._close_diagnostic_log()
         self._pending_audio_output_sync = None
         self._topology_valid.clear()

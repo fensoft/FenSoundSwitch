@@ -4,12 +4,9 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
-import tkinter as tk
-from tkinter import ttk
-
-from plugin_api import PLUGIN_API_VERSION, PluginHostContext
+from plugin_api import PLUGIN_API_VERSION, PluginHostContext, plugin_ui_document, plugin_ui_result
 
 
 DEFAULT_PORT = 1883
@@ -179,9 +176,6 @@ class MqttInputPlugin:
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
 
-    def configure(self, parent: Any) -> None:
-        return None
-
     def create_input(self, parameters: object) -> object:
         return validate_parameters(parameters)
 
@@ -201,37 +195,27 @@ class MqttInputPlugin:
             return "Configure an MQTT broker and topic prefix."
         return f"Broker: {values['host']}:{values['port']}; Home Assistant discovery: {values['discovery_prefix']}; slider max: {values['max_value']}."
 
-    def configure_route_input(self, parent: Any, parameters: dict[str, object], on_save: Callable[[dict[str, object]], None]) -> None:
-        host = self._host
-        window = tk.Toplevel(parent)
-        window.title("Configure MQTT route")
-        window.transient(parent)
-        host.prepare_window(window)
-        frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
-        frame.grid(sticky="nsew")
-        frame.columnconfigure(1, weight=1)
-        defaults = {"host": "", "port": str(DEFAULT_PORT), "username": "", "password": "", "discovery_prefix": DEFAULT_DISCOVERY_PREFIX, "topic_prefix": "fensoundswitch", "max_value": "100"}
-        values = {name: tk.StringVar(value=str(parameters.get(name, default))) for name, default in defaults.items()}
-        labels = (("host", "Broker host:"), ("port", "Broker port:"), ("username", "Username:"), ("password", "Password:"), ("discovery_prefix", "Discovery prefix:"), ("topic_prefix", "Topic prefix:"), ("max_value", "Slider maximum (1-100):"))
-        for row, (name, label) in enumerate(labels):
-            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=(0, 6))
-            ttk.Entry(frame, textvariable=values[name], show="*" if name == "password" else "").grid(row=row, column=1, sticky="ew", pady=(0, 6))
-        status = tk.StringVar(value="Home Assistant discovers a retained 0-100 volume slider after the broker connection succeeds.")
-        ttk.Label(frame, textvariable=status, wraplength=500).grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        def save() -> None:
-            try:
-                raw = {name: value.get() for name, value in values.items()}
-                raw["port"] = int(raw["port"])
-                raw["max_value"] = int(raw["max_value"])
-                on_save(validate_parameters(raw))
-            except (ValueError, TypeError) as exc:
-                status.set(str(exc))
-                return
-            window.destroy()
-        ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=8, column=0, sticky="w", pady=(16, 0))
-        ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(row=8, column=1, sticky="e", pady=(16, 0))
-        window.protocol("WM_DELETE_WINDOW", window.destroy)
-        window.grab_set()
+    def get_route_input_ui(self, parameters: Mapping[str, object]) -> dict[str, object]:
+        defaults: dict[str, object] = {"host": "", "port": DEFAULT_PORT, "username": "", "password": "", "discovery_prefix": DEFAULT_DISCOVERY_PREFIX, "topic_prefix": "fensoundswitch", "max_value": 100}
+        labels = {"host": "Broker host", "port": "Broker port", "username": "Username", "password": "Password", "discovery_prefix": "Discovery prefix", "topic_prefix": "Topic prefix", "max_value": "Slider maximum"}
+        fields = []
+        for name, default in defaults.items():
+            field: dict[str, object] = {"id": name, "type": "password" if name == "password" else "integer" if name in ("port", "max_value") else "text", "label": labels[name], "value": parameters.get(name, default)}
+            if name == "host": field["required"] = True
+            if name == "port": field.update({"minimum": 1, "maximum": 65535})
+            if name == "max_value": field.update({"minimum": 1, "maximum": 100})
+            fields.append(field)
+        return plugin_ui_document("Configure MQTT route", fields, [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Home Assistant discovers a retained volume slider after the broker connection succeeds.")
+
+    def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        if action_id != "save":
+            raise ValueError(f"Unknown MQTT UI action {action_id!r}.")
+        raw = dict(values)
+        for name in ("port", "max_value"):
+            value = raw.get(name)
+            if isinstance(value, str):
+                raw[name] = int(value)
+        return plugin_ui_result("save", values=validate_parameters(raw))
 
     def get_shortcut_actions(self) -> list[object]:
         return []

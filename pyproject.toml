@@ -11,6 +11,8 @@ requires-python = ">=3.10"
 dependencies = [
     "monitorcontrol==4.2.0",
     "paho-mqtt==2.1.0",
+    "pywebview==6.1",
+    "pythonnet==3.0.5",
 ]
 
 [project.optional-dependencies]
@@ -35,7 +37,12 @@ py-modules = [
     "plugin_hotkeys",
     "plugin_manager",
     "windows_platform",
+    "web_presentation",
+    "web_ui_host",
 ]
 
+[tool.setuptools.package-data]
+web = ["*.html", "*.css", "*.js"]
+
 [tool.setuptools.packages.find]
-include = ["plugins", "plugins.*"]
+include = ["plugins", "plugins.*", "web"]

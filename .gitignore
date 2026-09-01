@@ -1,4 +1,6 @@
 __pycache__/
 dist/
-windows_ddc.egg-info/
+*.egg-info/
+nuitka-crash-report*.xml
 old/
+.kilo/

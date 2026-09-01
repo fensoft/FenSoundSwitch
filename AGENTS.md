@@ -6,7 +6,7 @@ These instructions apply to the entire repository. Keep this file operational an
 
 - FenSoundSwitch is a Windows-only Python 3.10+ Tkinter application for one selected monitor's DDC/CI audio volume.
 - The supported composition root is `app.py`. `main.py` is deliberately an exit-1 rejection stub that directs users to `app.py` without launching it.
-- Runtime dependencies: `monitorcontrol==4.2.0` and `paho-mqtt==2.1.0`. Optional executable builder: `Nuitka==2.4.8`.
+- Runtime dependencies: `monitorcontrol==4.2.0`, `paho-mqtt==2.1.0`, `pywebview==6.1`, and `pythonnet==3.0.5`. Optional executable builder: `Nuitka==2.4.8`.
 - The app is an interactive current-user process, not a service. It has no HTTP/API server, listening port, database, application account system, external broker/job queue, cron, or telemetry. The bundled Discord plugin is an OAuth client for Discord's HTTPS token endpoint and local named pipe.
 - The global Volume Down/Up hook, passive plugin shortcut observer, Discord voice-output changes, physical DDC writes, audio endpoint visibility changes, and elevated FenSound rename are safety-sensitive. Do not launch the app or call live monitor/audio/Discord operations as routine automated validation.
 - There is a standard-library unit-test suite for fail-safe and registered hotkeys, plugin discovery/isolation, mocked Discord credentials/OAuth/restoration, stable identity/settings, Change speed persistence, autostart, diagnostics, display invalidation, revalidation, fail-closed audio-output matching, single-instance behavior, overlay focus safety, live theme/accessibility/scaling, resilience, CI safety, and tray recovery. GitHub Actions runs hardware-free checks on Windows for Python 3.10. There is no lint, format, type-check, or third-party test-framework configuration. State those limitations accurately.
@@ -14,7 +14,7 @@ These instructions apply to the entire repository. Keep this file operational an
 ## Runtime Shape
 
 1. `app.py` handles only its strictly validated internal elevated audio-rename request before the normal composition boundary. An ordinary launch acquires the session-local `SingleInstanceGuard` before creating Tk; a duplicate broadcasts restore and exits before application initialization.
-2. The primary configures the rotating diagnostic log, creates the single `tk.Tk`, constructs `gui.MonitorVolumeApp`, reads the current-user autostart state, and enters Tk's main loop while retaining the mutex handle.
+2. The primary configures the rotating diagnostic log, creates one withdrawn `tk.Tk`, constructs `gui.MonitorVolumeApp`, reads the current-user autostart state, and enters Tk's coordination loop while retaining the mutex handle. A strict internal pywebview child renders packaged local HTML in WebView2 and communicates through authenticated Windows named-pipe messages; it never owns hardware or authoritative state and opens no HTTP/TCP listener.
 3. After Tk exists, `gui.py` dynamically imports the plugin manager, directly imports bundled modules from the `plugins` package, then discovers trusted adjacent `external-plugins\*.py` and per-user `plugins\*.py` modules. The bundled package is never dynamically scanned. It initializes plugins and starts the shared `plugin-hotkey-loop`/`plugin-hotkey-dispatch`. Duplicate processes exit before that import, discovery, or credential access.
 4. `display-change-listener`, `tray-icon`, and `volume-key-hook` are long-lived daemon threads with native Win32 message loops. The display listener also relays live theme/system-color broadcasts into Tk. The plugin-hotkey observer is independent of the low-level Volume hook: action shortcuts and keyboard routes may explicitly consume only their configured held key pairs.
 5. `ddc-gui-worker` and `ddc-volume-write` are short-lived daemon workers for blocking DDC/CI work. `audio-output-sync`, `plugin-<id>`, and `discord-output-auth` are separate short-lived daemons for audio reconciliation, plugin triggers, and Discord OAuth/RPC respectively.
@@ -56,6 +56,8 @@ Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or 
 | `plugins/windows11_overlay_plugin.py` | Bundled Windows 11 work-area/DPI-aware, live-themed, no-activate, topmost, auto-hiding overlay renderer. |
 | `plugins/macos_overlay_plugin.py` | Bundled macOS-style no-activate overlay renderer sharing the safe Windows presentation path. |
 | `theme.py` | Windows theme/High Contrast/window-DPI reads, reversible ttk styles, DWM chrome, and runtime icon path. |
+| `web_presentation.py` | Primary-owned authenticated named-pipe protocol, WebView child lifecycle, state revisions, restore/minimize handshakes, and crash recovery. |
+| `web_ui_host.py`, `web/` | Strict internal pywebview child and packaged local HTML/CSS/JS presentation. |
 | `windows_platform.py` | Win32 ctypes ABI, single-instance mutex/restore signaling, monitor identity/EDID inventory, display work areas/scaling, window DPI/High Contrast reads, no-activate overlay helpers, display/theme notifications, snapshot-driven tray controller, global keyboard hook, and DWM helpers. |
 | `tests/` | Hardware-free plugin/hotkey/Discord, identity, settings, autostart, audio-output, single-instance, topology, fresh-write, overlay, accessibility/scaling, resilience, and tray regressions. |
 | `.github/workflows/ci.yml` | Windows Python 3.10 hardware-free unit and low-risk validation workflow. |
@@ -115,7 +117,7 @@ CI is validation-only. Keep it free of `python app.py`, live controller `start()
 - `audio_outputs.match_monitor_audio_endpoints(...)` and `build_audio_output_plan(...)`
 - `audio_outputs.reconcile_monitor_audio_outputs(...) -> AudioOutputResult`
 - `audio_outputs.parse_internal_rename_request(...)` and `run_internal_rename_helper(...)`
-- `plugin_manager.discover_plugins(...)`, `PluginManager.start()`, `refresh_hotkey()`, and `stop()`
+- `plugin_manager.discover_plugins(...)`, `PluginManager.start()`, declarative plugin UI API-v4 dispatch, `refresh_hotkey()`, and `stop()`
 - `plugin_hotkeys.PluginHotkeyController` and `plugin_api.HotkeySpec`
 - `plugins.discord_output_plugin.DiscordOutputPlugin` plus its mocked RPC/OAuth/credential helpers
 - `settings.load_selected_monitor_key()` and `settings.save_selected_monitor_key()`
@@ -133,7 +135,7 @@ Run these low-risk validation checks from the repository root:
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m compileall -q app.py audio_outputs.py autostart.py core_audio.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py windows_platform.py plugins
+python -m compileall -q app.py audio_outputs.py autostart.py core_audio.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py web_presentation.py web_ui_host.py windows_platform.py plugins
 python -m pip check
 git diff --check
 git diff --cached --check

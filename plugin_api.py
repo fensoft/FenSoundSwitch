@@ -1,17 +1,145 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Protocol, runtime_checkable
-
-import tkinter as tk
-from tkinter import ttk
+from typing import Any, Callable, Mapping, Protocol, TypeAlias, runtime_checkable
 
 
-PLUGIN_API_VERSION = 3
+PLUGIN_API_VERSION = 4
 PLUGIN_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 SHORTCUT_ACTION_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+UI_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+JsonValue: TypeAlias = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+PluginUiDocument: TypeAlias = dict[str, JsonValue]
+PluginUiResult: TypeAlias = dict[str, JsonValue]
+
+_UI_FIELD_TYPES = frozenset(("text", "password", "integer", "boolean", "choice", "select", "hotkey"))
+_UI_ACTION_KINDS = frozenset(("submit", "action"))
+_UI_RESULT_STATUSES = frozenset(("save", "update", "complete"))
+
+
+def _json_object(value: object, label: str) -> dict[str, JsonValue]:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise ValueError(f"{label} must be a JSON object.")
+    try:
+        decoded = json.loads(json.dumps(value, allow_nan=False, separators=(",", ":")))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{label} must contain only JSON-serializable values.") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError(f"{label} must be a JSON object.")
+    return decoded
+
+
+def _ui_id(value: object, label: str) -> str:
+    if not isinstance(value, str) or UI_ID_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{label} must match [a-z][a-z0-9_-]{{0,63}}.")
+    return value
+
+
+def validate_plugin_ui_document(value: object) -> PluginUiDocument:
+    """Validate and detach one declarative plugin form document."""
+    document = _json_object(value, "Plugin UI document")
+    if set(document) - {"schema_version", "title", "description", "fields", "actions"}:
+        raise ValueError("Plugin UI document contains unknown properties.")
+    if document.get("schema_version") != 1:
+        raise ValueError("Plugin UI document schema_version must be 1.")
+    if not isinstance(document.get("title"), str) or not str(document["title"]).strip():
+        raise ValueError("Plugin UI document title must be non-empty text.")
+    description = document.get("description")
+    if description is not None and (not isinstance(description, str) or not description.strip()):
+        raise ValueError("Plugin UI document description must be non-empty text when supplied.")
+    fields, actions = document.get("fields"), document.get("actions")
+    if not isinstance(fields, list) or not isinstance(actions, list):
+        raise ValueError("Plugin UI document fields and actions must be arrays.")
+    field_ids: set[str] = set()
+    for field in fields:
+        if not isinstance(field, dict) or set(field) - {"id", "type", "label", "value", "required", "minimum", "maximum", "options", "description", "write_only"}:
+            raise ValueError("Plugin UI fields contain an invalid property.")
+        field_id = _ui_id(field.get("id"), "Plugin UI field ID")
+        if field_id in field_ids:
+            raise ValueError("Plugin UI field IDs must be unique.")
+        field_ids.add(field_id)
+        if field.get("type") not in _UI_FIELD_TYPES:
+            raise ValueError("Plugin UI field type is invalid.")
+        if not isinstance(field.get("label"), str) or not str(field["label"]).strip():
+            raise ValueError("Plugin UI field label must be non-empty text.")
+        for flag in ("required", "write_only"):
+            if flag in field and not isinstance(field[flag], bool):
+                raise ValueError(f"Plugin UI field {flag} must be true or false.")
+        if "description" in field and (not isinstance(field["description"], str) or not field["description"].strip()):
+            raise ValueError("Plugin UI field description must be non-empty text.")
+        for bound in ("minimum", "maximum"):
+            if bound in field and (field["type"] != "integer" or isinstance(field[bound], bool) or not isinstance(field[bound], int)):
+                raise ValueError("Plugin UI field bounds require integer fields and integer values.")
+        if field.get("write_only") is True and (field["type"] != "password" or field.get("value") not in (None, "")):
+            raise ValueError("Write-only UI fields must be empty password fields.")
+        options = field.get("options")
+        if field["type"] in ("choice", "select"):
+            if not isinstance(options, list):
+                raise ValueError("Choice and select fields require an options array.")
+            for option in options:
+                if not isinstance(option, dict) or set(option) != {"label", "value"} or not isinstance(option["label"], str) or not option["label"].strip():
+                    raise ValueError("Plugin UI field options require a label and value.")
+        elif options is not None:
+            raise ValueError("Only choice and select fields may declare options.")
+    action_ids: set[str] = set()
+    for action in actions:
+        if not isinstance(action, dict) or set(action) - {"id", "label", "kind", "async", "confirm"}:
+            raise ValueError("Plugin UI actions contain an invalid property.")
+        action_id = _ui_id(action.get("id"), "Plugin UI action ID")
+        if action_id in action_ids:
+            raise ValueError("Plugin UI action IDs must be unique.")
+        action_ids.add(action_id)
+        if not isinstance(action.get("label"), str) or not str(action["label"]).strip():
+            raise ValueError("Plugin UI action label must be non-empty text.")
+        if action.get("kind") not in _UI_ACTION_KINDS or not isinstance(action.get("async"), bool):
+            raise ValueError("Plugin UI action kind or async declaration is invalid.")
+        if "confirm" in action and (not isinstance(action["confirm"], str) or not action["confirm"].strip()):
+            raise ValueError("Plugin UI action confirmation must be non-empty text.")
+    return document
+
+
+def validate_plugin_ui_result(value: object) -> PluginUiResult:
+    """Validate and detach a plugin UI action result."""
+    result = _json_object(value, "Plugin UI result")
+    if set(result) - {"status", "values", "document", "message"}:
+        raise ValueError("Plugin UI result contains unknown properties.")
+    status = result.get("status")
+    if status not in _UI_RESULT_STATUSES:
+        raise ValueError("Plugin UI result status is invalid.")
+    if status == "save":
+        if not isinstance(result.get("values"), dict) or "document" in result:
+            raise ValueError("A save result requires values and cannot replace the document.")
+    elif status == "update":
+        if "values" in result or "document" not in result:
+            raise ValueError("An update result requires a replacement document.")
+        result["document"] = validate_plugin_ui_document(result["document"])
+    elif "values" in result or "document" in result:
+        raise ValueError("A complete result cannot contain values or a document.")
+    if "message" in result and (not isinstance(result["message"], str) or not result["message"].strip()):
+        raise ValueError("Plugin UI result message must be non-empty text.")
+    return result
+
+
+def plugin_ui_document(title: str, fields: list[dict[str, object]], actions: list[dict[str, object]], description: str | None = None) -> PluginUiDocument:
+    value: dict[str, object] = {"schema_version": 1, "title": title, "fields": fields, "actions": actions}
+    if description is not None:
+        value["description"] = description
+    return validate_plugin_ui_document(value)
+
+
+def plugin_ui_result(status: str, *, values: Mapping[str, object] | None = None, document: Mapping[str, object] | None = None, message: str | None = None) -> PluginUiResult:
+    value: dict[str, object] = {"status": status}
+    if values is not None:
+        value["values"] = dict(values)
+    if document is not None:
+        value["document"] = dict(document)
+    if message is not None:
+        value["message"] = message
+    return validate_plugin_ui_result(value)
 
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
@@ -281,9 +409,6 @@ class RuntimePlugin(Protocol):
     def initialize(self, host: PluginHostContext) -> None:
         ...
 
-    def configure(self, parent: Any) -> None:
-        ...
-
     def get_shortcut_actions(self) -> list[ShortcutAction]:
         ...
 
@@ -291,6 +416,17 @@ class RuntimePlugin(Protocol):
         ...
 
     def shutdown(self, timeout: float) -> bool:
+        ...
+
+
+@runtime_checkable
+class PluginUiDefinition(Protocol):
+    """Optional plugin-scoped declarative configuration capability."""
+
+    def get_plugin_ui(self) -> PluginUiDocument:
+        ...
+
+    def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> PluginUiResult:
         ...
 
 
@@ -365,14 +501,12 @@ class RouteOutputDefinition(Protocol):
 
 @runtime_checkable
 class RouteInputEditor(Protocol):
-    """Optional route-input editor capability.
+    """Optional declarative route-input editor capability."""
 
-    ``configure_route_input`` receives an isolated draft and calls ``on_save``
-    only after the endpoint-specific dialog validates it. ``route_input_summary``
-    returns concise text for the route editor.
-    """
+    def get_route_input_ui(self, parameters: Mapping[str, object]) -> PluginUiDocument:
+        ...
 
-    def configure_route_input(self, parent: Any, parameters: dict[str, object], on_save: Callable[[dict[str, object]], None]) -> None:
+    def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> PluginUiResult:
         ...
 
     def route_input_summary(self, parameters: dict[str, object]) -> str:
@@ -383,62 +517,14 @@ class RouteInputEditor(Protocol):
 class RouteOutputEditor(Protocol):
     """Optional route-output editor capability; mirrors RouteInputEditor."""
 
-    def configure_route_output(self, parent: Any, parameters: dict[str, object], on_save: Callable[[dict[str, object]], None]) -> None:
+    def get_route_output_ui(self, parameters: Mapping[str, object]) -> PluginUiDocument:
+        ...
+
+    def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> PluginUiResult:
         ...
 
     def route_output_summary(self, parameters: dict[str, object]) -> str:
         ...
-
-
-def show_host_port_route_editor(
-    parent: Any,
-    prepare_window: Callable[[Any], None],
-    title: str,
-    parameters: dict[str, object],
-    form_values: Callable[[dict[str, object]], dict[str, str]],
-    validate: Callable[[str, str], dict[str, object]],
-    on_save: Callable[[dict[str, object]], None],
-) -> None:
-    """Present a route-scoped receiver editor without persisting endpoint state."""
-    window = tk.Toplevel(parent)
-    window.title(title)
-    window.transient(parent)
-    prepare_window(window)
-    frame = ttk.Frame(window, padding=20, style="Dialog.TFrame")
-    frame.grid(sticky="nsew")
-    window.columnconfigure(0, weight=1)
-    frame.columnconfigure(1, weight=1)
-    values = form_values(parameters)
-    host_value = tk.StringVar(value=values["host"])
-    port_value = tk.StringVar(value=values["port"])
-    status = tk.StringVar(value="Enter the receiver hostname or IP address and TCP port.")
-    ttk.Label(frame, text=title, style="DialogTitle.TLabel").grid(
-        row=0, column=0, columnspan=2, sticky="w"
-    )
-    ttk.Label(
-        frame,
-        text="Connect this route to a receiver on your local network.",
-        style="DialogSubtitle.TLabel",
-    ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 16))
-    ttk.Label(frame, text="Host or IP address", style="Muted.TLabel").grid(row=2, column=0, columnspan=2, sticky="w")
-    ttk.Entry(frame, textvariable=host_value, width=44).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(5, 12))
-    ttk.Label(frame, text="TCP port", style="Muted.TLabel").grid(row=4, column=0, columnspan=2, sticky="w")
-    ttk.Entry(frame, textvariable=port_value, width=12).grid(row=5, column=0, sticky="w", pady=(5, 0))
-    ttk.Label(frame, textvariable=status, wraplength=480, style="Muted.TLabel").grid(row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
-
-    def save() -> None:
-        try:
-            on_save(validate(host_value.get(), port_value.get()))
-        except ValueError as exc:
-            status.set(str(exc))
-            return
-        window.destroy()
-
-    ttk.Button(frame, text="Cancel", style="Quiet.TButton", command=window.destroy).grid(row=7, column=0, sticky="e", pady=(16, 0))
-    ttk.Button(frame, text="Save", style="Accent.TButton", command=save).grid(row=7, column=1, sticky="e", padx=(8, 0), pady=(16, 0))
-    window.protocol("WM_DELETE_WINDOW", window.destroy)
-    window.grab_set()
-
 
 @runtime_checkable
 class InputPlugin(Protocol):

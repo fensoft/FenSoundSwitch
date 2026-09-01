@@ -4,7 +4,7 @@
 
 `FenSoundSwitch` turns the Windows Volume Up and Volume Down keys into a simple remote for your monitor, AV receiver, or both.
 
-Build named routes for the rooms and devices you use. Choose a monitor or receiver for each route, then adjust them together from your keyboard. A tray-first interface, configurable overlays, and optional Windows or Discord device switching keep control close without adding clutter.
+Build named routes for the rooms and devices you use. Choose a monitor or receiver for each route, then adjust them together from your keyboard. A tray-first WebView2 interface, configurable overlays, and optional Windows or Discord device switching keep control close without adding clutter. The interface is packaged locally and does not run a web server or load remote UI assets.
 
 ![FenSoundSwitch control window](docs/app.png)
 
@@ -28,7 +28,7 @@ Build named routes for the rooms and devices you use. Choose a monitor or receiv
 3. Add a route, give it a name, select **Windows Volume keys** as the input, and choose an output.
 4. Configure the output, then press Volume Up or Volume Down at a safe listening level.
 
-The app is made for Windows 10 and Windows 11. Compatible monitor control requires DDC/CI enabled in the monitor menu. Receiver control requires a supported receiver on your home network.
+The app is made for Windows 10 and Windows 11 and requires the [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section), which is included with current Windows installations. Compatible monitor control requires DDC/CI enabled in the monitor menu. Receiver control requires a supported receiver on your home network.
 
 ## Default Configuration
 

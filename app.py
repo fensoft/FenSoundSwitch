@@ -20,10 +20,15 @@ from windows_platform import (
     SingleInstanceGuard,
     request_existing_instance_restore,
 )
+from web_presentation import CHILD_MODE_ARGUMENT
 
 
 def main() -> int:
     restart_requested = False
+    if sys.argv[1:2] == [CHILD_MODE_ARGUMENT]:
+        from web_ui_host import main as web_ui_main
+
+        return web_ui_main(sys.argv[2:])
     try:
         rename_endpoint_id = parse_internal_rename_request(sys.argv[1:])
     except AudioOutputError:
@@ -49,6 +54,7 @@ def main() -> int:
         except Exception as exc:
             logger.warning("Default configuration creation failed (%s).", exc.__class__.__name__)
         root = tk.Tk()
+        root.withdraw()
         application = MonitorVolumeApp(root)
         root.mainloop()
         restart_requested = application.restart_requested is True
