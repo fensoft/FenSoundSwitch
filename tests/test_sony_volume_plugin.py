@@ -83,6 +83,23 @@ class SonyVolumePluginTests(unittest.TestCase):
                 plugin.read_volume()
         self.assertTrue(rpc_error.closed)
 
+    def test_activation_powers_on_and_selects_input_once(self) -> None:
+        connections = [
+            FakeConnection([FakeResponse(200, {"id": 1, "result": []})]),
+            FakeConnection([FakeResponse(200, {"id": 2, "result": []})]),
+        ]
+        plugin = sony.SonyVolumePlugin()
+        plugin._config = sony.ReceiverConfig("avr", power_on=True, startup_input="extInput:hdmi?port=1")
+        with patch("plugins.sony_volume_plugin.http.client.HTTPConnection", side_effect=connections) as factory:
+            plugin.activate_volume_provider()
+            plugin.activate_volume_provider()
+        self.assertEqual(factory.call_count, 2)
+        self.assertEqual(connections[0].requests[0][1], "/sony/system")
+        self.assertEqual(json.loads(connections[0].requests[0][2])["params"], [{"status": True}])
+        self.assertEqual(connections[1].requests[0][1], "/sony/avContent")
+        self.assertEqual(json.loads(connections[1].requests[0][2])["params"], [{"uri": "extInput:hdmi?port=1"}])
+        self.assertTrue(all(connection.closed for connection in connections))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import threading
 from typing import Any
 
 try:
-    from monitorcontrol import get_monitors
+    from monitorcontrol import get_input_name, get_monitors
     from monitorcontrol.vcp import VCPError
 except ImportError as exc:
     get_monitors = None
@@ -13,6 +14,8 @@ except ImportError as exc:
     IMPORT_ERROR = exc
 else:
     IMPORT_ERROR = None
+
+_OPERATION_LOCK = threading.Lock()
 
 from windows_platform import WindowsMonitorIdentity, enumerate_windows_monitor_identities
 
@@ -78,6 +81,12 @@ class MonitorRef:
         return f"{self.index}. {self.description} - {identity_text}"
 
 
+@dataclass(frozen=True)
+class MonitorInput:
+    value: int
+    label: str
+
+
 class SelectionMatchStatus(str, Enum):
     FOUND = "found"
     MISSING = "missing"
@@ -106,6 +115,58 @@ def monitor_name(monitor: Any) -> str:
     return description.strip() or "Unnamed monitor"
 
 
+def saved_monitor_selection_from_json(value: object) -> SavedMonitorSelection | None:
+    if not isinstance(value, dict):
+        return None
+    description = value.get("description")
+    if not isinstance(description, str) or not description.strip():
+        return None
+    identity = value.get("identity")
+    if identity is None:
+        legacy_ordinal = value.get("legacy_ordinal")
+        if isinstance(legacy_ordinal, bool) or not isinstance(legacy_ordinal, int) or legacy_ordinal < 1:
+            return None
+        return SavedMonitorSelection(description=description.strip(), legacy_ordinal=legacy_ordinal)
+    if not isinstance(identity, dict):
+        return None
+    device_path = identity.get("device_path")
+    if not isinstance(device_path, str) or not device_path.strip():
+        return None
+    product_code = identity.get("product_code")
+    if isinstance(product_code, bool) or not isinstance(product_code, int) or product_code < 0:
+        product_code = None
+    return SavedMonitorSelection(
+        description=description.strip(),
+        identity=MonitorIdentity(
+            device_path=device_path,
+            manufacturer_id=(
+                identity.get("manufacturer_id")
+                if isinstance(identity.get("manufacturer_id"), str)
+                else None
+            ),
+            product_code=product_code,
+            serial_number=(
+                identity.get("serial_number")
+                if isinstance(identity.get("serial_number"), str)
+                else None
+            ),
+        ),
+    )
+
+
+def saved_monitor_selection_to_json(selection: SavedMonitorSelection) -> dict[str, object]:
+    if selection.identity is None:
+        if selection.legacy_ordinal is None:
+            raise ValueError("Monitor selection needs a stable identity or unambiguous legacy description.")
+        return {"description": selection.description, "legacy_ordinal": selection.legacy_ordinal}
+    identity: dict[str, object] = {"device_path": selection.identity.device_path}
+    for name in ("manufacturer_id", "product_code", "serial_number"):
+        value = getattr(selection.identity, name)
+        if value is not None:
+            identity[name] = value
+    return {"description": selection.description, "identity": identity}
+
+
 def _to_monitor_identity(identity: WindowsMonitorIdentity | None) -> MonitorIdentity | None:
     if identity is None:
         return None
@@ -125,7 +186,8 @@ def enumerate_monitors() -> list[MonitorRef]:
 
     try:
         identity_slots_before = enumerate_windows_monitor_identities()
-        monitors = list(get_monitors())
+        with _OPERATION_LOCK:
+            monitors = list(get_monitors())
         identity_slots_after = enumerate_windows_monitor_identities()
     except (NotImplementedError, VCPError, OSError) as exc:
         raise DDCError(f"Failed to detect DDC/CI monitors: {exc}") from exc
@@ -228,28 +290,88 @@ def match_selected_monitor(
 
 def read_monitor_volume(monitor_ref: MonitorRef) -> int:
     try:
-        with monitor_ref.monitor:
-            return clamp(monitor_ref.monitor.get_volume(), 0, 100)
+        with _OPERATION_LOCK:
+            with monitor_ref.monitor:
+                return clamp(monitor_ref.monitor.get_volume(), 0, 100)
     except VCPError as exc:
         raise DDCError(f"Failed to read volume from {monitor_ref.description}: {exc}") from exc
 
 
 def set_monitor_volume(monitor_ref: MonitorRef, target_volume: int) -> int:
     try:
-        with monitor_ref.monitor:
-            monitor_ref.monitor.set_volume(clamp(target_volume, 0, 100))
-            return clamp(monitor_ref.monitor.get_volume(), 0, 100)
+        with _OPERATION_LOCK:
+            with monitor_ref.monitor:
+                monitor_ref.monitor.set_volume(clamp(target_volume, 0, 100))
+                return clamp(monitor_ref.monitor.get_volume(), 0, 100)
     except VCPError as exc:
         raise DDCError(f"Failed to set volume on {monitor_ref.description}: {exc}") from exc
 
 
 def change_monitor_volume(monitor_ref: MonitorRef, delta: int) -> int:
     try:
-        with monitor_ref.monitor:
-            current_volume = clamp(monitor_ref.monitor.get_volume(), 0, 100)
-            target_volume = clamp(current_volume + delta, 0, 100)
-            if target_volume != current_volume:
-                monitor_ref.monitor.set_volume(target_volume)
-            return clamp(monitor_ref.monitor.get_volume(), 0, 100)
+        with _OPERATION_LOCK:
+            with monitor_ref.monitor:
+                current_volume = clamp(monitor_ref.monitor.get_volume(), 0, 100)
+                target_volume = clamp(current_volume + delta, 0, 100)
+                if target_volume != current_volume:
+                    monitor_ref.monitor.set_volume(target_volume)
+                return clamp(monitor_ref.monitor.get_volume(), 0, 100)
     except VCPError as exc:
         raise DDCError(f"Failed to change volume on {monitor_ref.description}: {exc}") from exc
+
+
+def _normalize_monitor_inputs(capabilities: object) -> tuple[MonitorInput, ...]:
+    advertised = capabilities.get("inputs") if isinstance(capabilities, dict) else None
+    if not isinstance(advertised, (list, tuple)):
+        return ()
+    inputs: list[MonitorInput] = []
+    seen: set[int] = set()
+    for raw_value in advertised:
+        if isinstance(raw_value, bool) or not isinstance(raw_value, int) or not 0 <= raw_value <= 0xFF:
+            continue
+        value = int(raw_value)
+        if value in seen:
+            continue
+        seen.add(value)
+        label = get_input_name(value)
+        inputs.append(MonitorInput(value, label))
+    return tuple(inputs)
+
+
+def enumerate_monitor_inputs(monitor_ref: MonitorRef) -> tuple[MonitorInput, ...]:
+    try:
+        with _OPERATION_LOCK:
+            with monitor_ref.monitor:
+                capabilities = monitor_ref.monitor.get_vcp_capabilities()
+    except (VCPError, OSError, ValueError) as exc:
+        raise DDCError(f"Failed to read inputs from {monitor_ref.description}: {exc}") from exc
+    return _normalize_monitor_inputs(capabilities)
+
+
+def set_monitor_input(monitor_ref: MonitorRef, target: int) -> int:
+    if isinstance(target, bool) or not isinstance(target, int) or not 0 <= target <= 0xFF:
+        raise ValueError("Monitor input must be an integer from 0 to 255.")
+    try:
+        with _OPERATION_LOCK:
+            with monitor_ref.monitor:
+                capabilities = monitor_ref.monitor.get_vcp_capabilities()
+                advertised = _normalize_monitor_inputs(capabilities)
+                if not any(item.value == target for item in advertised):
+                    raise DDCError("The selected input is no longer advertised by this monitor.")
+                current = monitor_ref.monitor.get_input_source()
+                if current == target:
+                    return current
+                monitor_ref.monitor.set_input_source(target)
+                try:
+                    confirmed = monitor_ref.monitor.get_input_source()
+                except (VCPError, OSError, ValueError) as exc:
+                    raise DDCError(
+                        "The input change was sent, but its result could not be verified; it was not retried."
+                    ) from exc
+    except DDCError:
+        raise
+    except (VCPError, OSError, ValueError) as exc:
+        raise DDCError(f"Failed to change input on {monitor_ref.description}: {exc}") from exc
+    if confirmed != target:
+        raise DDCError("The monitor did not confirm the selected input.")
+    return confirmed

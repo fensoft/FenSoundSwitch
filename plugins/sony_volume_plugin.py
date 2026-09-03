@@ -18,6 +18,33 @@ CONNECT_TIMEOUT_SECONDS = 2.0
 IO_TIMEOUT_SECONDS = 2.0
 MAX_RESPONSE_BYTES = 64 * 1024
 MAIN_ZONE_OUTPUT = "extOutput:zone:1"
+INPUT_OPTIONS = (
+    ("Do not change input", ""),
+    ("TV", "extInput:tv"),
+    ("Bluetooth", "extInput:btAudio"),
+    ("USB", "extInput:usb"),
+    ("Network", "extInput:network"),
+    ("Screen mirroring", "extInput:screenMirroring"),
+    ("HDMI 1", "extInput:hdmi?port=1"),
+    ("HDMI 2", "extInput:hdmi?port=2"),
+    ("HDMI 3", "extInput:hdmi?port=3"),
+    ("HDMI 4", "extInput:hdmi?port=4"),
+    ("HDMI 5", "extInput:hdmi?port=5"),
+    ("HDMI 6", "extInput:hdmi?port=6"),
+    ("Video 1", "extInput:video?port=1"),
+    ("Video 2", "extInput:video?port=2"),
+    ("Component 1", "extInput:component?port=1"),
+    ("Component 2", "extInput:component?port=2"),
+    ("Composite 1", "extInput:composite?port=1"),
+    ("Composite 2", "extInput:composite?port=2"),
+    ("Line 1", "extInput:line?port=1"),
+    ("Line 2", "extInput:line?port=2"),
+    ("Optical 1", "extInput:optical?port=1"),
+    ("Optical 2", "extInput:optical?port=2"),
+    ("Coaxial 1", "extInput:coaxial?port=1"),
+    ("Coaxial 2", "extInput:coaxial?port=2"),
+)
+INPUT_VALUES = frozenset(value for _label, value in INPUT_OPTIONS)
 
 
 class SonyError(RuntimeError):
@@ -28,6 +55,8 @@ class SonyError(RuntimeError):
 class ReceiverConfig:
     host: str
     port: int = DEFAULT_PORT
+    power_on: bool = False
+    startup_input: str = ""
 
 
 @dataclass(frozen=True)
@@ -52,15 +81,21 @@ class VolumeRange:
 def _valid_config(value: object) -> ReceiverConfig | None:
     if not isinstance(value, dict) or value.get("schema_version") != CONFIG_SCHEMA_VERSION:
         return None
-    if set(value) != {"schema_version", "host", "port"}:
+    if set(value) - {"schema_version", "host", "port", "power_on", "startup_input"}:
         return None
     host = value.get("host")
+    if "port" not in value:
+        return None
     port = value.get("port")
+    power_on = value.get("power_on", False)
+    startup_input = value.get("startup_input", "")
     if not isinstance(host, str) or not (host := host.strip()) or len(host) > 253:
         return None
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         return None
-    return ReceiverConfig(host, port)
+    if not isinstance(power_on, bool) or not isinstance(startup_input, str) or startup_input not in INPUT_VALUES:
+        return None
+    return ReceiverConfig(host, port, power_on, startup_input)
 
 
 def _load_config(path: Path) -> ReceiverConfig | None:
@@ -73,7 +108,7 @@ def _load_config(path: Path) -> ReceiverConfig | None:
 def _save_config(path: Path, config: ReceiverConfig) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    payload = json.dumps({"schema_version": CONFIG_SCHEMA_VERSION, "host": config.host, "port": config.port}, indent=2)
+    payload = json.dumps({"schema_version": CONFIG_SCHEMA_VERSION, "host": config.host, "port": config.port, "power_on": config.power_on, "startup_input": config.startup_input}, indent=2)
     with temporary.open("w", encoding="utf-8", newline="\n") as stream:
         stream.write(payload)
         stream.flush()
@@ -116,6 +151,7 @@ class SonyVolumePlugin:
         self._lock = threading.Lock()
         self._next_request_id = 1
         self._volume_range: VolumeRange | None = None
+        self._activation_complete = False
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
@@ -127,27 +163,29 @@ class SonyVolumePlugin:
         instance._config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **parameters})
         return instance
 
-    def route_output_form_values(self, parameters: dict[str, object]) -> dict[str, str]:
+    def route_output_form_values(self, parameters: dict[str, object]) -> dict[str, object]:
         config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **parameters})
-        return {"host": config.host if config is not None else "", "port": str(config.port if config is not None else DEFAULT_PORT)}
+        return {"host": config.host if config is not None else "", "port": str(config.port if config is not None else DEFAULT_PORT), "power_on": config.power_on if config is not None else False, "startup_input": config.startup_input if config is not None else ""}
 
-    def validate_route_output_form(self, host: str, port: str) -> dict[str, object]:
-        config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, "host": host, "port": _parse_port(port)})
+    def validate_route_output_form(self, host: str, port: str, power_on: object = False, startup_input: object = "") -> dict[str, object]:
+        config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, "host": host, "port": _parse_port(port), "power_on": power_on, "startup_input": startup_input})
         if config is None:
-            raise ValueError("Enter a non-empty host and a TCP port from 1 through 65535.")
-        return {"host": config.host, "port": config.port}
+            raise ValueError("Enter a valid host, TCP port, power option, and Sony input.")
+        return {"host": config.host, "port": config.port, "power_on": config.power_on, "startup_input": config.startup_input}
 
     def get_route_output_ui(self, parameters: Mapping[str, object]) -> dict[str, object]:
         values = self.route_output_form_values(dict(parameters))
         return plugin_ui_document("Configure Sony route", [
             {"id": "host", "type": "text", "label": "Host or IP address", "value": values["host"], "required": True},
             {"id": "port", "type": "integer", "label": "TCP port", "value": int(values["port"]), "minimum": 1, "maximum": 65535, "required": True},
+            {"id": "power_on", "type": "boolean", "label": "Turn on when route activates", "value": values["power_on"]},
+            {"id": "startup_input", "type": "select", "label": "Input on activation", "value": values["startup_input"], "options": [{"label": label, "value": value} for label, value in INPUT_OPTIONS], "description": "The list spans known Sony Scalar Web API models; the receiver must advertise the selected URI."},
         ], [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Connect this route to a receiver on your local network.")
 
     def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
         if action_id != "save":
             raise ValueError(f"Unknown Sony UI action {action_id!r}.")
-        return plugin_ui_result("save", values=self.validate_route_output_form(str(values.get("host", "")), str(values.get("port", ""))))
+        return plugin_ui_result("save", values=self.validate_route_output_form(str(values.get("host", "")), str(values.get("port", "")), values.get("power_on", False), values.get("startup_input", "")))
 
     def route_output_summary(self, parameters: dict[str, object]) -> str:
         values = self.route_output_form_values(parameters)
@@ -165,7 +203,17 @@ class SonyVolumePlugin:
         return True, None
 
     def activate_volume_provider(self) -> None:
-        return
+        config = self._config
+        if config is None or self._activation_complete or not (config.power_on or config.startup_input):
+            return
+        with self._lock:
+            if self._activation_complete:
+                return
+            if config.power_on:
+                self._request_locked("setPowerStatus", [{"status": True}], path="/sony/system")
+            if config.startup_input:
+                self._request_locked("setPlayContent", [{"uri": config.startup_input}], path="/sony/avContent")
+            self._activation_complete = True
 
     def deactivate_volume_provider(self) -> None:
         return
@@ -217,7 +265,7 @@ class SonyVolumePlugin:
             return _decimal(item.get("volume"), "volume"), volume_range
         raise SonyError("The receiver did not return main-zone volume information.")
 
-    def _request_locked(self, method: str, params: list[object]) -> object:
+    def _request_locked(self, method: str, params: list[object], *, path: str = "/sony/audio") -> object:
         config = self._config
         if config is None:
             raise SonyError("Configure a Sony network AVR in Routes.")
@@ -227,7 +275,7 @@ class SonyVolumePlugin:
         connection: http.client.HTTPConnection | None = None
         try:
             connection = http.client.HTTPConnection(config.host, config.port, timeout=CONNECT_TIMEOUT_SECONDS)
-            connection.request("POST", "/sony/audio", body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
+            connection.request("POST", path, body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
             response = connection.getresponse()
             if response.status != 200:
                 raise SonyError(f"The receiver returned HTTP status {response.status}.")

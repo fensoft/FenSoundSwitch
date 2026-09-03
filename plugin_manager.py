@@ -14,9 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import ttk
 from types import ModuleType
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from plugins import (
+    ddc_input_source_plugin,
     ddc_volume_plugin,
     denon_marantz_volume_plugin,
     discord_output_plugin,
@@ -46,6 +47,7 @@ from plugin_api import (
     HotkeySpec,
     PluginHostContext,
     ShortcutAction,
+    SlotAction,
     RouteHotkeyBinding,
     ActionHotkeyBinding,
     OverlayRenderer,
@@ -63,6 +65,14 @@ from settings import (
     copied_route_name,
     default_route_name,
     normalize_route_name,
+    load_action_signals,
+    save_action_signals,
+    ActionSignal,
+    ActionSlot,
+    WaitSlot,
+    normalize_signal_label,
+    MAX_SIGNAL_SLOTS,
+    MAX_WAIT_MILLISECONDS,
 )
 from plugin_hotkeys import PluginHotkeyController
 from theme import (
@@ -100,6 +110,7 @@ class PluginRecord:
     initialized: bool = False
     status: str = "Not initialized"
     shortcut_actions: tuple[ShortcutAction, ...] = ()
+    slot_actions: tuple[SlotAction, ...] = ()
     configured_hotkeys: dict[str, ActionHotkeyBinding] | None = None
     active_hotkeys: dict[str, HotkeySpec | None] | None = None
     shortcut_error: str | None = None
@@ -292,10 +303,23 @@ def _validate_plugin(plugin: object) -> tuple[str, str, str]:
     named = (callable(getattr(plugin, "get_shortcut_actions", None)), callable(getattr(plugin, "trigger_shortcut", None)))
     if named not in ((True, True), (False, False)):
         raise ValueError("Plugin shortcut methods must be supplied in pairs.")
+    slots = (callable(getattr(plugin, "get_slot_actions", None)), callable(getattr(plugin, "run_slot", None)))
+    if slots not in ((True, True), (False, False)):
+        raise ValueError("Plugin slot methods must be supplied in pairs.")
+    slot_editor = (
+        callable(getattr(plugin, "get_slot_ui", None)),
+        callable(getattr(plugin, "invoke_slot_ui_action", None)),
+        callable(getattr(plugin, "slot_summary", None)),
+    )
+    if slot_editor not in ((True, True, True), (False, False, False)) or (
+        slot_editor == (True, True, True) and slots != (True, True)
+    ):
+        raise ValueError("Plugin slot editor methods must be supplied together with slot actions.")
     if named == (False, False) and not (
         callable(getattr(plugin, "create_input", None))
         or callable(getattr(plugin, "create_output", None))
         or callable(getattr(plugin, "create_overlay_renderer", None))
+        or slots == (True, True)
     ):
         raise ValueError("Action plugins must implement named shortcut methods.")
     return plugin_id, name.strip(), description.strip()
@@ -379,6 +403,7 @@ def discover_plugins(
         (discord_output_plugin, "Bundled Discord output plugin"),
         (audio_keepalive_plugin, "Bundled audio output keep-alive plugin"),
         (windows_default_device_plugin, "Bundled Windows default device plugin"),
+        (ddc_input_source_plugin, "Bundled DDC monitor input plugin"),
         (ddc_volume_plugin, "Bundled DDC volume plugin"),
         (onkyo_volume_plugin, "Bundled Onkyo volume plugin"),
         (denon_marantz_volume_plugin, "Bundled Denon/Marantz volume plugin"),
@@ -472,6 +497,7 @@ class PluginManager:
         on_route_input: Callable[[str, int], None] | None = None,
         on_route_volume: Callable[[str, int], None] | None = None,
         on_route_key: Callable[[str, int, bool], None] | None = None,
+        on_action_signals_changed: Callable[[], None] | None = None,
         *,
         hotkey_factory: Callable[..., PluginHotkeyController] = PluginHotkeyController,
         external_directories: Iterable[Path] | None = None,
@@ -491,6 +517,7 @@ class PluginManager:
         self._on_route_input = on_route_input or (lambda _route_id, _delta: None)
         self._on_route_volume = on_route_volume or (lambda _route_id, _volume: None)
         self._on_route_key = on_route_key or (lambda _route_id, _delta, _pressed: None)
+        self._on_action_signals_changed = on_action_signals_changed or (lambda: None)
         self._hotkey_factory = hotkey_factory
         self._external_directories = external_directories
         self._shortcut_path = shortcut_path or shortcut_settings_path()
@@ -514,6 +541,8 @@ class PluginManager:
         self._route_instances: dict[str, VolumeProvider] = {}
         self._route_input_instances: dict[str, object] = {}
         self._route_hotkeys: dict[str, int] = {}
+        self._action_signals: tuple[ActionSignal, ...] = ()
+        self._startup_automations_dispatched = False
         self._active_overlay_plugin_id = DEFAULT_OVERLAY_PLUGIN_ID
         self._route_panel_refreshers: list[
             tuple[tk.Misc, Callable[[], None], Callable[[], None]]
@@ -530,6 +559,185 @@ class PluginManager:
     @property
     def input_routes(self) -> tuple[VolumeRoute, ...]:
         return self._input_routes
+
+    @property
+    def action_signals(self) -> tuple[ActionSignal, ...]:
+        return self._action_signals
+
+    def signal_action_options(self) -> tuple[dict[str, object], ...]:
+        options: list[dict[str, object]] = []
+        for record in self.records:
+            if not record.initialized or record.plugin_id is None:
+                continue
+            for action in record.slot_actions:
+                options.append({
+                    "label": f"{record.name}: {action.label}",
+                    "value": f"{record.plugin_id}/{action.action_id}",
+                    "configurable": callable(getattr(record.plugin, "get_slot_ui", None)),
+                })
+        return tuple(options)
+
+    def get_slot_ui(
+        self,
+        plugin_id: str,
+        action_id: str,
+        parameters: Mapping[str, object],
+    ) -> dict[str, object] | None:
+        record = self._records_by_id.get(plugin_id)
+        if record is None or not record.initialized or not any(
+            action.action_id == action_id for action in record.slot_actions
+        ):
+            raise ValueError("That automation action is unavailable.")
+        getter = getattr(record.plugin, "get_slot_ui", None)
+        return validate_plugin_ui_document(getter(action_id, parameters)) if callable(getter) else None
+
+    def invoke_slot_ui_action(
+        self,
+        plugin_id: str,
+        action_id: str,
+        ui_action_id: str,
+        values: Mapping[str, object],
+    ) -> dict[str, object]:
+        record = self._records_by_id.get(plugin_id)
+        if record is None or not record.initialized or not any(
+            action.action_id == action_id for action in record.slot_actions
+        ):
+            raise ValueError("That automation action is unavailable.")
+        invoke = getattr(record.plugin, "invoke_slot_ui_action", None)
+        if not callable(invoke):
+            raise ValueError("That automation action has no configuration editor.")
+        return validate_plugin_ui_result(invoke(action_id, ui_action_id, values))
+
+    def slot_summary(
+        self,
+        plugin_id: str,
+        action_id: str,
+        parameters: Mapping[str, object],
+    ) -> str:
+        record = self._records_by_id.get(plugin_id)
+        if record is None or not record.initialized or not any(
+            action.action_id == action_id for action in record.slot_actions
+        ):
+            return "Unavailable"
+        summarize = getattr(record.plugin, "slot_summary", None) if record is not None else None
+        if not callable(summarize):
+            return ""
+        try:
+            summary = " ".join(str(summarize(action_id, parameters)).split())
+        except Exception as exc:
+            LOGGER.error("Automation slot summary failed: plugin=%s, error=%s.", plugin_id, exc.__class__.__name__)
+            return "Configuration unavailable"
+        return summary[:160]
+
+    def save_action_signal(
+        self,
+        signal_id: str | None,
+        name: object,
+        hotkey_value: object,
+        forward_keys: object,
+        tray_label_value: object,
+        slots_value: object,
+        on_start_value: object = False,
+    ) -> bool:
+        normalized_name = normalize_signal_label(name)
+        tray_label = None if tray_label_value in (None, "") else normalize_signal_label(tray_label_value)
+        if normalized_name is None or (tray_label_value not in (None, "") and tray_label is None):
+            self._notice("Automation and tray labels must be non-empty and at most 80 characters.")
+            return False
+        if not isinstance(slots_value, list) or not 1 <= len(slots_value) <= MAX_SIGNAL_SLOTS:
+            self._notice("An automation needs one to 32 ordered action or wait steps.")
+            return False
+        slots: list[ActionSlot | WaitSlot] = []
+        try:
+            if not isinstance(on_start_value, bool):
+                raise ValueError("Run when the app starts must be true or false.")
+            for raw in slots_value:
+                if not isinstance(raw, dict):
+                    raise ValueError("Automation steps are invalid.")
+                if raw.get("kind") == "wait":
+                    milliseconds = raw.get("milliseconds")
+                    if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 0 <= milliseconds <= MAX_WAIT_MILLISECONDS:
+                        raise ValueError("Wait duration must be from 0 to 300000 milliseconds.")
+                    slots.append(WaitSlot(milliseconds))
+                    continue
+                target = raw.get("target")
+                if not isinstance(target, str):
+                    raise ValueError("Select an action for every action step.")
+                plugin_id, separator, action_id = target.partition("/")
+                record = self._records_by_id.get(plugin_id)
+                if not separator or record is None or not record.initialized or not any(action.action_id == action_id for action in record.slot_actions):
+                    raise ValueError("A selected automation action is unavailable.")
+                parameters = raw.get("parameters", {})
+                if not isinstance(parameters, dict):
+                    raise ValueError("Automation action parameters must be an object.")
+                slots.append(ActionSlot(plugin_id, action_id, parameters))
+            binding = ActionHotkeyBinding(HotkeySpec.from_json(hotkey_value), bool(forward_keys))
+            resolved_id = signal_id if isinstance(signal_id, str) else f"signal-{uuid.uuid4().hex}"
+            signal = ActionSignal(resolved_id, normalized_name, binding, tray_label, tuple(slots), on_start_value)
+        except ValueError as exc:
+            self._notice(self._format_error(exc))
+            return False
+        updated = tuple(signal if item.signal_id == resolved_id else item for item in self._action_signals)
+        if not any(item.signal_id == resolved_id for item in self._action_signals):
+            updated += (signal,)
+        return self._save_action_signals(updated)
+
+    def remove_action_signal(self, signal_id: str) -> bool:
+        updated = tuple(signal for signal in self._action_signals if signal.signal_id != signal_id)
+        return len(updated) != len(self._action_signals) and self._save_action_signals(updated)
+
+    def _save_action_signals(self, signals: tuple[ActionSignal, ...]) -> bool:
+        previous = self._action_signals
+        try:
+            self._replace_signal_hotkeys(previous, signals)
+            save_action_signals(signals)
+        except (OSError, ValueError) as exc:
+            try:
+                self._replace_signal_hotkeys(signals, previous)
+            except Exception:
+                pass
+            self._notice(f"Could not save automation: {self._format_error(exc)}")
+            return False
+        self._action_signals = signals
+        self._on_action_signals_changed()
+        return True
+
+    @staticmethod
+    def _signal_binding_id(signal_id: str) -> str:
+        return f"signal/{signal_id}"
+
+    def _replace_signal_hotkeys(
+        self,
+        previous: tuple[ActionSignal, ...],
+        updated: tuple[ActionSignal, ...],
+    ) -> None:
+        if self._hotkeys is None:
+            return
+        for signal in previous:
+            self._set_signal_hotkey(signal, None)
+        try:
+            for signal in updated:
+                self._set_signal_hotkey(signal, signal.hotkey.hotkey)
+        except Exception:
+            for signal in updated:
+                try:
+                    self._set_signal_hotkey(signal, None)
+                except Exception:
+                    pass
+            for signal in previous:
+                self._set_signal_hotkey(signal, signal.hotkey.hotkey)
+            raise
+
+    def _set_signal_hotkey(self, signal: ActionSignal, hotkey: HotkeySpec | None) -> None:
+        assert self._hotkeys is not None
+        try:
+            self._hotkeys.set_binding(
+                self._signal_binding_id(signal.signal_id),
+                hotkey,
+                consume=signal.hotkey.consume,
+            )
+        except TypeError:
+            self._hotkeys.set_binding(self._signal_binding_id(signal.signal_id), hotkey)
 
     def get_plugin_ui(self, plugin_id: str) -> dict[str, object] | None:
         record = self._records_by_id.get(plugin_id)
@@ -877,6 +1085,7 @@ class PluginManager:
             record.initialized = True
             record.status = "Ready" if record.status in {"Not initialized", "Disabled"} else record.status
             self._initialize_shortcut_actions(record)
+            self._initialize_slot_actions(record)
         except Exception as exc:
             record.status = f"Initialization failed: {self._format_error(exc)}"
             LOGGER.error("Plugin initialization failed for %s (%s).", record.plugin_id, exc.__class__.__name__)
@@ -919,6 +1128,7 @@ class PluginManager:
             stopped = False
         record.initialized = False
         record.shortcut_actions = ()
+        record.slot_actions = ()
         record.restart_required = True
         record.status = "Disabled" if stopped else "Disabled; shutdown timed out"
         return stopped
@@ -933,6 +1143,7 @@ class PluginManager:
         self._shortcut_bindings = _load_shortcut_bindings(self._shortcut_path)
         self._disabled_action_plugin_ids = _load_disabled_action_plugin_ids(self._action_plugin_state_path)
         self._input_routes = load_input_routes()
+        self._action_signals = load_action_signals()
         self._records_by_id = {
             record.plugin_id: record
             for record in self._records
@@ -969,6 +1180,8 @@ class PluginManager:
                 continue
             self._initialize_record(record)
 
+        self._migrate_builtin_shortcuts_to_signals()
+
         active_record = self._records_by_id.get(self._active_overlay_plugin_id)
         if active_record is None or not active_record.initialized or not active_record.is_overlay_renderer:
             default_record = self._records_by_id.get(DEFAULT_OVERLAY_PLUGIN_ID)
@@ -979,7 +1192,56 @@ class PluginManager:
         except ValueError as exc:
             self._notice(f"Saved keyboard routes are unavailable: {exc}")
         self._rebuild_route_instances()
+        try:
+            self._replace_signal_hotkeys((), self._action_signals)
+        except Exception as exc:
+            self._notice(f"Saved automations have unavailable shortcuts: {self._format_error(exc)}")
+        self._on_action_signals_changed()
         self._on_volume_routes_changed()
+
+    def _migrate_builtin_shortcuts_to_signals(self) -> None:
+        """Promote removed Discord/Windows direct shortcuts without losing bindings."""
+        signals = list(self._action_signals)
+        used_hotkeys = {signal.hotkey.hotkey for signal in signals if signal.hotkey.hotkey is not None}
+        used_ids = {signal.signal_id for signal in signals}
+        changed = False
+        for plugin_id in ("windows-default-device", "discord-output"):
+            record = self._records_by_id.get(plugin_id)
+            if record is None or record.plugin is None:
+                continue
+            actions = record.slot_actions
+            if not actions:
+                getter = getattr(record.plugin, "get_slot_actions", None)
+                try:
+                    declared = getter() if callable(getter) else ()
+                except Exception:
+                    declared = ()
+                actions = tuple(action for action in declared if isinstance(action, SlotAction))
+            for action in actions:
+                binding = self._shortcut_bindings.get(self._binding_id(plugin_id, action.action_id))
+                if binding is None or binding.hotkey is None or binding.hotkey in used_hotkeys:
+                    continue
+                signal_id = f"signal-{plugin_id}-{action.action_id}"
+                if signal_id in used_ids:
+                    continue
+                signals.append(ActionSignal(
+                    signal_id,
+                    action.label,
+                    binding,
+                    None,
+                    (ActionSlot(plugin_id, action.action_id, {}),),
+                ))
+                used_ids.add(signal_id)
+                used_hotkeys.add(binding.hotkey)
+                changed = True
+        if not changed:
+            return
+        try:
+            save_action_signals(signals)
+        except (OSError, ValueError) as exc:
+            self._notice(f"Could not migrate direct shortcuts to automations: {self._format_error(exc)}")
+            return
+        self._action_signals = tuple(signals)
 
     def notify_volume_topology_changed(self) -> None:
         for _route, provider in self._all_route_providers():
@@ -1149,6 +1411,21 @@ class PluginManager:
             record.shortcut_actions = ()
             record.configured_hotkeys = {}
         self.refresh_hotkey(record.plugin_id)
+
+    @staticmethod
+    def _initialize_slot_actions(record: PluginRecord) -> None:
+        assert record.plugin is not None
+        getter = getattr(record.plugin, "get_slot_actions", None)
+        if not callable(getter):
+            record.slot_actions = ()
+            return
+        actions = getter()
+        if not isinstance(actions, (list, tuple)) or not all(isinstance(action, SlotAction) for action in actions):
+            raise ValueError("get_slot_actions() must return SlotAction values.")
+        action_ids = [action.action_id for action in actions]
+        if len(action_ids) != len(set(action_ids)):
+            raise ValueError("Slot action IDs must be unique per plugin.")
+        record.slot_actions = tuple(actions)
 
     def refresh_hotkey(self, plugin_id: str) -> None:
         record = self._records_by_id.get(plugin_id)
@@ -1363,6 +1640,9 @@ class PluginManager:
                 LOGGER.info("Route shortcut triggered: adjustment=%+d.", delta)
                 self._on_route_input(parts[1], delta)
             return
+        if binding_id.startswith("signal/"):
+            self.dispatch_action_signal(binding_id.removeprefix("signal/"))
+            return
         plugin_id, separator, action_id = binding_id.partition("/")
         if not separator:
             return
@@ -1387,6 +1667,61 @@ class PluginManager:
             )
             self._inflight[binding_id] = worker
             worker.start()
+
+    def dispatch_action_signal(self, signal_id: str) -> None:
+        if self._closing.is_set():
+            return
+        signal = next((item for item in self._action_signals if item.signal_id == signal_id), None)
+        if signal is None:
+            return
+        binding_id = self._signal_binding_id(signal_id)
+        with self._inflight_lock:
+            existing = self._inflight.get(binding_id)
+            if existing is not None and existing.is_alive():
+                LOGGER.info("Action signal ignored because it is already running: signal=%s.", signal_id)
+                return
+            worker = threading.Thread(
+                target=self._run_action_signal,
+                args=(signal, binding_id),
+                name=f"plugin-signal-{signal_id}",
+                daemon=True,
+            )
+            self._inflight[binding_id] = worker
+            worker.start()
+
+    def dispatch_startup_automations(self) -> None:
+        """Run each app-start automation once after composition is ready."""
+        if self._startup_automations_dispatched or self._closing.is_set():
+            return
+        self._startup_automations_dispatched = True
+        for signal in self._action_signals:
+            if signal.on_start:
+                self.dispatch_action_signal(signal.signal_id)
+
+    def _run_action_signal(self, signal: ActionSignal, binding_id: str) -> None:
+        try:
+            LOGGER.info("Action signal triggered: signal=%s, slots=%d.", signal.signal_id, len(signal.slots))
+            for index, slot in enumerate(signal.slots):
+                if self._closing.is_set():
+                    break
+                if isinstance(slot, WaitSlot):
+                    if self._closing.wait(slot.milliseconds / 1000.0):
+                        break
+                    continue
+                record = self._records_by_id.get(slot.plugin_id)
+                if record is None or not record.initialized or record.plugin is None:
+                    raise RuntimeError(f"Step {index + 1} action is unavailable.")
+                runner = getattr(record.plugin, "run_slot", None)
+                if not callable(runner) or not any(action.action_id == slot.action_id for action in record.slot_actions):
+                    raise RuntimeError(f"Step {index + 1} action is unavailable.")
+                runner(slot.action_id, slot.parameters)
+            LOGGER.info("Action signal handler returned: signal=%s.", signal.signal_id)
+        except Exception as exc:
+            LOGGER.error("Action signal failed: signal=%s, slot_error=%s.", signal.signal_id, exc.__class__.__name__)
+            self._notice(f"Automation {signal.name} stopped: {self._format_error(exc)}")
+        finally:
+            with self._inflight_lock:
+                self._inflight.pop(binding_id, None)
 
     def _dispatch_route_key(self, binding_id: str, pressed: bool) -> None:
         if self._closing.is_set():

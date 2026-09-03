@@ -112,10 +112,10 @@ class WindowsDefaultDevicePluginTests(unittest.TestCase):
         render.assert_not_called()
         capture.assert_not_called()
 
-    def test_plugin_declares_four_host_configured_shortcuts_without_a_configuration_dialog(self) -> None:
+    def test_plugin_declares_four_signal_slots_without_direct_shortcuts(self) -> None:
         plugin = WindowsDefaultDevicePlugin()
         self.assertEqual(
-            [(item.action_id, item.label) for item in plugin.get_shortcut_actions()],
+            [(item.action_id, item.label) for item in plugin.get_slot_actions()],
             [
                 ("cycle-playback", "Cycle Windows playback"),
                 ("cycle-voice-output", "Cycle Windows voice output"),
@@ -123,6 +123,8 @@ class WindowsDefaultDevicePluginTests(unittest.TestCase):
                 ("cycle-microphone", "Cycle Windows microphone"),
             ],
         )
+        self.assertFalse(hasattr(plugin, "get_shortcut_actions"))
+        self.assertFalse(hasattr(plugin, "trigger_shortcut"))
         self.assertFalse(plugin.has_configuration)
 
     def test_successful_action_reports_the_same_text_to_status_and_overlay(self) -> None:

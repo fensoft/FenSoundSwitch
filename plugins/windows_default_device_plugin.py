@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import Mapping
 import core_audio
-from plugin_api import PLUGIN_API_VERSION as HOST_PLUGIN_API_VERSION, PluginHostContext, ShortcutAction
+from plugin_api import PLUGIN_API_VERSION as HOST_PLUGIN_API_VERSION, PluginHostContext, SlotAction
 
 
 PLUGIN_API_VERSION = HOST_PLUGIN_API_VERSION
@@ -68,7 +69,7 @@ def cycle_default_endpoint(
 class WindowsDefaultDevicePlugin:
     plugin_id = "windows-default-device"
     name = "Windows default device switch"
-    description = "Cycles Windows playback, voice, input, and microphone defaults with independently configured shortcuts."
+    description = "Cycles Windows playback, voice, input, and microphone defaults from automation steps."
     has_configuration = False
 
     def __init__(self) -> None:
@@ -80,17 +81,19 @@ class WindowsDefaultDevicePlugin:
         self._host = host
         host.report_status("Ready")
 
-    def get_shortcut_actions(self) -> list[ShortcutAction]:
+    def get_slot_actions(self) -> list[SlotAction]:
         return [
-            ShortcutAction("cycle-playback", "Cycle Windows playback"),
-            ShortcutAction("cycle-voice-output", "Cycle Windows voice output"),
-            ShortcutAction("cycle-input", "Cycle Windows input"),
-            ShortcutAction("cycle-microphone", "Cycle Windows microphone"),
+            SlotAction("cycle-playback", "Cycle Windows playback"),
+            SlotAction("cycle-voice-output", "Cycle Windows voice output"),
+            SlotAction("cycle-input", "Cycle Windows input"),
+            SlotAction("cycle-microphone", "Cycle Windows microphone"),
         ]
 
-    def trigger_shortcut(self, action_id: str) -> None:
+    def run_slot(self, action_id: str, parameters: Mapping[str, object]) -> None:
         if action_id not in _ACTIONS:
-            raise ValueError(f"Unknown default-device shortcut action {action_id!r}.")
+            raise ValueError(f"Unknown default-device slot action {action_id!r}.")
+        if parameters:
+            raise ValueError("Windows default-device slots do not accept parameters.")
         if self._shutdown.is_set() or not self._operation_lock.acquire(blocking=False):
             if self._host is not None:
                 self._host.logger.info(

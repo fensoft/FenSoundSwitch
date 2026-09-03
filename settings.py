@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ddc import MonitorIdentity, SavedMonitorSelection
+from plugin_api import ActionHotkeyBinding, HotkeySpec
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 DEFAULT_CHANGE_SPEED = "slow"
 CHANGE_SPEEDS = frozenset(("slow", "medium", "fast"))
 USER_DATA_DIRECTORY = Path(os.environ.get("APPDATA") or Path.home()) / "fensoundswitch"
@@ -20,6 +21,10 @@ LEGACY_SETTINGS_PATH = LEGACY_USER_DATA_DIRECTORY / "settings.json"
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _ROUTE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 MAX_ROUTE_NAME_LENGTH = 80
+MAX_SIGNAL_NAME_LENGTH = 80
+MAX_ACTION_SIGNALS = 100
+MAX_SIGNAL_SLOTS = 32
+MAX_WAIT_MILLISECONDS = 300_000
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,68 @@ class RouteEndpoint:
     parameters: dict[str, object]
 
 
+@dataclass(frozen=True)
+class ActionSlot:
+    plugin_id: str
+    action_id: str
+    parameters: dict[str, object]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.plugin_id, str) or _PLUGIN_ID_PATTERN.fullmatch(self.plugin_id) is None
+            or not isinstance(self.action_id, str) or _PLUGIN_ID_PATTERN.fullmatch(self.action_id) is None
+            or not isinstance(self.parameters, dict)
+        ):
+            raise ValueError("Action step plugin, action, or parameters are invalid.")
+        try:
+            normalized = json.loads(json.dumps(self.parameters))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Action step parameters must contain only JSON values.") from exc
+        object.__setattr__(self, "parameters", normalized)
+
+
+@dataclass(frozen=True)
+class WaitSlot:
+    milliseconds: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.milliseconds, bool) or not isinstance(self.milliseconds, int) or not 0 <= self.milliseconds <= MAX_WAIT_MILLISECONDS:
+            raise ValueError("Wait duration must be from 0 to 300000 milliseconds.")
+
+
+SignalSlot = ActionSlot | WaitSlot
+
+
+@dataclass(frozen=True)
+class ActionSignal:
+    signal_id: str
+    name: str
+    hotkey: ActionHotkeyBinding
+    tray_label: str | None
+    slots: tuple[SignalSlot, ...]
+    on_start: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.signal_id, str) or _ROUTE_ID_PATTERN.fullmatch(self.signal_id) is None:
+            raise ValueError("Automation ID must match [a-z][a-z0-9-]{0,63}.")
+        if not isinstance(self.hotkey, ActionHotkeyBinding):
+            raise ValueError("Automation keyboard trigger is invalid.")
+        if not isinstance(self.on_start, bool):
+            raise ValueError("Automation start trigger must be true or false.")
+        if not isinstance(self.slots, tuple) or not 1 <= len(self.slots) <= MAX_SIGNAL_SLOTS or not all(isinstance(slot, (ActionSlot, WaitSlot)) for slot in self.slots):
+            raise ValueError("An automation needs one to 32 valid ordered steps.")
+        name = normalize_signal_label(self.name)
+        tray_label = normalize_signal_label(self.tray_label) if self.tray_label is not None else None
+        if name is None:
+            raise ValueError("Automation name must be non-empty and at most 80 characters.")
+        if self.tray_label is not None and tray_label is None:
+            raise ValueError("Tray item label must be non-empty and at most 80 characters.")
+        if self.hotkey.hotkey is None and tray_label is None and not self.on_start:
+            raise ValueError("An automation needs a keyboard shortcut, a tray item, or an app-start trigger.")
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "tray_label", tray_label)
+
+
 def _optional_string(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -67,6 +134,17 @@ def normalize_route_name(value: object) -> str | None:
     if any(ord(character) < 32 or ord(character) == 127 for character in name):
         return None
     return name
+
+
+def normalize_signal_label(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    label = " ".join(value.split())
+    if not label or len(label) > MAX_SIGNAL_NAME_LENGTH:
+        return None
+    if any(ord(character) < 32 or ord(character) == 127 for character in label):
+        return None
+    return label
 
 
 def default_route_name(input_label: str, output_label: str) -> str:
@@ -313,6 +391,115 @@ def save_input_routes(routes: tuple[VolumeRoute, ...] | list[VolumeRoute]) -> No
     _write_settings_object(payload)
 
 
+def _json_object(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        normalized = json.loads(json.dumps(value))
+    except (TypeError, ValueError):
+        return None
+    return normalized if isinstance(normalized, dict) else None
+
+
+def _normalized_signal_slot(value: object) -> SignalSlot | None:
+    if not isinstance(value, dict):
+        return None
+    kind = value.get("kind")
+    if kind == "wait" and set(value) == {"kind", "milliseconds"}:
+        milliseconds = value.get("milliseconds")
+        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 0 <= milliseconds <= MAX_WAIT_MILLISECONDS:
+            return None
+        return WaitSlot(milliseconds)
+    if kind == "action" and not set(value) - {"kind", "plugin_id", "action_id", "parameters"}:
+        plugin_id = _optional_string(value.get("plugin_id"))
+        action_id = _optional_string(value.get("action_id"))
+        parameters = _json_object(value.get("parameters", {}))
+        if (
+            plugin_id is None or _PLUGIN_ID_PATTERN.fullmatch(plugin_id) is None
+            or action_id is None or _PLUGIN_ID_PATTERN.fullmatch(action_id) is None
+            or parameters is None
+        ):
+            return None
+        return ActionSlot(plugin_id, action_id, parameters)
+    return None
+
+
+def _normalized_action_signals(value: object) -> tuple[ActionSignal, ...] | None:
+    if not isinstance(value, list) or len(value) > MAX_ACTION_SIGNALS:
+        return None
+    signals: list[ActionSignal] = []
+    signal_ids: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) - {"signal_id", "name", "hotkey", "forward_keys", "tray_label", "slots", "on_start"}:
+            return None
+        signal_id = _optional_string(item.get("signal_id"))
+        name = normalize_signal_label(item.get("name"))
+        tray_value = item.get("tray_label")
+        tray_label = None if tray_value is None else normalize_signal_label(tray_value)
+        slots_value = item.get("slots")
+        on_start = item.get("on_start", False)
+        if (
+            signal_id is None or _ROUTE_ID_PATTERN.fullmatch(signal_id) is None or signal_id in signal_ids
+            or name is None or (tray_value is not None and tray_label is None)
+            or not isinstance(on_start, bool)
+            or not isinstance(slots_value, list) or not 1 <= len(slots_value) <= MAX_SIGNAL_SLOTS
+        ):
+            return None
+        try:
+            hotkey = ActionHotkeyBinding(HotkeySpec.from_json(item.get("hotkey")), item.get("forward_keys", True))  # type: ignore[arg-type]
+        except ValueError:
+            return None
+        slots = tuple(_normalized_signal_slot(slot) for slot in slots_value)
+        if any(slot is None for slot in slots):
+            return None
+        signal_ids.add(signal_id)
+        try:
+            signals.append(ActionSignal(signal_id, name, hotkey, tray_label, slots, on_start))  # type: ignore[arg-type]
+        except ValueError:
+            return None
+    return tuple(signals)
+
+
+def load_action_signals() -> tuple[ActionSignal, ...]:
+    data = _read_settings_object()
+    if data is None or "action_signals" not in data:
+        return ()
+    signals = _normalized_action_signals(data.get("action_signals"))
+    return signals if signals is not None else ()
+
+
+def save_action_signals(signals: tuple[ActionSignal, ...] | list[ActionSignal]) -> None:
+    if not isinstance(signals, (list, tuple)):
+        raise ValueError("Automations must be an ordered list.")
+    raw: list[dict[str, object]] = []
+    for signal in signals:
+        if not isinstance(signal, ActionSignal):
+            raise ValueError("Each automation must use the ActionSignal model.")
+        slots = [
+            {"kind": "wait", "milliseconds": slot.milliseconds}
+            if isinstance(slot, WaitSlot) else
+            {"kind": "action", "plugin_id": slot.plugin_id, "action_id": slot.action_id, "parameters": slot.parameters}
+            for slot in signal.slots
+        ]
+        raw.append({
+            "signal_id": signal.signal_id,
+            "name": signal.name,
+            "hotkey": signal.hotkey.hotkey.to_json() if signal.hotkey.hotkey is not None else None,
+            "forward_keys": signal.hotkey.forward_keys,
+            "tray_label": signal.tray_label,
+            "slots": slots,
+            "on_start": signal.on_start,
+        })
+    normalized = _normalized_action_signals(raw)
+    if normalized is None or len(normalized) != len(signals):
+        raise ValueError("Each automation needs a unique ID, a trigger, and one to 32 valid steps.")
+    existing = _read_settings_object()
+    payload = dict(existing) if existing is not None else {}
+    payload["schema_version"] = SCHEMA_VERSION
+    payload["action_signals"] = raw
+    _write_settings_object(payload)
+
+
 def load_selected_monitor_key() -> SavedMonitorSelection | None:
     data = _read_settings_object()
     if data is None:
@@ -327,7 +514,7 @@ def load_selected_monitor_key() -> SavedMonitorSelection | None:
         return None
 
     schema_version = data.get("schema_version")
-    if schema_version in (2, 3, 4, 5, 6, 7, SCHEMA_VERSION):
+    if schema_version in (2, 3, 4, 5, 6, 7, 8, SCHEMA_VERSION):
         identity_data = selected_monitor.get("identity")
         if not isinstance(identity_data, dict):
             return None

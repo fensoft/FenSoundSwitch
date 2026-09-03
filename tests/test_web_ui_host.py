@@ -173,12 +173,12 @@ class WebUiProtocolTests(unittest.TestCase):
         webview.FileDialog.SAVE = 30
         api.attach_window(window, webview)
 
-        result = api.pick_save_file({"filename": "FenSoundSwitch.fsc", "file_types": ["FenSoundSwitch configuration (*.fsc)"]})
+        result = api.pick_save_file({"directory": r"C:\Users\tester\AppData\Roaming\fensoundswitch\configurations", "filename": "FenSoundSwitch.fsc", "file_types": ["FenSoundSwitch configuration (*.fsc)"]})
 
         self.assertEqual(result, {"ok": True, "result": r"C:\tmp\config.fsc"})
         window.restore.assert_called_once_with()
         window.show.assert_called_once_with()
-        window.create_file_dialog.assert_called_once_with(30, directory="", save_filename="FenSoundSwitch.fsc", file_types=("FenSoundSwitch configuration (*.fsc)",))
+        window.create_file_dialog.assert_called_once_with(30, directory=r"C:\Users\tester\AppData\Roaming\fensoundswitch\configurations", save_filename="FenSoundSwitch.fsc", file_types=("FenSoundSwitch configuration (*.fsc)",))
 
 
 class WebUiAssetTests(unittest.TestCase):
@@ -238,14 +238,26 @@ class WebUiAssetTests(unittest.TestCase):
 
         for page in ("routes", "actions", "appearance", "settings", "diagnostics"):
             self.assertIn(f"{page}:", script)
-        for method in ("snapshot.get", "route.save", "route.delete", "action.save"):
+        for method in ("snapshot.get", "route.save", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "action.save"):
             self.assertIn(method, script)
         self.assertIn("pick_open_file", script)
         self.assertIn("pick_save_file", script)
+        self.assertIn("configuration_directory", script)
         self.assertIn('event.submitter?.value === "cancel"', script)
         self.assertIn('#editor-close, #editor-cancel', script)
-        self.assertIn("if (shortcut) buttons.unshift", script)
+        self.assertNotIn("if (shortcut) buttons.unshift", script)
         self.assertIn('type === "hotkey"', script)
+        self.assertIn('type === "sequence"', script)
+        self.assertIn("syncConditionalFields", script)
+        self.assertIn("select[data-depends-on]", script)
+        self.assertIn("option.when", script)
+        self.assertIn("openSlotEditor", script)
+        self.assertIn("row._parameters = {}", script)
+        self.assertIn("option.disabled", script)
+        self.assertIn('slotDialog.addEventListener("close"', script)
+        self.assertIn("Discovering monitor inputs. Please wait...", script)
+        self.assertIn('id="slot-refresh"', html)
+        self.assertIn("Add at least one action or wait step.", script)
         self.assertIn('data-hotkey', script)
         self.assertIn("return 111 + number", script)
         self.assertIn('145: "Scroll Lock"', script)
@@ -259,6 +271,7 @@ class WebUiAssetTests(unittest.TestCase):
         self.assertIn('diagnostics: ["Diagnostics", "Review bounded application health information.", ""]', script)
         self.assertIn("previous.textContent !== text", script)
         self.assertIn('id="editor-cancel" type="button"', html)
+        self.assertIn('id="slot-dialog"', html)
         self.assertNotIn("localStorage", script)
         self.assertNotIn("sessionStorage", script)
         self.assertNotIn("console.", script)

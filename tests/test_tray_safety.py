@@ -11,6 +11,7 @@ from windows_platform import (
     TrayIconController,
     TrayMenuState,
     TrayMonitorMenuItem,
+    TraySignalMenuItem,
     WM_TRAY_SHOW,
 )
 
@@ -22,6 +23,7 @@ class TrayIconControllerTests(unittest.TestCase):
         on_restore=None,
         on_refresh=None,
         on_select_monitor=None,
+        on_signal=None,
     ) -> TrayIconController:
         with patch(
             "windows_platform.user32.RegisterWindowMessageW",
@@ -34,6 +36,7 @@ class TrayIconControllerTests(unittest.TestCase):
                 on_error=on_error or (lambda _error: None),
                 on_refresh=on_refresh,
                 on_select_monitor=on_select_monitor,
+                on_signal=on_signal,
             )
 
     def test_duplicate_launch_message_requests_restore(self) -> None:
@@ -235,6 +238,26 @@ class TrayIconControllerTests(unittest.TestCase):
 
         on_select_monitor.assert_called_once_with("old-selection")
 
+    def test_signal_command_uses_the_snapshot_that_created_the_menu(self) -> None:
+        on_signal = Mock()
+        controller = self.make_controller(on_signal=on_signal)
+        controller.update_menu_state(TrayMenuState(signals=(TraySignalMenuItem("Old action", "signal-old"),)))
+
+        def replace_state_before_returning(*_args):
+            controller.update_menu_state(TrayMenuState(signals=(TraySignalMenuItem("New action", "signal-new"),)))
+            return controller.MENU_SIGNAL_BASE
+
+        with patch("windows_platform.user32.CreatePopupMenu", return_value=321), patch(
+            "windows_platform.user32.AppendMenuW", return_value=True,
+        ), patch("windows_platform.user32.GetCursorPos", return_value=True), patch(
+            "windows_platform.user32.SetForegroundWindow", return_value=True,
+        ), patch("windows_platform.user32.TrackPopupMenu", side_effect=replace_state_before_returning), patch(
+            "windows_platform.user32.PostMessageW", return_value=True,
+        ), patch("windows_platform.user32.DestroyMenu", return_value=True):
+            controller._show_context_menu(123)
+
+        on_signal.assert_called_once_with("signal-old")
+
     def test_menu_label_normalization_is_bounded(self) -> None:
         label = TrayIconController._format_menu_label(" A&B\n" + "x" * 120)
 
@@ -262,6 +285,7 @@ class MonitorVolumeAppTrayTests(unittest.TestCase):
         app._post_to_ui = Mock()
         app.refresh_configured_routes = Mock()
         app._select_monitor_from_tray = Mock()
+        app._dispatch_tray_signal = Mock()
         app._handle_tray_error_from_thread = Mock()
         app._sync_tray_menu_state = Mock()
         controller = Mock()
@@ -278,6 +302,12 @@ class MonitorVolumeAppTrayTests(unittest.TestCase):
         queued_callback = app._post_to_ui.call_args.args[0]
         queued_callback()
         app._select_monitor_from_tray.assert_called_once_with("selection")
+
+        app._post_to_ui.reset_mock()
+        callbacks["on_signal"]("signal-test")
+        queued_callback = app._post_to_ui.call_args.args[0]
+        queued_callback()
+        app._dispatch_tray_signal.assert_called_once_with("signal-test")
         controller.start.assert_called_once_with()
 
     def test_window_withdraws_only_after_tray_show_succeeds(self) -> None:
@@ -323,6 +353,17 @@ class MonitorVolumeAppTrayTests(unittest.TestCase):
             "Tray icon failed: Explorer lost the icon. The main window was restored."
         )
 
+    def test_visible_command_center_keeps_the_tray_icon_available(self) -> None:
+        app = self.make_app()
+        app._in_tray = True
+        app._presentation_requested_visible = False
+
+        app._on_web_visibility(True)
+
+        self.assertTrue(app._presentation_requested_visible)
+        self.assertFalse(app._in_tray)
+        app._tray_icon.hide.assert_not_called()
+
     def test_tk_state_is_published_as_an_immutable_tray_snapshot(self) -> None:
         app = self.make_app()
         selected = SavedMonitorSelection(
@@ -339,6 +380,7 @@ class MonitorVolumeAppTrayTests(unittest.TestCase):
         app.current_volume = 52
         app._hotkeys_enabled = True
         app.monitors = [selected_monitor, other_monitor]
+        app._plugin_manager = Mock(action_signals=(Mock(tray_label="Movie mode", signal_id="signal-movie"),))
 
         app._sync_tray_menu_state()
 
@@ -353,6 +395,7 @@ class MonitorVolumeAppTrayTests(unittest.TestCase):
                     TrayMonitorMenuItem("1. Dell", selected, active=True),
                     TrayMonitorMenuItem("2. LG", other),
                 ),
+                signals=(TraySignalMenuItem("Movie mode", "signal-movie"),),
             ),
         )
 

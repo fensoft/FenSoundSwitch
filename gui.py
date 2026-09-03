@@ -67,8 +67,9 @@ from windows_platform import (
     TrayIconController,
     TrayMenuState,
     TrayMonitorMenuItem,
+    TraySignalMenuItem,
 )
-from web_presentation import PresentationSnapshot, WebPresentationController
+from web_presentation import PresentationSnapshot, UserActionError, WebPresentationController
 
 
 RefreshResult: TypeAlias = tuple[list[MonitorRef], SelectionMatch, int | None, Exception | None]
@@ -299,7 +300,7 @@ class MonitorVolumeApp:
         self.route_nav_button.grid(row=0, column=0, sticky="ew")
         self.plugin_nav_button = ttk.Button(
             self.navigation,
-            text="Actions",
+            text="Automations",
             style="Nav.TButton",
             command=lambda: self._show_page("plugins"),
         )
@@ -516,8 +517,8 @@ class MonitorVolumeApp:
             "plugins": (
                 self.plugins_panel,
                 self.plugin_nav_button,
-                "Action plugins",
-                "Configure trusted integrations and their keyboard shortcuts.",
+                "Automations and integrations",
+                "Build ordered steps and configure the integrations they use.",
             ),
             "appearance": (
                 self.appearance_panel,
@@ -871,16 +872,18 @@ class MonitorVolumeApp:
                 on_route_input=self._queue_route_input_delta,
                 on_route_volume=self._queue_route_input_volume,
                 on_route_key=self._queue_route_input_key,
+                on_action_signals_changed=self._sync_tray_menu_state,
             )
             manager.start()
             self._plugin_manager = manager
+            self._sync_tray_menu_state()
             self._overlay = manager.create_overlay_renderer(
                 self.dark_mode,
                 self.high_contrast,
             )
             manager.build_routes_panel(self.routes_panel)
-            manager.build_action_plugins_panel(self.plugins_panel)
             manager.build_appearance_panel(self.appearance_panel)
+            manager.dispatch_startup_automations()
             # Panels are added after the initial window-size lock. Measure them
             # now so a tray-first window never opens at the pre-plugin height.
             self._resize_for_content(force=True)
@@ -923,6 +926,9 @@ class MonitorVolumeApp:
                 on_select_monitor=lambda selection: self._post_to_ui(
                     lambda target=selection: self._select_monitor_from_tray(target)
                 ),
+                on_signal=lambda signal_id: self._post_to_ui(
+                    lambda target=signal_id: self._dispatch_tray_signal(target)
+                ),
             )
             self._sync_tray_menu_state()
             self._tray_icon.start()
@@ -945,7 +951,7 @@ class MonitorVolumeApp:
             post_to_ui=self._post_to_ui,
             get_snapshot=self._web_snapshot,
             dispatch_action=self._dispatch_web_action,
-            allowed_actions={"route.save", "route.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
+            allowed_actions={"route.save", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
             on_exit=self.on_close,
             on_minimize=self._on_web_minimize,
             on_visibility=self._on_web_visibility,
@@ -982,7 +988,7 @@ class MonitorVolumeApp:
             routes.append({"id": route.route_id, "name": route.name, "description": "Audio volume route", "input": {"name": input_name, "summary": ""}, "output": {"name": output_name, "summary": ""}, "summary": f"{status.confirmed_volume}%" if status and status.confirmed_volume is not None else (status.reason if status else "Checking"), "enabled": bool(status and status.confirmed_volume is not None), "values": route_values, "form": {"method": "route.save", "fields": route_fields}})
         actions = []
         for record in manager.records:
-            if not manager._is_action_plugin(record) or not record.plugin_id:
+            if not manager._is_action_plugin(record) or not record.plugin_id or not callable(getattr(record.plugin, "get_plugin_ui", None)):
                 continue
             try:
                 document = manager.get_plugin_ui(record.plugin_id)
@@ -997,19 +1003,35 @@ class MonitorVolumeApp:
                 fields = []
                 for field in document["fields"]:
                     assert isinstance(field, dict)
-                    fields.append({"key": field["id"], "type": type_map.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", [])})
+                    fields.append({"key": field["id"], "type": type_map.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", []), "depends_on": field.get("depends_on")})
                     if not field.get("write_only"): values[str(field["id"])] = field.get("value")
                 submit = next((item for item in document["actions"] if isinstance(item, dict) and item.get("kind") == "submit"), None)
                 ui_action = str(submit.get("id", "")) if isinstance(submit, dict) else ""
-            for shortcut_action in record.shortcut_actions:
-                binding_id = manager._binding_id(record.plugin_id, shortcut_action.action_id)
-                binding = (record.configured_hotkeys or {}).get(binding_id)
-                shortcut_key = f"shortcut__{shortcut_action.action_id}"
-                forward_key = f"forward__{shortcut_action.action_id}"
-                fields.extend([{"key": shortcut_key, "type": "hotkey", "label": shortcut_action.label, "required": False}, {"key": forward_key, "type": "boolean", "label": f"Forward {shortcut_action.label} to other applications"}])
-                values[shortcut_key] = binding.hotkey.to_json() if binding and binding.hotkey else None
-                values[forward_key] = binding.forward_keys if binding else True
-            actions.append({"id": record.plugin_id, "name": record.name, "description": record.display_status, "shortcut": record.shortcut_label, "values": values, "ui_actions": document["actions"] if document else [], "form": {"method": "action.save", "ui_action": ui_action, "fields": fields}})
+            actions.append({"id": record.plugin_id, "name": record.name, "description": record.display_status, "values": values, "ui_actions": document["actions"] if document else [], "form": {"method": "action.save", "ui_action": ui_action, "fields": fields}})
+        signal_options = list(manager.signal_action_options())
+        signals = []
+        for signal in manager.action_signals:
+            signal_options_for_form = list(signal_options)
+            slot_values = []
+            slot_labels = []
+            for slot in signal.slots:
+                if hasattr(slot, "milliseconds"):
+                    milliseconds = int(slot.milliseconds)
+                    slot_values.append({"kind": "wait", "milliseconds": milliseconds})
+                    slot_labels.append(f"wait {milliseconds / 1000:g}s")
+                else:
+                    target = f"{slot.plugin_id}/{slot.action_id}"
+                    if not any(option["value"] == target for option in signal_options_for_form):
+                        signal_options_for_form.append({"label": f"Unavailable: {target}", "value": target, "configurable": False, "disabled": True})
+                    slot_values.append({"kind": "action", "target": target, "parameters": slot.parameters})
+                    label = next((str(option["label"]) for option in signal_options if option["value"] == target), target)
+                    summary = manager.slot_summary(slot.plugin_id, slot.action_id, slot.parameters)
+                    slot_labels.append(f"{label} ({summary})" if summary else label)
+            trigger_labels = []
+            if signal.hotkey.hotkey is not None: trigger_labels.append(signal.hotkey.hotkey.label)
+            if signal.tray_label is not None: trigger_labels.append(f"Tray: {signal.tray_label}")
+            if signal.on_start: trigger_labels.append("App start")
+            signals.append({"id": signal.signal_id, "name": signal.name, "description": " then ".join(slot_labels), "trigger": " + ".join(trigger_labels) or "No trigger", "values": {"name": signal.name, "hotkey": signal.hotkey.hotkey.to_json() if signal.hotkey.hotkey is not None else None, "keyboard_enabled": signal.hotkey.hotkey is not None, "forward_keys": signal.hotkey.forward_keys, "tray_label": signal.tray_label or "", "tray_enabled": signal.tray_label is not None, "on_start": signal.on_start, "slots": slot_values}, "form": {"method": "signal.save", "fields": [{"key": "name", "type": "text", "label": "Automation name", "required": True, "max_length": 80}, {"key": "on_start", "type": "boolean", "label": "Run when the app starts"}, {"key": "keyboard_enabled", "type": "boolean", "label": "Run when a key is pressed"}, {"key": "hotkey", "type": "hotkey", "label": "Key combination", "visible_when": "keyboard_enabled"}, {"key": "forward_keys", "type": "boolean", "label": "Forward keys to other applications", "visible_when": "keyboard_enabled"}, {"key": "tray_enabled", "type": "boolean", "label": "Run when a tray menu option is chosen"}, {"key": "tray_label", "type": "text", "label": "Tray menu option text", "max_length": 80, "visible_when": "tray_enabled"}, {"key": "slots", "type": "sequence", "label": "Ordered steps", "options": signal_options_for_form}]}})
         renderers = []
         for record in manager.records:
             if not record.initialized or not record.is_overlay_renderer or not record.plugin_id: continue
@@ -1025,7 +1047,8 @@ class MonitorVolumeApp:
         diagnostic_text = read_log_contents()
         if len(diagnostic_text) > 12000: diagnostic_text = diagnostic_text[-12000:]
         recent_archives = [{"name": path.stem, "path": str(path)} for path in recent_configurations()]
-        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "routes": routes, "actions": actions, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}}}
+        signal_form = {"method": "signal.save", "fields": [{"key": "name", "type": "text", "label": "Automation name", "required": True, "max_length": 80}, {"key": "on_start", "type": "boolean", "label": "Run when the app starts", "default": False}, {"key": "keyboard_enabled", "type": "boolean", "label": "Run when a key is pressed", "default": False}, {"key": "hotkey", "type": "hotkey", "label": "Key combination", "visible_when": "keyboard_enabled"}, {"key": "forward_keys", "type": "boolean", "label": "Forward keys to other applications", "default": True, "visible_when": "keyboard_enabled"}, {"key": "tray_enabled", "type": "boolean", "label": "Run when a tray menu option is chosen", "default": False}, {"key": "tray_label", "type": "text", "label": "Tray menu option text", "max_length": 80, "visible_when": "tray_enabled"}, {"key": "slots", "type": "sequence", "label": "Ordered steps", "options": signal_options}]}
+        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "routes": routes, "signals": signals, "actions": actions, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form}}
         return PresentationSnapshot(self._presentation_revision, snapshot)
 
     def _dispatch_web_action(self, action: str, arguments: Mapping[str, Any]) -> Any:
@@ -1057,14 +1080,84 @@ class MonitorVolumeApp:
             if not ok: raise ValueError("The route could not be saved.")
         elif action == "route.delete":
             if not manager.remove_route(str(arguments.get("id", ""))): raise ValueError("The route could not be removed.")
+        elif action == "signal.save":
+            values = arguments.get("values", {})
+            if not isinstance(values, dict): raise ValueError("Automation values are invalid.")
+            if not isinstance(values.get("slots"), list) or not values["slots"]:
+                raise UserActionError("Add at least one action or wait step.")
+            on_start = values.get("on_start", False)
+            keyboard_enabled = values.get("keyboard_enabled", False)
+            tray_enabled = values.get("tray_enabled", False)
+            if not all(isinstance(value, bool) for value in (on_start, keyboard_enabled, tray_enabled)):
+                raise UserActionError("Automation triggers are invalid.")
+            if not on_start and not keyboard_enabled and not tray_enabled:
+                raise UserActionError("Choose at least one trigger.")
+            if keyboard_enabled and values.get("hotkey") is None:
+                raise UserActionError("Press the key combination that should run this automation.")
+            if tray_enabled and (not isinstance(values.get("tray_label"), str) or not values["tray_label"].strip()):
+                raise UserActionError("Enter the tray menu option text.")
+            signal_id = arguments.get("id")
+            if signal_id is not None and not isinstance(signal_id, str): raise ValueError("Automation ID is invalid.")
+            hotkey = values.get("hotkey") if keyboard_enabled else None
+            tray_label = values.get("tray_label") if tray_enabled else None
+            if not manager.save_action_signal(signal_id, values.get("name"), hotkey, values.get("forward_keys", True), tray_label, values.get("slots"), on_start):
+                raise ValueError("The automation could not be saved.")
+        elif action == "signal.delete":
+            if not manager.remove_action_signal(str(arguments.get("id", ""))): raise ValueError("The automation could not be removed.")
+        elif action == "signal.run":
+            manager.dispatch_action_signal(str(arguments.get("id", "")))
+        elif action == "slot.ui":
+            target = arguments.get("target")
+            parameters = arguments.get("parameters", {})
+            if not isinstance(target, str) or not isinstance(parameters, dict):
+                raise ValueError("Automation step configuration is invalid.")
+            plugin_id, separator, action_id = target.partition("/")
+            if not separator:
+                raise ValueError("Automation step target is invalid.")
+            document = manager.get_slot_ui(plugin_id, action_id, parameters)
+            if document is None:
+                raise ValueError("That automation step has no configuration.")
+            type_map = {"integer": "number", "choice": "select"}
+            fields = []
+            values: dict[str, object] = {}
+            for field in document["fields"]:
+                if not isinstance(field, dict):
+                    continue
+                fields.append({"key": field["id"], "type": type_map.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", []), "depends_on": field.get("depends_on")})
+                if not field.get("write_only"):
+                    values[str(field["id"])] = field.get("value")
+            submit = next((item for item in document["actions"] if isinstance(item, dict) and item.get("kind") == "submit"), None)
+            state = str(document.get("state", "ready"))
+            if state == "ready" and not isinstance(submit, dict):
+                raise ValueError("Automation step configuration has no save action.")
+            return {"title": document["title"], "description": document.get("description"), "state": state, "fields": fields, "values": values, "actions": document["actions"], "action_id": submit["id"] if isinstance(submit, dict) else ""}
+        elif action == "slot.action":
+            target = arguments.get("target")
+            values = arguments.get("values", {})
+            ui_action_id = arguments.get("action_id")
+            if not isinstance(target, str) or not isinstance(values, dict) or not isinstance(ui_action_id, str):
+                raise ValueError("Automation step configuration is invalid.")
+            plugin_id, separator, action_id = target.partition("/")
+            if not separator:
+                raise ValueError("Automation step target is invalid.")
+            return manager.invoke_slot_ui_action(plugin_id, action_id, ui_action_id, values)
+        elif action == "slot.save":
+            target = arguments.get("target")
+            values = arguments.get("values", {})
+            ui_action_id = arguments.get("action_id")
+            if not isinstance(target, str) or not isinstance(values, dict) or not isinstance(ui_action_id, str):
+                raise ValueError("Automation step configuration is invalid.")
+            plugin_id, separator, action_id = target.partition("/")
+            if not separator:
+                raise ValueError("Automation step target is invalid.")
+            result = manager.invoke_slot_ui_action(plugin_id, action_id, ui_action_id, values)
+            if result.get("status") != "save":
+                raise ValueError("Automation step configuration was not saved.")
+            return {"parameters": result["values"], "message": result.get("message")}
         elif action == "action.save":
             values = arguments.get("values", {})
             plugin_id = str(arguments.get("id", ""))
             if not isinstance(values, dict): raise ValueError("Plugin values are invalid.")
-            record = manager._records_by_id.get(plugin_id)
-            if record is not None:
-                for shortcut_action in record.shortcut_actions:
-                    manager.set_plugin_shortcut(plugin_id, shortcut_action.action_id, values.get(f"shortcut__{shortcut_action.action_id}"), bool(values.get(f"forward__{shortcut_action.action_id}", True)))
             document = manager.get_plugin_ui(plugin_id)
             if document is None:
                 manager.set_action_plugin_enabled(plugin_id, bool(values.get("enabled")))
@@ -1091,7 +1184,6 @@ class MonitorVolumeApp:
         if visible:
             self._presentation_requested_visible = True
             self._in_tray = False
-            if self._tray_icon is not None: self._tray_icon.hide()
 
     def _on_web_minimize(self) -> None:
         self._presentation_requested_visible = False
@@ -1888,8 +1980,20 @@ class MonitorVolumeApp:
                 current_volume=getattr(self, "current_volume", None),
                 routing_enabled=bool(getattr(self, "_hotkeys_enabled", False)),
                 monitors=tuple(monitor_items),
+                signals=tuple(
+                    TraySignalMenuItem(signal.tray_label, signal.signal_id)
+                    for signal in getattr(getattr(self, "_plugin_manager", None), "action_signals", ())
+                    if signal.tray_label is not None
+                ),
             )
         )
+
+    def _dispatch_tray_signal(self, signal_id: str) -> None:
+        if self._closing:
+            return
+        manager = getattr(self, "_plugin_manager", None)
+        if manager is not None:
+            manager.dispatch_action_signal(signal_id)
 
     def _select_monitor_from_tray(self, selection: SavedMonitorSelection) -> None:
         if self._closing:

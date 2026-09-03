@@ -30,12 +30,14 @@ class DiscordPureFunctionTests(unittest.TestCase):
                 {"device_id": "speaker", "available_devices": [{"id": "default"}]}
             )
 
-    def test_plugin_declares_only_its_named_host_owned_shortcut_action(self) -> None:
+    def test_plugin_declares_only_its_named_signal_slot(self) -> None:
         plugin = discord.DiscordOutputPlugin()
         self.assertEqual(
-            plugin.get_shortcut_actions()[0].action_id,
+            plugin.get_slot_actions()[0].action_id,
             "switch-output",
         )
+        self.assertFalse(hasattr(plugin, "get_shortcut_actions"))
+        self.assertFalse(hasattr(plugin, "trigger_shortcut"))
 
 
 class DiscordCredentialTests(unittest.TestCase):
@@ -235,7 +237,7 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
         plugin._operation_lock.acquire()
         try:
             with patch("plugins.discord_output_plugin._load_saved_oauth") as load:
-                plugin.trigger_shortcut("switch-output")
+                plugin.run_slot("switch-output", {})
             load.assert_not_called()
         finally:
             plugin._operation_lock.release()

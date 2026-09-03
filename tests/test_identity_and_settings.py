@@ -203,7 +203,7 @@ class SettingsTests(unittest.TestCase):
         settings.save_selected_monitor_key(selection)
         self.assertEqual(settings.load_selected_monitor_key(), selection)
         payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["schema_version"], 8)
+        self.assertEqual(payload["schema_version"], settings.SCHEMA_VERSION)
         self.assertEqual(payload["change_speed"], "slow")
 
     def test_absent_current_settings_are_copied_from_legacy_without_mutation(self) -> None:
@@ -244,7 +244,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.load_change_speed(), "medium")
         self.assertIsNone(settings.load_selected_monitor_key())
         payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
-        self.assertEqual(payload, {"schema_version": 8, "change_speed": "medium"})
+        self.assertEqual(payload, {"schema_version": settings.SCHEMA_VERSION, "change_speed": "medium"})
 
     def test_active_volume_provider_round_trip_preserves_legacy_selection(self) -> None:
         self.write_json({"schema_version": 2, "selected_monitor": {"description": "Monitor", "identity": {"device_path": "path"}}})
@@ -264,6 +264,54 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.load_active_volume_provider_id(), "ddc-volume")
         self.assertEqual(settings.load_selected_monitor_key(), selection)
         self.assertEqual(settings.load_change_speed(), "fast")
+
+    def test_action_signals_round_trip_preserves_routes_and_ordered_slots(self) -> None:
+        route = settings.VolumeRoute("route-test", "Desk", settings.RouteEndpoint("windows-volume-keys", {}), settings.RouteEndpoint("ddc-volume", {}))
+        settings.save_input_routes([route])
+        signal = settings.ActionSignal(
+            "signal-movie",
+            "Movie mode",
+            settings.ActionHotkeyBinding(settings.HotkeySpec(0, 0x70), False),
+            "Movie mode",
+            (
+                settings.ActionSlot("windows-default-device", "cycle-playback", {}),
+                settings.WaitSlot(750),
+                settings.ActionSlot("windows-default-device", "cycle-voice-output", {"profile": "voice"}),
+            ),
+            True,
+        )
+
+        settings.save_action_signals([signal])
+
+        self.assertEqual(settings.load_action_signals(), (signal,))
+        self.assertEqual(settings.load_input_routes(), (route,))
+        payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["schema_version"], settings.SCHEMA_VERSION)
+        self.assertEqual([slot["kind"] for slot in payload["action_signals"][0]["slots"]], ["action", "wait", "action"])
+        self.assertTrue(payload["action_signals"][0]["on_start"])
+
+    def test_app_start_is_a_valid_automation_trigger_by_itself(self) -> None:
+        signal = settings.ActionSignal(
+            "signal-startup",
+            "Startup audio",
+            settings.ActionHotkeyBinding(None),
+            None,
+            (settings.WaitSlot(1),),
+            True,
+        )
+        settings.save_action_signals([signal])
+        self.assertEqual(settings.load_action_signals(), (signal,))
+
+    def test_action_signals_fail_closed_for_invalid_trigger_wait_or_slots(self) -> None:
+        invalid_values = (
+            [{"signal_id": "signal-test", "name": "Test", "hotkey": None, "forward_keys": True, "tray_label": None, "slots": [{"kind": "wait", "milliseconds": 1}]}],
+            [{"signal_id": "signal-test", "name": "Test", "hotkey": None, "forward_keys": True, "tray_label": "Test", "slots": [{"kind": "wait", "milliseconds": settings.MAX_WAIT_MILLISECONDS + 1}]}],
+            [{"signal_id": "signal-test", "name": "Test", "hotkey": None, "forward_keys": True, "tray_label": "Test", "slots": []}],
+        )
+        for value in invalid_values:
+            with self.subTest(value=value):
+                self.write_json({"schema_version": settings.SCHEMA_VERSION, "action_signals": value})
+                self.assertEqual(settings.load_action_signals(), ())
 
     def test_legacy_overlay_mode_is_read_then_removed_without_touching_other_settings(self) -> None:
         self.write_json({"schema_version": 7, "overlay_mode": "current", "change_speed": "fast"})
@@ -288,7 +336,7 @@ class SettingsTests(unittest.TestCase):
         settings.save_input_routes(routes)
 
         payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["schema_version"], 8)
+        self.assertEqual(payload["schema_version"], settings.SCHEMA_VERSION)
         self.assertEqual(payload["volume_routes"][0]["name"], "windows-volume-keys to onkyo-volume")
         self.assertEqual(payload["change_speed"], "fast")
         self.assertEqual(payload["unrelated"], {"keep": True})

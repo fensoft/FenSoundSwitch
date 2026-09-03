@@ -407,9 +407,10 @@ class WebApi:
             return {"ok": False, "error": {"code": "dialog_error", "message": "File dialog options are invalid."}}
         supplied = options or {}
         title = supplied.get("title", "Select a file")
+        directory = supplied.get("directory", "")
         filename = supplied.get("filename", "")
         file_types = supplied.get("file_types", ())
-        if not isinstance(title, str) or len(title) > 120 or not isinstance(filename, str) or len(filename) > 255:
+        if not isinstance(title, str) or len(title) > 120 or not isinstance(directory, str) or len(directory) > 1024 or not isinstance(filename, str) or len(filename) > 255:
             return {"ok": False, "error": {"code": "dialog_error", "message": "File dialog options are invalid."}}
         if not isinstance(file_types, list) or len(file_types) > 8 or not all(isinstance(value, str) and len(value) <= 120 for value in file_types):
             return {"ok": False, "error": {"code": "dialog_error", "message": "File type options are invalid."}}
@@ -419,7 +420,7 @@ class WebApi:
             self._window.show()
             result = self._window.create_file_dialog(
                 kind,
-                directory="",
+                directory=directory,
                 save_filename=filename if save else "",
                 file_types=tuple(file_types),
             )

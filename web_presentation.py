@@ -55,6 +55,12 @@ class InvalidPresentationMessage(PresentationError):
     pass
 
 
+class UserActionError(ValueError):
+    """A bounded validation message that is safe to return to the local UI."""
+
+    pass
+
+
 @dataclass(frozen=True)
 class ChildCommand:
     argv: tuple[str, ...]
@@ -408,6 +414,8 @@ class WebPresentationController:
             return self._error_response(request_id, "invalid_request", str(exc))
         except TimeoutError:
             return self._error_response(request_id, "ui_timeout", "UI dispatch timed out.")
+        except UserActionError as exc:
+            return self._error_response(request_id, "action_invalid", str(exc))
         except Exception as exc:
             self._logger.warning("Presentation request failed (%s).", exc.__class__.__name__)
             return self._error_response(request_id, "request_failed", "Request failed.")
@@ -570,6 +578,7 @@ __all__ = [
     "CHILD_MODE_ARGUMENT",
     "ChildCommand",
     "InvalidPresentationMessage",
+    "UserActionError",
     "MAX_MESSAGE_BYTES",
     "PIPE_ARGUMENT",
     "PIPE_FAMILY",

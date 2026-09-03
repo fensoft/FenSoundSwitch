@@ -94,7 +94,10 @@ class PluginUiApiTests(unittest.TestCase):
         )
         for plugin, _module in receiver_cases:
             result = plugin.invoke_ui_action("save", {"host": " receiver.local ", "port": "1234"})
-            self.assertEqual({"host": "receiver.local", "port": 1234}, result["values"])
+            self.assertEqual(
+                {"host": "receiver.local", "port": 1234, "power_on": False, "startup_input": ""},
+                result["values"],
+            )
             self.assertEqual(result, _json_round_trip(result))
 
         keyboard_values = {

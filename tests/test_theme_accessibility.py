@@ -184,7 +184,7 @@ class KeyboardAccessibilityTests(unittest.TestCase):
         app.route_nav_button.configure.assert_called_with(style="Nav.TButton")
         app.appearance_nav_button.configure.assert_called_with(style="Nav.TButton")
         app.settings_nav_button.configure.assert_called_with(style="Nav.TButton")
-        app.page_title_var.set.assert_called_with("Action plugins")
+        app.page_title_var.set.assert_called_with("Automations and integrations")
 
         app._show_page("routes")
 

@@ -2,7 +2,7 @@
 
 const pages = {
   routes: ["Routes", "Connect an input to the volume output it controls.", "New route"],
-  actions: ["Actions", "Configure integrations and keyboard shortcuts.", ""],
+  actions: ["Automations", "Run an ordered set of steps from a keyboard or tray trigger.", "New automation"],
   appearance: ["Appearance", "Choose how volume changes appear on screen.", ""],
   settings: ["Settings", "Manage startup and configuration backups.", ""],
   diagnostics: ["Diagnostics", "Review bounded application health information.", ""]
@@ -15,6 +15,8 @@ const primaryAction = document.querySelector("#primary-action");
 const editorDialog = document.querySelector("#editor-dialog");
 const editorForm = document.querySelector("#editor-form");
 const confirmDialog = document.querySelector("#confirm-dialog");
+const slotDialog = document.querySelector("#slot-dialog");
+const slotForm = document.querySelector("#slot-form");
 
 function element(tag, options = {}, children = []) {
   const node = document.createElement(tag);
@@ -168,12 +170,22 @@ function endpoint(label, data) {
 
 function renderActions() {
   const actions = safeArray(state.snapshot.actions);
-  if (!actions.length) { content.replaceChildren(emptyState("⌁", "No actions available", "Action plugins will appear here when enabled.", "", null)); return; }
+  const signals = safeArray(state.snapshot.signals);
+  if (!actions.length && !signals.length) { content.replaceChildren(emptyState("⌁", "No steps available", "Enable or install an integration that provides automation steps.", "", null)); return; }
   const stack = element("div", { class: "stack" });
+  stack.append(element("div", { class: "section-heading" }, [element("div", {}, [element("h2", { text: "Automations" }), element("p", { class: "muted", text: "One trigger runs every step in order." })])]));
+  if (!signals.length) stack.append(emptyState("→", "No automations yet", "Choose a keyboard shortcut, tray item, or both, then add action and wait steps.", "Create automation", () => openEntityEditor("signal", null)));
+  for (const signal of signals) {
+    const id = safeText(signal.id);
+    stack.append(element("article", { class: "card setting-row" }, [
+      element("div", {}, [element("h3", { text: safeText(signal.name, "Automation") }), element("p", { class: "muted", text: safeText(signal.description, "Ordered steps") }), element("p", { class: "signal-trigger", text: safeText(signal.trigger, "No trigger") })]),
+      element("div", { class: "button-row" }, [element("button", { class: "secondary", type: "button", text: "Run", onclick: () => execute("signal.run", { id }) }), element("button", { class: "secondary", type: "button", text: "Edit", onclick: () => openEntityEditor("signal", signal) }), element("button", { class: "text-button", type: "button", text: "Remove", onclick: () => confirmAction("Remove automation?", `Remove ${safeText(signal.name, "this automation")}? Its keyboard and tray triggers will stop working.`, "signal.delete", { id }) })])
+    ]));
+  }
+  stack.append(element("div", { class: "section-heading" }, [element("div", {}, [element("h2", { text: "Integrations" }), element("p", { class: "muted", text: "Configure integrations used by automation steps." })])]));
   for (const action of actions) {
-    const shortcut = safeText(action.shortcut).trim();
-    const buttons = [element("button", { class: "secondary", type: "button", text: "Configure", onclick: () => openEntityEditor("action", action) })];
-    if (shortcut) buttons.unshift(badge(shortcut));
+    const buttons = [];
+    if (safeArray(action.form?.fields).length || action.form?.ui_action) buttons.push(element("button", { class: "secondary", type: "button", text: "Configure", onclick: () => openEntityEditor("action", action) }));
     for (const command of safeArray(action.ui_actions).filter(item => item.kind === "action")) {
       const params = { id: action.id, action_id: command.id, values: action.values || {} };
       buttons.push(element("button", { class: "secondary", type: "button", text: safeText(command.label, "Run"), onclick: () => command.confirm ? confirmAction(safeText(command.label, "Confirm"), command.confirm, "plugin.action", params) : execute("plugin.action", params) }));
@@ -235,16 +247,18 @@ function renderDiagnostics() {
 
 function openEntityEditor(kind, entity) {
   const schemas = state.snapshot?.forms && typeof state.snapshot.forms === "object" ? state.snapshot.forms : {};
-  const schema = kind === "route" ? (entity?.form || schemas.route) : entity?.form;
+  const schema = kind === "route" ? (entity?.form || schemas.route) : kind === "signal" ? (entity?.form || schemas.signal) : entity?.form;
   const fields = safeArray(schema?.fields);
-  state.editor = { kind, id: entity?.id || null, method: safeText(schema?.method, kind === "route" ? "route.save" : "action.save") };
-  document.querySelector("#editor-kicker").textContent = kind === "route" ? "ROUTE" : "ACTION";
-  document.querySelector("#editor-title").textContent = entity ? `Edit ${safeText(entity.name, kind)}` : "Create route";
+  state.editor = { kind, id: entity?.id || null, method: safeText(schema?.method, kind === "route" ? "route.save" : kind === "signal" ? "signal.save" : "action.save") };
+  document.querySelector("#editor-kicker").textContent = kind === "signal" ? "AUTOMATION" : kind.toUpperCase();
+  document.querySelector("#editor-title").textContent = entity ? `Edit ${safeText(entity.name, kind)}` : `Create ${kind === "signal" ? "automation" : kind}`;
   document.querySelector("#editor-error").hidden = true;
   const container = document.querySelector("#editor-fields");
   container.replaceChildren();
   const values = entity?.values && typeof entity.values === "object" ? entity.values : {};
   for (const field of fields) container.append(renderField(field, values[field.key]));
+  syncConditionalFields(container);
+  for (const controller of container.querySelectorAll('input[type="checkbox"], select')) controller.addEventListener("change", () => syncConditionalFields(container));
   if (!fields.length) container.append(element("p", { class: "muted", text: "This item has no configurable fields." }));
   editorDialog.showModal();
   window.setTimeout(() => container.querySelector("input, select, textarea")?.focus(), 0);
@@ -254,6 +268,7 @@ function renderField(field, current) {
   const key = safeText(field.key);
   const type = safeText(field.type, "text");
   const wrapper = element("div", { class: type === "boolean" ? "check-field" : "field" });
+  if (field.visible_when) wrapper.dataset.visibleWhen = safeText(field.visible_when);
   let input;
   if (type === "hotkey") {
     input = element("input", { id: `field-${key}`, name: key, type: "text", readonly: "", value: hotkeyLabel(current), "data-hotkey": JSON.stringify(current ?? null), placeholder: "Press a key combination" });
@@ -270,22 +285,163 @@ function renderField(field, current) {
     }, true);
     input.addEventListener("keyup", event => { event.preventDefault(); event.stopPropagation(); if (event.code === "AltRight") input.dataset.rightAlt = "false"; }, true);
   }
+  else if (type === "sequence") {
+    input = renderSequenceField(key, field, current);
+  }
   else if (type === "select") {
     input = element("select", { id: `field-${key}`, name: key, required: field.required ? "" : null });
-    for (const option of safeArray(field.options)) {
-      const encoded = JSON.stringify(option.value);
-      input.append(element("option", { value: encoded, text: safeText(option.label, String(option.value ?? "")), selected: encoded === JSON.stringify(current) ? "" : null, "data-json": "true" }));
-    }
+    input._allOptions = safeArray(field.options);
+    input._desiredValue = JSON.stringify(current);
+    input._renderOptions = controllingValue => {
+      const available = field.depends_on ? input._allOptions.filter(option => JSON.stringify(option.when) === controllingValue) : input._allOptions;
+      const previous = input.value || input._desiredValue;
+      input.replaceChildren();
+      for (const option of available) {
+        const encoded = JSON.stringify(option.value);
+        input.append(element("option", { value: encoded, text: safeText(option.label, String(option.value ?? "")), selected: encoded === previous ? "" : null, "data-json": "true" }));
+      }
+    };
+    if (field.depends_on) input.dataset.dependsOn = safeText(field.depends_on); else input._renderOptions("");
   } else if (type === "textarea") {
     input = element("textarea", { id: `field-${key}`, name: key, required: field.required ? "" : null, maxlength: Number.isInteger(field.max_length) ? field.max_length : 4096 }); input.value = safeText(current);
   } else {
     input = element("input", { id: `field-${key}`, name: key, type: type === "boolean" ? "checkbox" : (["number", "password"].includes(type) ? type : "text"), required: field.required ? "" : null, min: field.min, max: field.max, maxlength: Number.isInteger(field.max_length) ? field.max_length : 512, autocomplete: type === "password" ? "off" : "on" });
-    if (type === "boolean") input.checked = Boolean(current); else input.value = current ?? safeText(field.default);
+    if (type === "boolean") input.checked = Boolean(current ?? field.default); else input.value = current ?? safeText(field.default);
   }
   const label = element("label", { for: `field-${key}`, text: safeText(field.label, key) });
   if (type === "boolean") wrapper.append(input, label); else wrapper.append(label, input);
   if (field.description) wrapper.append(element("small", { text: safeText(field.description) }));
   return wrapper;
+}
+
+function syncConditionalFields(container) {
+  for (const wrapper of container.querySelectorAll("[data-visible-when]")) {
+    const controller = container.querySelector(`#field-${CSS.escape(wrapper.dataset.visibleWhen)}`);
+    wrapper.hidden = !(controller instanceof HTMLInputElement && controller.type === "checkbox" && controller.checked);
+  }
+  for (const select of container.querySelectorAll("select[data-depends-on]")) {
+    const controller = container.querySelector(`#field-${CSS.escape(select.dataset.dependsOn)}`);
+    if (typeof select._renderOptions === "function") select._renderOptions(controller?.value || "");
+  }
+}
+
+function renderSequenceField(key, field, current) {
+  const root = element("div", { id: `field-${key}`, name: key, class: "sequence-editor" });
+  const list = element("div", { class: "sequence-list" });
+  const options = safeArray(field.options);
+  function addSlot(value) {
+    const slot = value && typeof value === "object" ? value : { kind: "action", target: options[0]?.value || "", parameters: {} };
+    const kind = slot.kind === "wait" ? "wait" : "action";
+    const row = element("div", { class: "sequence-row", "data-kind": kind });
+    const index = element("strong", { class: "sequence-index" });
+    let control;
+    if (kind === "wait") {
+      control = element("label", { class: "sequence-wait" }, [element("span", { text: "Wait" }), element("input", { type: "number", min: "0", max: "300000", step: "100", value: Number.isInteger(slot.milliseconds) ? slot.milliseconds : 1000, "aria-label": "Wait milliseconds" }), element("span", { text: "ms" })]);
+    } else {
+      control = element("select", { "aria-label": "Action step" });
+      for (const option of options) control.append(element("option", { value: safeText(option.value), text: safeText(option.label, option.value), selected: option.value === slot.target ? "" : null, disabled: option.disabled ? "" : null, "data-configurable": option.configurable ? "true" : "false" }));
+    }
+    const configure = element("button", { class: "secondary sequence-config", type: "button", text: "Configure", onclick: () => openSlotEditor(row, control.value) });
+    function refreshConfigure() { configure.hidden = kind !== "action" || control.selectedOptions?.[0]?.dataset.configurable !== "true"; }
+    if (kind === "action") control.addEventListener("change", () => { row._parameters = {}; refreshConfigure(); });
+    const moveUp = element("button", { class: "icon-button", type: "button", text: "↑", title: "Move up", "aria-label": "Move step up", onclick: () => { row.previousElementSibling?.before(row); refresh(); } });
+    const moveDown = element("button", { class: "icon-button", type: "button", text: "↓", title: "Move down", "aria-label": "Move step down", onclick: () => { row.nextElementSibling?.after(row); refresh(); } });
+    const remove = element("button", { class: "icon-button", type: "button", text: "×", title: "Remove step", "aria-label": "Remove step", onclick: () => { row.remove(); refresh(); } });
+    row._parameters = slot.parameters && typeof slot.parameters === "object" ? slot.parameters : {};
+    row.append(index, control, configure, moveUp, moveDown, remove); list.append(row); refreshConfigure(); refresh();
+  }
+  function refresh() { [...list.children].forEach((row, index) => { row.querySelector(".sequence-index").textContent = String(index + 1); }); }
+  root._sequenceValue = () => [...list.children].map(row => row.dataset.kind === "wait" ? { kind: "wait", milliseconds: Number(row.querySelector("input").value) } : { kind: "action", target: row.querySelector("select").value, parameters: row._parameters || {} });
+  for (const slot of safeArray(current)) addSlot(slot);
+  const addAction = element("button", { class: "secondary", type: "button", text: "Add action step", disabled: options.length ? null : "", onclick: () => addSlot(null) });
+  const addWait = element("button", { class: "secondary", type: "button", text: "Add wait step", onclick: () => addSlot({ kind: "wait", milliseconds: 1000 }) });
+  root.append(list, element("div", { class: "button-row sequence-add" }, [addAction, addWait]));
+  return root;
+}
+
+async function openSlotEditor(row, target) {
+  state.slotEditor = { row, target, actionId: "", refreshActionId: "" };
+  document.querySelector("#slot-title").textContent = "Configure step";
+  document.querySelector("#slot-description").hidden = true;
+  document.querySelector("#slot-fields").replaceChildren(element("p", { class: "muted", text: "Discovering monitor inputs. Please wait..." }));
+  document.querySelector("#slot-error").hidden = true;
+  document.querySelector("#slot-refresh").hidden = true;
+  document.querySelector("#slot-save").hidden = true;
+  slotDialog.showModal();
+  await loadSlotEditor();
+}
+
+async function loadSlotEditor() {
+  const editor = state.slotEditor;
+  if (!editor) return;
+  try {
+    const form = await nativeRequest("slot.ui", { target: editor.target, parameters: editor.row._parameters || {} });
+    if (state.slotEditor !== editor) return;
+    editor.actionId = safeText(form.action_id);
+    editor.refreshActionId = safeText(safeArray(form.actions).find(action => action.kind === "action")?.id);
+    document.querySelector("#slot-title").textContent = safeText(form.title, "Configure step");
+    const loading = form.state === "loading";
+    const ready = form.state === "ready";
+    const description = document.querySelector("#slot-description");
+    description.textContent = safeText(form.description);
+    description.hidden = loading || !description.textContent;
+    const container = document.querySelector("#slot-fields");
+    container.replaceChildren();
+    if (loading) {
+      container.append(element("p", { class: "muted", text: "Discovering monitor inputs. Please wait..." }));
+    } else if (ready) {
+      const values = form.values && typeof form.values === "object" ? form.values : {};
+      for (const field of safeArray(form.fields)) container.append(renderField(field, values[field.key]));
+      syncConditionalFields(container);
+      for (const controller of container.querySelectorAll('input[type="checkbox"], select')) controller.addEventListener("change", () => syncConditionalFields(container));
+    }
+    const refresh = document.querySelector("#slot-refresh");
+    refresh.hidden = !editor.refreshActionId;
+    refresh.disabled = loading;
+    document.querySelector("#slot-save").hidden = !ready;
+    document.querySelector("#slot-error").hidden = true;
+    if (loading) window.setTimeout(() => { if (state.slotEditor === editor) loadSlotEditor(); }, 250);
+    else window.setTimeout(() => container.querySelector("input, select, textarea, button")?.focus(), 0);
+  } catch (error) {
+    if (state.slotEditor !== editor) return;
+    const target = document.querySelector("#slot-error");
+    target.textContent = safeText(error.message, "Step configuration is unavailable.");
+    target.hidden = false;
+    target.focus();
+  }
+}
+
+async function refreshSlotEditor() {
+  const editor = state.slotEditor;
+  if (!editor?.refreshActionId) return;
+  const refresh = document.querySelector("#slot-refresh");
+  refresh.disabled = true;
+  document.querySelector("#slot-save").hidden = true;
+  document.querySelector("#slot-fields").replaceChildren(element("p", { class: "muted", text: "Discovering monitor inputs. Please wait..." }));
+  try {
+    await nativeRequest("slot.action", { target: editor.target, action_id: editor.refreshActionId, values: {} });
+    await loadSlotEditor();
+  } catch (error) {
+    const target = document.querySelector("#slot-error"); target.textContent = safeText(error.message, "Monitor discovery could not start."); target.hidden = false; target.focus();
+    refresh.disabled = false;
+  }
+}
+
+async function saveSlotEditor(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") { slotDialog.close("cancel"); state.slotEditor = null; return; }
+  if (!state.slotEditor || !slotForm.reportValidity()) return;
+  const save = document.querySelector("#slot-save");
+  save.disabled = true; save.textContent = "Saving…";
+  const values = {};
+  for (const input of document.querySelector("#slot-fields").querySelectorAll("[name]")) values[input.getAttribute("name")] = input.dataset.hotkey !== undefined ? JSON.parse(input.dataset.hotkey) : input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.selectedOptions?.[0]?.dataset.json === "true" ? JSON.parse(input.value) : input.value;
+  try {
+    const result = await nativeRequest("slot.save", { target: state.slotEditor.target, action_id: state.slotEditor.actionId, values });
+    state.slotEditor.row._parameters = result.parameters || {};
+    slotDialog.close(); state.slotEditor = null;
+  } catch (error) {
+    const target = document.querySelector("#slot-error"); target.textContent = safeText(error.message, "The step could not be saved."); target.hidden = false; target.focus();
+  } finally { save.disabled = false; save.textContent = "Save step"; }
 }
 
 async function saveEditor(event) {
@@ -299,7 +455,31 @@ async function saveEditor(event) {
   const save = document.querySelector("#editor-save");
   save.disabled = true; save.textContent = "Saving…";
   const values = {};
-  for (const input of editorForm.querySelectorAll("[name]")) values[input.name] = input.dataset.hotkey !== undefined ? JSON.parse(input.dataset.hotkey) : input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.selectedOptions?.[0]?.dataset.json === "true" ? JSON.parse(input.value) : input.value;
+  for (const input of editorForm.querySelectorAll("[name]")) values[input.getAttribute("name")] = typeof input._sequenceValue === "function" ? input._sequenceValue() : input.dataset.hotkey !== undefined ? JSON.parse(input.dataset.hotkey) : input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.selectedOptions?.[0]?.dataset.json === "true" ? JSON.parse(input.value) : input.value;
+  if (state.editor.kind === "signal" && !values.on_start && !values.keyboard_enabled && !values.tray_enabled) {
+    const target = document.querySelector("#editor-error");
+    target.textContent = "Choose at least one trigger."; target.hidden = false; target.focus();
+    save.disabled = false; save.textContent = "Save changes";
+    return;
+  }
+  if (state.editor.kind === "signal" && values.keyboard_enabled && !values.hotkey) {
+    const target = document.querySelector("#editor-error");
+    target.textContent = "Press the key combination that should run this automation."; target.hidden = false; target.focus();
+    save.disabled = false; save.textContent = "Save changes";
+    return;
+  }
+  if (state.editor.kind === "signal" && values.tray_enabled && !safeText(values.tray_label).trim()) {
+    const target = document.querySelector("#editor-error");
+    target.textContent = "Enter the tray menu option text."; target.hidden = false; target.focus();
+    save.disabled = false; save.textContent = "Save changes";
+    return;
+  }
+  if (state.editor.kind === "signal" && !safeArray(values.slots).length) {
+    const target = document.querySelector("#editor-error");
+    target.textContent = "Add at least one action or wait step."; target.hidden = false; target.focus();
+    save.disabled = false; save.textContent = "Save changes";
+    return;
+  }
   try {
     await nativeRequest(state.editor.method, { id: state.editor.id, values });
     editorDialog.close(); state.revision = -1; await pollSnapshot();
@@ -326,7 +506,8 @@ async function exportConfiguration() {
   try {
     const picker = window.pywebview?.api?.pick_save_file;
     if (typeof picker !== "function") throw new Error("The native save dialog is unavailable.");
-    const choice = await window.pywebview.api.pick_save_file({ title: "Export FenSoundSwitch configuration", filename: "FenSoundSwitch.fsc", file_types: ["FenSoundSwitch configuration (*.fsc)"] });
+    const directory = safeText(state.snapshot?.settings?.configuration_directory);
+    const choice = await window.pywebview.api.pick_save_file({ title: "Export FenSoundSwitch configuration", directory, filename: "FenSoundSwitch.fsc", file_types: ["FenSoundSwitch configuration (*.fsc)"] });
     if (choice?.ok && choice.result) await execute("config.export", { path: choice.result });
     else if (choice?.ok === false) showNotice(choice.error?.message || "The file dialog failed.", true);
   } catch (error) { showNotice(safeText(error?.message, "The native save dialog could not be opened."), true); }
@@ -340,9 +521,13 @@ async function importConfiguration() {
 
 document.querySelector("#navigation").addEventListener("click", event => { const button = event.target.closest("[data-page]"); if (button) switchPage(button.dataset.page); });
 document.querySelector(".diagnostics-link").addEventListener("click", () => switchPage("diagnostics"));
-primaryAction.addEventListener("click", () => { if (state.page === "routes") openEntityEditor("route", null); });
+primaryAction.addEventListener("click", () => { if (state.page === "routes") openEntityEditor("route", null); else if (state.page === "actions") openEntityEditor("signal", null); });
 editorForm.addEventListener("submit", saveEditor);
+slotForm.addEventListener("submit", saveSlotEditor);
+document.querySelector("#slot-refresh").addEventListener("click", refreshSlotEditor);
 for (const button of document.querySelectorAll("#editor-close, #editor-cancel")) button.addEventListener("click", () => { editorDialog.close("cancel"); state.editor = null; });
+for (const button of document.querySelectorAll("#slot-close, #slot-cancel")) button.addEventListener("click", () => { slotDialog.close("cancel"); state.slotEditor = null; });
 confirmDialog.addEventListener("close", () => { if (confirmDialog.returnValue === "confirm") execute(confirmDialog.dataset.method, JSON.parse(confirmDialog.dataset.params || "{}")); });
-document.addEventListener("keydown", event => { if (event.key === "Escape" && editorDialog.open) editorDialog.close(); });
+editorDialog.addEventListener("close", () => { state.editor = null; });
+slotDialog.addEventListener("close", () => { state.slotEditor = null; });
 window.addEventListener("pywebviewready", pollSnapshot, { once: true });

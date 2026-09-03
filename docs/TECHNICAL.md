@@ -12,7 +12,7 @@ This page is the technical index for maintainers and plugin authors.
 
 ## Plugin Model
 
-Bundled modules are installed in the `plugins` package. The plugin API supports independent route input/output instances, action plugins, and selectable overlay renderers. Each route owns its own parameters so multiple instances of the same provider can use different devices.
+Bundled modules are installed in the `plugins` package. The plugin API supports independent route input/output instances, ordered automation actions, per-step declarative editors, and selectable overlay renderers. Each route and configured automation step owns its own parameters. DDC monitor-input steps persist independent stable monitor/input targets and revalidate both before every action run.
 
 Bundled route outputs include DDC monitor volume and network receiver protocols for Onkyo/Integra, Denon/Marantz, Yamaha, Pioneer/Elite, and Sony. The host owns the native Windows volume hook, serializes all output operations, and publishes immutable route-status snapshots to plugins.
 

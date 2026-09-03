@@ -6,15 +6,17 @@ Main settings are stored at `%APPDATA%\fensoundswitch\settings.json`, or `<home>
 
 The app prefers EDID manufacturer/product/serial identity and uses the Windows device path as a fallback. Missing or ambiguous saved identity fails closed rather than selecting another monitor.
 
-Plugin configuration is non-secret JSON at `%APPDATA%\fensoundswitch\plugin-settings\<plugin-id>.json`. Network providers store only their host and port there. Discord OAuth client data and tokens are stored only in current-user Windows Credential Manager.
+Plugin configuration is non-secret JSON at `%APPDATA%\fensoundswitch\plugin-settings\<plugin-id>.json`. Each DDC monitor-input automation step stores its stable monitor identity, input value, and display labels in that step's parameters in `settings.json`; it never stores the transient monitor index. Route-specific network receiver parameters are also stored with each route in `settings.json`; these include host, port, optional startup power, and optional startup input. Discord OAuth client data and tokens are stored only in current-user Windows Credential Manager.
 
 ## Providers And Plugins
 
 Bundled providers are DDC monitor volume, Onkyo/Integra, Denon/Marantz, Yamaha, Pioneer/Elite, and Sony network receiver main-zone volume. Use the main-window **Routes** section to configure providers and assign each input to an output. The list uses friendly input and provider names; an input can also remain **Not assigned**.
 
+Receiver startup actions are disabled by default. When enabled, a route instance sends bounded outbound power/input commands once during its first worker-thread activation, before its initial volume probe. The input menus are protocol-wide supersets drawn from known models; an individual receiver may implement only part of its protocol's menu.
+
 The host owns the volume overlay. Its **Volume overlay** controls in the HTML **Routes** and **Appearance** pages show either the current provider or every routed provider with a confirmed volume; unavailable entries remain explicitly unavailable. Plugins receive only immutable host-published volume-status snapshots and cannot use the web presentation API to read Tk state or hardware.
 
-Action plugins, including Discord, are configured from the main-window **Action plugins** section, which also configures their shortcuts. Bundled first-party modules live in the installed `plugins` package and are imported directly, never dynamically scanned. External Python plugins load from `external-plugins` next to the source tree or executable, then `%APPDATA%\fensoundswitch\plugins`. They are trusted, unsandboxed in-process code and take effect after restart. `%APPDATA%\windows-ddc\plugins` remains a final read-only, trusted compatibility location; move files to the new folder before changing them. Review external plugin source before placing it in either external folder.
+DDC monitor input is configured directly on each automation step; opening that editor starts background discovery and exposes its own refresh control. Other integrations such as Discord are configured from the main-window **Integrations** section. DDC monitor input, Discord, and Windows device switching are exposed as automation steps rather than direct actions; app-start, keyboard, and tray triggers belong to the containing automation. The DDC input action freshly resolves its saved monitor identity and revalidates the selected input against the monitor's advertised capabilities before every write. Bundled first-party modules live in the installed `plugins` package and are imported directly, never dynamically scanned. External Python plugins load from `external-plugins` next to the source tree or executable, then `%APPDATA%\fensoundswitch\plugins`. They are trusted, unsandboxed in-process code and take effect after restart. `%APPDATA%\windows-ddc\plugins` remains a final read-only, trusted compatibility location; move files to the new folder before changing them. Review external plugin source before placing it in either external folder.
 
 ## Audio Routing
 
@@ -36,4 +38,4 @@ FenSoundSwitch performs a one-way settings migration when the new settings file 
 
 ## Security Boundaries
 
-`FenSoundSwitch` has no supported API server, listener, database, account system, or application CLI. The process reads Windows monitor/audio metadata and can alter matched display-audio endpoint visibility. DDC and receiver writes can change external hardware volume. Network providers use configured, unauthenticated plaintext LAN protocols; configure only trusted local devices.
+`FenSoundSwitch` has no supported API server, listener, database, account system, or application CLI. The process reads Windows monitor/audio metadata and can alter matched display-audio endpoint visibility. DDC and receiver writes can change external hardware power, input, and volume. Network providers use configured, unauthenticated plaintext LAN protocols; configure only trusted local devices.

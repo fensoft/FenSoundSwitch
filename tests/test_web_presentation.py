@@ -17,6 +17,7 @@ from web_presentation import (
     MAX_MESSAGE_DEPTH,
     PresentationSnapshot,
     PresentationState,
+    UserActionError,
     WebPresentationController,
     build_presentation_child_command,
     read_presentation_authkey,
@@ -143,6 +144,23 @@ class ControllerRequestTests(unittest.TestCase):
         dispatcher.assert_called_once_with("set-volume", {"volume": 33})
         self.assertEqual(callbacks, [("visible", True), ("visible", True), "minimize", "tray", ("visible", False), "exit"])
         self.assertEqual(controller.state, PresentationState.CLOSING)
+
+    def test_safe_action_validation_message_crosses_the_pipe_boundary(self) -> None:
+        controller, _, dispatcher = self.make_controller()
+        self.request(controller, "ready")
+        dispatcher.side_effect = UserActionError("Add at least one action or wait step.")
+
+        response = self.request(
+            controller,
+            "dispatch_action",
+            {"action": "set-volume", "arguments": {}},
+        )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"], {
+            "code": "action_invalid",
+            "message": "Add at least one action or wait step.",
+        })
 
     def test_reader_side_waits_for_queued_ui_callback(self) -> None:
         controller, callbacks, _ = self.make_controller(queued=True)

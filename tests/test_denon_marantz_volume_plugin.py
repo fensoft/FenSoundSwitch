@@ -91,6 +91,17 @@ class DenonMarantzVolumePluginTests(unittest.TestCase):
         self.assertEqual(fake.sent, [b"MV745\r"])
         self.assertTrue(fake.closed)
 
+    def test_activation_powers_on_and_selects_input_once(self) -> None:
+        fake = FakeSocket([])
+        plugin = avr.DenonMarantzVolumePlugin()
+        plugin._config = avr.ReceiverConfig("receiver", power_on=True, startup_input="BD")
+        with patch("plugins.denon_marantz_volume_plugin.socket.create_connection", return_value=fake) as connect:
+            plugin.activate_volume_provider()
+            plugin.activate_volume_provider()
+        connect.assert_called_once()
+        self.assertEqual(fake.sent, [b"PWON\r", b"SIBD\r"])
+        self.assertTrue(fake.closed)
+
 
 if __name__ == "__main__":
     unittest.main()

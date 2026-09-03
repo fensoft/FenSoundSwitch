@@ -42,7 +42,7 @@ def _ui_id(value: object, label: str) -> str:
 def validate_plugin_ui_document(value: object) -> PluginUiDocument:
     """Validate and detach one declarative plugin form document."""
     document = _json_object(value, "Plugin UI document")
-    if set(document) - {"schema_version", "title", "description", "fields", "actions"}:
+    if set(document) - {"schema_version", "title", "description", "fields", "actions", "state"}:
         raise ValueError("Plugin UI document contains unknown properties.")
     if document.get("schema_version") != 1:
         raise ValueError("Plugin UI document schema_version must be 1.")
@@ -51,12 +51,14 @@ def validate_plugin_ui_document(value: object) -> PluginUiDocument:
     description = document.get("description")
     if description is not None and (not isinstance(description, str) or not description.strip()):
         raise ValueError("Plugin UI document description must be non-empty text when supplied.")
+    if document.get("state", "ready") not in {"ready", "loading", "error"}:
+        raise ValueError("Plugin UI state must be ready, loading, or error.")
     fields, actions = document.get("fields"), document.get("actions")
     if not isinstance(fields, list) or not isinstance(actions, list):
         raise ValueError("Plugin UI document fields and actions must be arrays.")
     field_ids: set[str] = set()
     for field in fields:
-        if not isinstance(field, dict) or set(field) - {"id", "type", "label", "value", "required", "minimum", "maximum", "options", "description", "write_only"}:
+        if not isinstance(field, dict) or set(field) - {"id", "type", "label", "value", "required", "minimum", "maximum", "options", "description", "write_only", "depends_on"}:
             raise ValueError("Plugin UI fields contain an invalid property.")
         field_id = _ui_id(field.get("id"), "Plugin UI field ID")
         if field_id in field_ids:
@@ -76,12 +78,20 @@ def validate_plugin_ui_document(value: object) -> PluginUiDocument:
                 raise ValueError("Plugin UI field bounds require integer fields and integer values.")
         if field.get("write_only") is True and (field["type"] != "password" or field.get("value") not in (None, "")):
             raise ValueError("Write-only UI fields must be empty password fields.")
+        depends_on = field.get("depends_on")
+        if depends_on is not None and (
+            field["type"] != "select"
+            or not isinstance(depends_on, str)
+            or depends_on not in field_ids - {field_id}
+        ):
+            raise ValueError("Dependent selects must reference an earlier field.")
         options = field.get("options")
         if field["type"] in ("choice", "select"):
             if not isinstance(options, list):
                 raise ValueError("Choice and select fields require an options array.")
             for option in options:
-                if not isinstance(option, dict) or set(option) != {"label", "value"} or not isinstance(option["label"], str) or not option["label"].strip():
+                expected = {"label", "value", "when"} if depends_on is not None else {"label", "value"}
+                if not isinstance(option, dict) or set(option) != expected or not isinstance(option["label"], str) or not option["label"].strip():
                     raise ValueError("Plugin UI field options require a label and value.")
         elif options is not None:
             raise ValueError("Only choice and select fields may declare options.")
@@ -324,6 +334,21 @@ class ShortcutAction:
 
 
 @dataclass(frozen=True)
+class SlotAction:
+    """A synchronous plugin operation available only inside an action signal."""
+
+    action_id: str
+    label: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.action_id, str) or SHORTCUT_ACTION_ID_PATTERN.fullmatch(self.action_id) is None:
+            raise ValueError("Slot action ID must match [a-z][a-z0-9-]{0,63}.")
+        if not isinstance(self.label, str) or not self.label.strip():
+            raise ValueError("Slot action label must be a non-empty string.")
+        object.__setattr__(self, "label", self.label.strip())
+
+
+@dataclass(frozen=True)
 class VolumeStatus:
     """An immutable host-published view of a configured volume provider."""
 
@@ -416,6 +441,32 @@ class RuntimePlugin(Protocol):
         ...
 
     def shutdown(self, timeout: float) -> bool:
+        ...
+
+
+@runtime_checkable
+class SignalActionPlugin(Protocol):
+    """Optional synchronous operations for ordered host-owned action signals."""
+
+    def get_slot_actions(self) -> list[SlotAction]:
+        ...
+
+    def run_slot(self, action_id: str, parameters: Mapping[str, object]) -> None:
+        """Run one slot synchronously; return only after that slot has finished."""
+        ...
+
+
+@runtime_checkable
+class SignalActionEditor(Protocol):
+    """Optional declarative editor for one independently configured signal slot."""
+
+    def get_slot_ui(self, action_id: str, parameters: Mapping[str, object]) -> PluginUiDocument:
+        ...
+
+    def invoke_slot_ui_action(self, action_id: str, ui_action_id: str, values: Mapping[str, object]) -> PluginUiResult:
+        ...
+
+    def slot_summary(self, action_id: str, parameters: Mapping[str, object]) -> str:
         ...
 
 

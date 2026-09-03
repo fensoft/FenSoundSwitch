@@ -18,7 +18,7 @@ from typing import Any, BinaryIO, Mapping
 from plugin_api import (
     PLUGIN_API_VERSION as HOST_PLUGIN_API_VERSION,
     PluginHostContext,
-    ShortcutAction,
+    SlotAction,
     plugin_ui_document,
     plugin_ui_result,
 )
@@ -649,12 +649,14 @@ class DiscordOutputPlugin:
                 self._untrack_client(client)
             self._operation_lock.release()
 
-    def get_shortcut_actions(self) -> list[ShortcutAction]:
-        return [ShortcutAction("switch-output", "Switch Discord output")]
+    def get_slot_actions(self) -> list[SlotAction]:
+        return [SlotAction("switch-output", "Switch Discord output")]
 
-    def trigger_shortcut(self, action_id: str) -> None:
+    def run_slot(self, action_id: str, parameters: Mapping[str, object]) -> None:
         if action_id != "switch-output":
-            raise ValueError(f"Unknown Discord shortcut action {action_id!r}.")
+            raise ValueError(f"Unknown Discord slot action {action_id!r}.")
+        if parameters:
+            raise ValueError("Discord output slots do not accept parameters.")
         if self._shutdown.is_set() or not self._operation_lock.acquire(blocking=False):
             return
         client: DiscordRpcClient | None = None

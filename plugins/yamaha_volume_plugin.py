@@ -24,6 +24,14 @@ MAIN_ZONE_MINIMUM_DB = -80.5
 MAIN_ZONE_MAXIMUM_DB = 16.5
 _HOSTNAME_PATTERN = re.compile(r"(?=.{1,253}\Z)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _VOLUME_LINE_PATTERN = re.compile(r"@MAIN:VOL=(-?(?:[0-9]|[1-9][0-9])\.[05])\Z")
+INPUT_OPTIONS = (("Do not change input", ""),) + tuple((value, value) for value in (
+    "PHONO", "TUNER", "MULTI CH", "DOCK", "iPod", "Bluetooth", "UAW", "HD Radio", "SIRIUS", "SiriusXM",
+    "Rhapsody", "Napster", "Pandora", "Spotify", "Deezer", "Qobuz", "PC", "NET", "NET RADIO", "SERVER",
+    "USB", "AirPlay", "MusicCast Link", "Alexa", "V-AUX", "AUDIO1", "AUDIO2", "AUDIO3", "AUDIO4", "AUDIO5",
+    "AUDIO6", "AUDIO7", "AV1", "AV2", "AV3", "AV4", "AV5", "AV6", "AV7", "HDMI1", "HDMI2", "HDMI3",
+    "HDMI4", "HDMI5", "HDMI6", "HDMI7",
+))
+INPUT_VALUES = frozenset(value for _label, value in INPUT_OPTIONS)
 
 
 class YamahaError(RuntimeError):
@@ -34,6 +42,8 @@ class YamahaError(RuntimeError):
 class ReceiverConfig:
     host: str
     port: int = DEFAULT_PORT
+    power_on: bool = False
+    startup_input: str = ""
 
 
 @dataclass(frozen=True)
@@ -96,13 +106,17 @@ def _valid_host(value: object) -> str | None:
 def _valid_config(value: object) -> ReceiverConfig | None:
     if not isinstance(value, dict) or value.get("schema_version") != CONFIG_SCHEMA_VERSION:
         return None
-    if set(value) - {"schema_version", "host", "port"}:
+    if set(value) - {"schema_version", "host", "port", "power_on", "startup_input"}:
         return None
     host = _valid_host(value.get("host"))
     port = value.get("port", DEFAULT_PORT)
+    power_on = value.get("power_on", False)
+    startup_input = value.get("startup_input", "")
     if host is None or isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         return None
-    return ReceiverConfig(host, port)
+    if not isinstance(power_on, bool) or not isinstance(startup_input, str) or startup_input not in INPUT_VALUES:
+        return None
+    return ReceiverConfig(host, port, power_on, startup_input)
 
 
 def _load_config(path: Path) -> ReceiverConfig | None:
@@ -115,7 +129,7 @@ def _load_config(path: Path) -> ReceiverConfig | None:
 def _save_config(path: Path, config: ReceiverConfig) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    payload = json.dumps({"schema_version": CONFIG_SCHEMA_VERSION, "host": config.host, "port": config.port}, indent=2)
+    payload = json.dumps({"schema_version": CONFIG_SCHEMA_VERSION, "host": config.host, "port": config.port, "power_on": config.power_on, "startup_input": config.startup_input}, indent=2)
     with temporary.open("w", encoding="utf-8", newline="\n") as stream:
         stream.write(payload)
         stream.flush()
@@ -152,6 +166,7 @@ class YamahaVolumePlugin:
         self._host: PluginHostContext | None = None
         self._config: ReceiverConfig | None = None
         self._lock = threading.Lock()
+        self._activation_complete = False
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
@@ -163,27 +178,29 @@ class YamahaVolumePlugin:
         instance._config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **parameters})
         return instance
 
-    def route_output_form_values(self, parameters: dict[str, object]) -> dict[str, str]:
+    def route_output_form_values(self, parameters: dict[str, object]) -> dict[str, object]:
         config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **parameters})
-        return {"host": config.host if config is not None else "", "port": str(config.port if config is not None else DEFAULT_PORT)}
+        return {"host": config.host if config is not None else "", "port": str(config.port if config is not None else DEFAULT_PORT), "power_on": config.power_on if config is not None else False, "startup_input": config.startup_input if config is not None else ""}
 
-    def validate_route_output_form(self, host: str, port: str) -> dict[str, object]:
-        config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, "host": host, "port": _parse_port(port)})
+    def validate_route_output_form(self, host: str, port: str, power_on: object = False, startup_input: object = "") -> dict[str, object]:
+        config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, "host": host, "port": _parse_port(port), "power_on": power_on, "startup_input": startup_input})
         if config is None:
-            raise ValueError("Enter a valid Yamaha hostname or IP address and a TCP port from 1 through 65535.")
-        return {"host": config.host, "port": config.port}
+            raise ValueError("Enter a valid Yamaha host, TCP port, power option, and input.")
+        return {"host": config.host, "port": config.port, "power_on": config.power_on, "startup_input": config.startup_input}
 
     def get_route_output_ui(self, parameters: Mapping[str, object]) -> dict[str, object]:
         values = self.route_output_form_values(dict(parameters))
         return plugin_ui_document("Configure Yamaha YNCA route", [
             {"id": "host", "type": "text", "label": "Host or IP address", "value": values["host"], "required": True},
             {"id": "port", "type": "integer", "label": "TCP port", "value": int(values["port"]), "minimum": 1, "maximum": 65535, "required": True},
+            {"id": "power_on", "type": "boolean", "label": "Turn on when route activates", "value": values["power_on"]},
+            {"id": "startup_input", "type": "select", "label": "Input on activation", "value": values["startup_input"], "options": [{"label": label, "value": value} for label, value in INPUT_OPTIONS], "description": "The list spans known YNCA models; the receiver must support the selected input name."},
         ], [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Connect this route to a receiver on your local network.")
 
     def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
         if action_id != "save":
             raise ValueError(f"Unknown Yamaha UI action {action_id!r}.")
-        return plugin_ui_result("save", values=self.validate_route_output_form(str(values.get("host", "")), str(values.get("port", ""))))
+        return plugin_ui_result("save", values=self.validate_route_output_form(str(values.get("host", "")), str(values.get("port", "")), values.get("power_on", False), values.get("startup_input", "")))
 
     def route_output_summary(self, parameters: dict[str, object]) -> str:
         values = self.route_output_form_values(parameters)
@@ -201,7 +218,19 @@ class YamahaVolumePlugin:
         return True, None
 
     def activate_volume_provider(self) -> None:
-        return
+        config = self._config
+        if config is None or self._activation_complete or not (config.power_on or config.startup_input):
+            return
+        commands = []
+        if config.power_on:
+            commands.append(b"@MAIN:PWR=On\r\n")
+        if config.startup_input:
+            commands.append(f"@MAIN:INP={config.startup_input}\r\n".encode("ascii"))
+        with self._lock:
+            if self._activation_complete:
+                return
+            self._send_unconfirmed(*commands)
+            self._activation_complete = True
 
     def deactivate_volume_provider(self) -> None:
         return
@@ -261,7 +290,7 @@ class YamahaVolumePlugin:
                 except OSError:
                     pass
 
-    def _send_unconfirmed(self, command: bytes) -> None:
+    def _send_unconfirmed(self, *commands: bytes) -> None:
         config = self._config
         if config is None:
             raise YamahaError("Configure a Yamaha YNCA receiver in Routes.")
@@ -269,7 +298,8 @@ class YamahaVolumePlugin:
             connection = socket.create_connection((config.host, config.port), timeout=CONNECT_TIMEOUT_SECONDS)
             try:
                 connection.settimeout(IO_TIMEOUT_SECONDS)
-                connection.sendall(command)
+                for command in commands:
+                    connection.sendall(command)
             finally:
                 connection.close()
         except OSError as exc:

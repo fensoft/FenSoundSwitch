@@ -1,74 +1,27 @@
 from __future__ import annotations
 
-import json
 import threading
-from pathlib import Path
 from typing import Mapping
 
 from audio_outputs import reconcile_monitor_audio_outputs
 from ddc import (
     DDCError,
-    MonitorIdentity,
     MonitorRef,
     SavedMonitorSelection,
     SelectionMatchStatus,
     enumerate_monitors,
     match_selected_monitor,
     read_monitor_volume,
+    saved_monitor_selection_from_json,
+    saved_monitor_selection_to_json,
     set_monitor_volume,
 )
 from plugin_api import PLUGIN_API_VERSION, HotkeySpec, PluginHostContext, plugin_ui_document, plugin_ui_result
 from settings import load_selected_monitor_key
 
-
-CONFIG_SCHEMA_VERSION = 1
-
-
-def _selection_from_json(value: object) -> SavedMonitorSelection | None:
-    if not isinstance(value, dict):
-        return None
-    description = value.get("description")
-    if not isinstance(description, str) or not description.strip():
-        return None
-    identity = value.get("identity")
-    if identity is None:
-        legacy_ordinal = value.get("legacy_ordinal")
-        if isinstance(legacy_ordinal, bool) or not isinstance(legacy_ordinal, int) or legacy_ordinal < 1:
-            return None
-        return SavedMonitorSelection(description=description.strip(), legacy_ordinal=legacy_ordinal)
-    if not isinstance(identity, dict):
-        return None
-    device_path = identity.get("device_path")
-    if not isinstance(device_path, str) or not device_path.strip():
-        return None
-    product_code = identity.get("product_code")
-    if isinstance(product_code, bool) or not isinstance(product_code, int) or product_code < 0:
-        product_code = None
-    return SavedMonitorSelection(
-        description=description.strip(),
-        identity=MonitorIdentity(
-            device_path=device_path,
-            manufacturer_id=identity.get("manufacturer_id") if isinstance(identity.get("manufacturer_id"), str) else None,
-            product_code=product_code,
-            serial_number=identity.get("serial_number") if isinstance(identity.get("serial_number"), str) else None,
-        ),
-    )
-
-
-def _selection_to_json(selection: SavedMonitorSelection) -> dict[str, object]:
-    if selection.identity is None:
-        if selection.legacy_ordinal is None:
-            raise ValueError("DDC monitor selection needs a stable identity or unambiguous legacy description.")
-        return {
-            "description": selection.description,
-            "legacy_ordinal": selection.legacy_ordinal,
-        }
-    identity: dict[str, object] = {"device_path": selection.identity.device_path}
-    for name in ("manufacturer_id", "product_code", "serial_number"):
-        value = getattr(selection.identity, name)
-        if value is not None:
-            identity[name] = value
-    return {"description": selection.description, "identity": identity}
+# Retain the names used by the route editor's existing tests and callers.
+_selection_from_json = saved_monitor_selection_from_json
+_selection_to_json = saved_monitor_selection_to_json
 
 
 class DdcVolumePlugin:
@@ -95,7 +48,7 @@ class DdcVolumePlugin:
         # Route instances retain the initialized host boundary for their
         # asynchronous audio-output reconciliation callbacks.
         instance._host = self._host
-        instance._selection = _selection_from_json(parameters.get("selected_monitor"))
+        instance._selection = saved_monitor_selection_from_json(parameters.get("selected_monitor"))
         if instance._selection is None:
             # A route created before selection is configured remains unavailable,
             # rather than borrowing another route's monitor.
@@ -103,8 +56,8 @@ class DdcVolumePlugin:
         return instance
 
     def get_route_output_ui(self, parameters: Mapping[str, object]) -> dict[str, object]:
-        selected = parameters.get("selected_monitor") if _selection_from_json(parameters.get("selected_monitor")) is not None else None
-        selection = _selection_from_json(selected)
+        selected = parameters.get("selected_monitor") if saved_monitor_selection_from_json(parameters.get("selected_monitor")) is not None else None
+        selection = saved_monitor_selection_from_json(selected)
         options = [{"label": selection.description, "value": selected}] if selection is not None else []
         return self._route_ui(selected, options)
 
@@ -116,7 +69,7 @@ class DdcVolumePlugin:
     def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
         if action_id == "discover":
             monitors = enumerate_monitors()
-            selected_selection = _selection_from_json(values.get("selected_monitor"))
+            selected_selection = saved_monitor_selection_from_json(values.get("selected_monitor"))
             match = match_selected_monitor(monitors, selected_selection)
             selected: object = values.get("selected_monitor")
             options: list[dict[str, object]] = []
@@ -126,24 +79,24 @@ class DdcVolumePlugin:
                     if sum(item.description == monitor.description for item in monitors) != 1:
                         continue
                     selection = SavedMonitorSelection(description=monitor.description, legacy_ordinal=monitor.description_ordinal)
-                option_value = _selection_to_json(selection)
+                option_value = saved_monitor_selection_to_json(selection)
                 options.append({"label": monitor.display_name, "value": option_value})
             if match.status == SelectionMatchStatus.FOUND and match.index is not None:
                 matched = monitors[match.index]
                 matched_selection = matched.selection_key
                 if matched_selection is None:
                     matched_selection = SavedMonitorSelection(description=matched.description, legacy_ordinal=matched.description_ordinal)
-                selected = _selection_to_json(matched_selection)
+                selected = saved_monitor_selection_to_json(matched_selection)
             return plugin_ui_result("update", document=self._route_ui(selected, options), message=f"{len(monitors)} monitor(s) found.")
         if action_id == "save":
-            selection = _selection_from_json(values.get("selected_monitor"))
+            selection = saved_monitor_selection_from_json(values.get("selected_monitor"))
             if selection is None:
                 raise ValueError("Select a monitor.")
-            return plugin_ui_result("save", values={"selected_monitor": _selection_to_json(selection)})
+            return plugin_ui_result("save", values={"selected_monitor": saved_monitor_selection_to_json(selection)})
         raise ValueError(f"Unknown DDC UI action {action_id!r}.")
 
     def route_output_summary(self, parameters: dict[str, object]) -> str:
-        selection = _selection_from_json(parameters.get("selected_monitor"))
+        selection = saved_monitor_selection_from_json(parameters.get("selected_monitor"))
         return f"Selected monitor: {selection.description}" if selection is not None else "No monitor selected for this route."
 
     # Retained for callers built against the first route-editor draft API.
@@ -217,15 +170,6 @@ class DdcVolumePlugin:
                 # Endpoint policy is nonfatal to the volume provider.
                 return
         threading.Thread(target=worker, name="ddc-plugin-audio-output-sync", daemon=True).start()
-
-    def _load_selection(self, path: Path) -> SavedMonitorSelection | None:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            return None
-        if not isinstance(data, dict) or data.get("schema_version") != CONFIG_SCHEMA_VERSION:
-            return None
-        return _selection_from_json(data.get("selected_monitor"))
 
     def _require_host(self) -> PluginHostContext:
         if self._host is None:

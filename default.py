@@ -37,7 +37,7 @@ def ensure_default_configuration(settings_path: Path) -> Path:
     if destination.is_file() and not _has_broken_keyboard_route(destination):
         return destination
     settings_payload: dict[str, object] = {
-        "schema_version": 8,
+        "schema_version": 9,
         "volume_routes": [
             {
                 "route_id": "output",
@@ -71,6 +71,24 @@ def ensure_default_configuration(settings_path: Path) -> Path:
                 },
             },
         ],
+        "action_signals": [
+            {
+                "signal_id": "cycle-playback",
+                "name": "Cycle Windows playback",
+                "hotkey": _hotkey(11),
+                "forward_keys": True,
+                "tray_label": None,
+                "slots": [{"kind": "action", "plugin_id": "windows-default-device", "action_id": "cycle-playback", "parameters": {}}],
+            },
+            {
+                "signal_id": "cycle-input",
+                "name": "Cycle Windows input",
+                "hotkey": _hotkey(7),
+                "forward_keys": True,
+                "tray_label": None,
+                "slots": [{"kind": "action", "plugin_id": "windows-default-device", "action_id": "cycle-input", "parameters": {}}],
+            },
+        ],
     }
     plugin_payloads = {
         "action-plugin-state.json": {
@@ -83,19 +101,6 @@ def ensure_default_configuration(settings_path: Path) -> Path:
             "voice_output": True,
             "mode": "recent-mouse",
             "mouse_seconds": 60,
-        },
-        "shortcuts.json": {
-            "schema_version": 2,
-            "bindings": {
-                "windows-default-device/cycle-playback": {
-                    "hotkey": _hotkey(11),
-                    "forward_keys": True,
-                },
-                "windows-default-device/cycle-input": {
-                    "hotkey": _hotkey(7),
-                    "forward_keys": True,
-                },
-            },
         },
     }
     write_configuration_archive(destination, settings_payload, plugin_payloads)

@@ -17,6 +17,14 @@ DEFAULT_PORT = 23
 CONNECT_TIMEOUT_SECONDS = 2.0
 IO_TIMEOUT_SECONDS = 2.0
 MAX_LINE_SIZE = 256
+INPUT_OPTIONS = (("Do not change input", ""),) + tuple((value.replace("/", " / ").title(), value) for value in (
+    "PHONO", "CD", "TUNER", "DVD", "BD", "TV", "SAT/CBL", "DVR", "GAME", "GAME2", "V.AUX", "DOCK",
+    "HDRADIO", "IPOD", "RHAPSODY", "NAPSTER", "PANDORA", "LASTFM", "FLICKR", "FAVORITES", "IRADIO",
+    "SERVER", "USB DIRECT", "IPOD DIRECT", "USB", "IPD", "NET", "BT", "MPLAY", "AUX1", "AUX2", "AUX3",
+    "AUX4", "AUX5", "AUX6", "AUX7", "QUICK1", "QUICK2", "QUICK3", "QUICK4", "QUICK5", "SMART1",
+    "SMART2", "SMART3", "SMART4", "SMART5",
+))
+INPUT_VALUES = frozenset(value for _label, value in INPUT_OPTIONS)
 
 
 class DenonMarantzError(RuntimeError):
@@ -27,6 +35,8 @@ class DenonMarantzError(RuntimeError):
 class ReceiverConfig:
     host: str
     port: int = DEFAULT_PORT
+    power_on: bool = False
+    startup_input: str = ""
 
 
 @dataclass(frozen=True)
@@ -76,15 +86,19 @@ class AvrLineParser:
 def _valid_config(value: object) -> ReceiverConfig | None:
     if not isinstance(value, dict) or value.get("schema_version") != CONFIG_SCHEMA_VERSION:
         return None
-    if set(value) - {"schema_version", "host", "port"}:
+    if set(value) - {"schema_version", "host", "port", "power_on", "startup_input"}:
         return None
     host = value.get("host")
     port = value.get("port", DEFAULT_PORT)
+    power_on = value.get("power_on", False)
+    startup_input = value.get("startup_input", "")
     if not isinstance(host, str) or not (host := host.strip()) or len(host) > 253:
         return None
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         return None
-    return ReceiverConfig(host, port)
+    if not isinstance(power_on, bool) or not isinstance(startup_input, str) or startup_input not in INPUT_VALUES:
+        return None
+    return ReceiverConfig(host, port, power_on, startup_input)
 
 
 def _load_config(path: Path) -> ReceiverConfig | None:
@@ -97,7 +111,7 @@ def _load_config(path: Path) -> ReceiverConfig | None:
 def _save_config(path: Path, config: ReceiverConfig) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    payload = json.dumps({"schema_version": CONFIG_SCHEMA_VERSION, "host": config.host, "port": config.port}, indent=2)
+    payload = json.dumps({"schema_version": CONFIG_SCHEMA_VERSION, "host": config.host, "port": config.port, "power_on": config.power_on, "startup_input": config.startup_input}, indent=2)
     with temporary.open("w", encoding="utf-8", newline="\n") as stream:
         stream.write(payload)
         stream.flush()
@@ -136,6 +150,7 @@ class DenonMarantzVolumePlugin:
         self._socket: socket.socket | None = None
         self._parser = AvrLineParser()
         self._lock = threading.Lock()
+        self._activation_complete = False
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
@@ -147,27 +162,29 @@ class DenonMarantzVolumePlugin:
         instance._config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **parameters})
         return instance
 
-    def route_output_form_values(self, parameters: dict[str, object]) -> dict[str, str]:
+    def route_output_form_values(self, parameters: dict[str, object]) -> dict[str, object]:
         config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **parameters})
-        return {"host": config.host if config is not None else "", "port": str(config.port if config is not None else DEFAULT_PORT)}
+        return {"host": config.host if config is not None else "", "port": str(config.port if config is not None else DEFAULT_PORT), "power_on": config.power_on if config is not None else False, "startup_input": config.startup_input if config is not None else ""}
 
-    def validate_route_output_form(self, host: str, port: str) -> dict[str, object]:
-        config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, "host": host, "port": _parse_port(port)})
+    def validate_route_output_form(self, host: str, port: str, power_on: object = False, startup_input: object = "") -> dict[str, object]:
+        config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, "host": host, "port": _parse_port(port), "power_on": power_on, "startup_input": startup_input})
         if config is None:
-            raise ValueError("Enter a non-empty host and a TCP port from 1 through 65535.")
-        return {"host": config.host, "port": config.port}
+            raise ValueError("Enter a valid host, TCP port, power option, and Denon/Marantz input.")
+        return {"host": config.host, "port": config.port, "power_on": config.power_on, "startup_input": config.startup_input}
 
     def get_route_output_ui(self, parameters: Mapping[str, object]) -> dict[str, object]:
         values = self.route_output_form_values(dict(parameters))
         return plugin_ui_document("Configure Denon/Marantz AVR route", [
             {"id": "host", "type": "text", "label": "Host or IP address", "value": values["host"], "required": True},
             {"id": "port", "type": "integer", "label": "TCP port", "value": int(values["port"]), "minimum": 1, "maximum": 65535, "required": True},
+            {"id": "power_on", "type": "boolean", "label": "Turn on when route activates", "value": values["power_on"]},
+            {"id": "startup_input", "type": "select", "label": "Input on activation", "value": values["startup_input"], "options": [{"label": label, "value": value} for label, value in INPUT_OPTIONS], "description": "The list spans known Denon and Marantz models; the receiver must support the selected source."},
         ], [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Connect this route to a receiver on your local network.")
 
     def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
         if action_id != "save":
             raise ValueError(f"Unknown Denon/Marantz UI action {action_id!r}.")
-        return plugin_ui_result("save", values=self.validate_route_output_form(str(values.get("host", "")), str(values.get("port", ""))))
+        return plugin_ui_result("save", values=self.validate_route_output_form(str(values.get("host", "")), str(values.get("port", "")), values.get("power_on", False), values.get("startup_input", "")))
 
     def route_output_summary(self, parameters: dict[str, object]) -> str:
         values = self.route_output_form_values(parameters)
@@ -185,7 +202,19 @@ class DenonMarantzVolumePlugin:
         return True, None
 
     def activate_volume_provider(self) -> None:
-        return
+        config = self._config
+        if config is None or self._activation_complete or not (config.power_on or config.startup_input):
+            return
+        commands = []
+        if config.power_on:
+            commands.append(b"PWON\r")
+        if config.startup_input:
+            commands.append(f"SI{config.startup_input}\r".encode("ascii"))
+        with self._lock:
+            if self._activation_complete:
+                return
+            self._send_unconfirmed_locked(*commands)
+            self._activation_complete = True
 
     def deactivate_volume_provider(self) -> None:
         return
@@ -235,7 +264,7 @@ class DenonMarantzVolumePlugin:
                 raise
             raise DenonMarantzError(f"Could not communicate with the configured AVR: {exc}") from exc
 
-    def _send_unconfirmed_locked(self, command: bytes) -> None:
+    def _send_unconfirmed_locked(self, *commands: bytes) -> None:
         # Use a short-lived connection so unsolicited set echoes cannot be read as
         # a later query response on the persistent confirmed-read connection.
         config = self._config
@@ -245,7 +274,8 @@ class DenonMarantzVolumePlugin:
             connection = socket.create_connection((config.host, config.port), timeout=CONNECT_TIMEOUT_SECONDS)
             try:
                 connection.settimeout(IO_TIMEOUT_SECONDS)
-                connection.sendall(command)
+                for command in commands:
+                    connection.sendall(command)
             finally:
                 connection.close()
         except OSError as exc:

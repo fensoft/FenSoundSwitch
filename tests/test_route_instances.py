@@ -86,9 +86,20 @@ class RouteInstanceTests(unittest.TestCase):
         )
         for plugin, default_port in plugins:
             with self.subTest(plugin=plugin.plugin_id):
-                self.assertEqual(plugin.route_output_form_values({}), {"host": "", "port": str(default_port)})
-                self.assertEqual(plugin.route_output_form_values({"host": "receiver.local", "port": 1234}), {"host": "receiver.local", "port": "1234"})
-                self.assertEqual(plugin.validate_route_output_form(" receiver.local ", "1234"), {"host": "receiver.local", "port": 1234})
+                defaults = {"host": "", "port": str(default_port), "power_on": False, "startup_input": ""}
+                configured = {"host": "receiver.local", "port": "1234", "power_on": False, "startup_input": ""}
+                saved = {"host": "receiver.local", "port": 1234, "power_on": False, "startup_input": ""}
+                self.assertEqual(plugin.route_output_form_values({}), defaults)
+                self.assertEqual(plugin.route_output_form_values({"host": "receiver.local", "port": 1234}), configured)
+                self.assertEqual(plugin.validate_route_output_form(" receiver.local ", "1234"), saved)
+                module = __import__(plugin.__class__.__module__, fromlist=["INPUT_OPTIONS"])
+                input_value = next(value for _label, value in module.INPUT_OPTIONS if value)
+                activated = plugin.validate_route_output_form("receiver.local", "1234", True, input_value)
+                self.assertEqual(activated["power_on"], True)
+                self.assertEqual(activated["startup_input"], input_value)
+                fields = {field["id"]: field for field in plugin.get_route_output_ui({})["fields"]}
+                self.assertEqual(fields["power_on"]["type"], "boolean")
+                self.assertEqual(fields["startup_input"]["type"], "select")
                 self.assertEqual(plugin.route_output_summary({"host": "receiver.local", "port": 1234}), "Configured: receiver.local:1234")
                 self.assertEqual(plugin.route_output_summary({}), "Not configured.")
                 with self.assertRaises(ValueError):
@@ -138,7 +149,7 @@ class RouteInstanceTests(unittest.TestCase):
                 self.assertEqual(routes[0].input.plugin_id, "test-input")
                 settings.save_input_routes(routes)
                 payload = json.loads(settings.SETTINGS_PATH.read_text(encoding="utf-8"))
-                self.assertEqual(payload["schema_version"], 8)
+                self.assertEqual(payload["schema_version"], settings.SCHEMA_VERSION)
                 self.assertEqual(payload["volume_routes"][0]["output"]["plugin_id"], "test-output")
                 self.assertEqual(payload["volume_routes"][0]["name"], "test-input to test-output")
             finally:

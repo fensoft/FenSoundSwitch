@@ -1156,11 +1156,18 @@ class TrayMonitorMenuItem:
 
 
 @dataclass(frozen=True)
+class TraySignalMenuItem:
+    label: str
+    signal_id: str
+
+
+@dataclass(frozen=True)
 class TrayMenuState:
     active_monitor: str | None = None
     current_volume: int | None = None
     routing_enabled: bool = False
     monitors: tuple[TrayMonitorMenuItem, ...] = ()
+    signals: tuple[TraySignalMenuItem, ...] = ()
 
 
 class TrayIconController:
@@ -1169,7 +1176,9 @@ class TrayIconController:
     MENU_EXIT = 1002
     MENU_REFRESH = 1003
     MENU_MONITOR_BASE = 2000
+    MENU_SIGNAL_BASE = 3000
     MAX_MONITOR_MENU_ITEMS = 100
+    MAX_SIGNAL_MENU_ITEMS = 100
     SHOW_TIMEOUT_SECONDS = 2.0
     START_TIMEOUT_SECONDS = NATIVE_START_TIMEOUT_SECONDS
     STOP_TIMEOUT_SECONDS = NATIVE_STOP_TIMEOUT_SECONDS
@@ -1183,6 +1192,7 @@ class TrayIconController:
         icon_path: Path | None = None,
         on_refresh: Callable[[], None] | None = None,
         on_select_monitor: Callable[[object], None] | None = None,
+        on_signal: Callable[[str], None] | None = None,
     ) -> None:
         self.tooltip = tooltip[:127]
         self.on_restore = on_restore
@@ -1190,6 +1200,7 @@ class TrayIconController:
         self.on_error = on_error
         self.on_refresh = on_refresh or (lambda: None)
         self.on_select_monitor = on_select_monitor or (lambda _selection: None)
+        self.on_signal = on_signal or (lambda _signal_id: None)
         self._icon_path = str(icon_path) if icon_path is not None else None
         self._instance = kernel32.GetModuleHandleW(None)
         self._class_name = f"MonitorVolumeTrayWindow_{os.getpid()}_{id(self)}"
@@ -1460,6 +1471,7 @@ class TrayIconController:
     def _show_context_menu(self, hwnd: wintypes.HWND) -> None:
         state = self._get_menu_state()
         monitor_items = state.monitors[: self.MAX_MONITOR_MENU_ITEMS]
+        signal_items = state.signals[: self.MAX_SIGNAL_MENU_ITEMS]
         menu = user32.CreatePopupMenu()
         if not menu:
             self.on_error(win_error("CreatePopupMenu failed"))
@@ -1501,6 +1513,20 @@ class TrayIconController:
             ):
                 return
 
+            if signal_items:
+                if not self._append_menu_item(menu, MF_SEPARATOR, 0, None):
+                    return
+                if not self._append_menu_item(menu, MF_STRING | MF_GRAYED, 0, "Automations"):
+                    return
+                for index, item in enumerate(signal_items):
+                    if not self._append_menu_item(
+                        menu,
+                        MF_STRING,
+                        self.MENU_SIGNAL_BASE + index,
+                        item.label,
+                    ):
+                        return
+
             for flags, command_id, label in (
                 (MF_SEPARATOR, 0, None),
                 (MF_STRING, self.MENU_RESTORE, "Restore"),
@@ -1526,7 +1552,7 @@ class TrayIconController:
             )
             user32.PostMessageW(hwnd, WM_NULL, 0, 0)
 
-            self._dispatch_menu_command(command_id, monitor_items)
+            self._dispatch_menu_command(command_id, monitor_items, signal_items)
         finally:
             user32.DestroyMenu(menu)
 
@@ -1554,6 +1580,7 @@ class TrayIconController:
         self,
         command_id: int,
         monitor_items: tuple[TrayMonitorMenuItem, ...] | None = None,
+        signal_items: tuple[TraySignalMenuItem, ...] | None = None,
     ) -> bool:
         if command_id == self.MENU_RESTORE:
             self.on_restore()
@@ -1569,6 +1596,11 @@ class TrayIconController:
         item_index = command_id - self.MENU_MONITOR_BASE
         if 0 <= item_index < min(len(items), self.MAX_MONITOR_MENU_ITEMS):
             self.on_select_monitor(items[item_index].selection)
+            return True
+        signals = signal_items if signal_items is not None else self._get_menu_state().signals
+        signal_index = command_id - self.MENU_SIGNAL_BASE
+        if 0 <= signal_index < min(len(signals), self.MAX_SIGNAL_MENU_ITEMS):
+            self.on_signal(signals[signal_index].signal_id)
             return True
         return False
 

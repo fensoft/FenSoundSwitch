@@ -10,7 +10,7 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from plugin_api import MOD_ALT, MOD_CONTROL, HotkeySpec, OverlayRenderer, PluginHostContext, ShortcutAction, VolumeStatus
+from plugin_api import MOD_ALT, MOD_CONTROL, HotkeySpec, OverlayRenderer, PluginHostContext, ShortcutAction, SlotAction, VolumeStatus
 from plugin_hotkeys import HotkeyConflictError, HotkeyRegistrationError, PluginHotkeyController
 from windows_platform import HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP
 from plugin_manager import (
@@ -66,6 +66,7 @@ class PluginDiscoveryTests(unittest.TestCase):
                 "discord-output",
                 "audio-keepalive",
                 "windows-default-device",
+                "ddc-input-source",
                 "ddc-volume",
                 "onkyo-volume",
                 "denon-marantz-volume",
@@ -604,6 +605,154 @@ class PluginManagerTests(unittest.TestCase):
             self.assertEqual(plugin.action_id, "do-thing")
             manager.stop(1.0)
 
+    def test_action_signal_runs_repeated_parameterized_slots_in_order(self) -> None:
+        class SignalPlugin(_FakePlugin):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls: list[tuple[str, dict[str, object]]] = []
+                self.finished = threading.Event()
+
+            def get_slot_actions(self) -> list[SlotAction]:
+                return [SlotAction("switch", "Switch device")]
+
+            def run_slot(self, action_id: str, parameters: object) -> None:
+                self.calls.append((action_id, dict(parameters)))
+                if len(self.calls) == 2:
+                    self.finished.set()
+
+        plugin = SignalPlugin()
+        manager, _ = self.make_manager(plugin)
+        manager.start()
+        self.assertTrue(manager.save_action_signal(
+            None,
+            "Movie mode",
+            HotkeySpec(0, 0x70).to_json(),
+            False,
+            "Movie mode",
+            [
+                {"kind": "action", "target": "fake/switch", "parameters": {"device": "speakers"}},
+                {"kind": "wait", "milliseconds": 10},
+                {"kind": "action", "target": "fake/switch", "parameters": {"device": "headset"}},
+            ],
+        ))
+        signal = manager.action_signals[0]
+
+        manager._dispatch_trigger(f"signal/{signal.signal_id}")
+
+        self.assertTrue(plugin.finished.wait(1.0))
+        self.assertEqual(plugin.calls, [("switch", {"device": "speakers"}), ("switch", {"device": "headset"})])
+        self.assertIn((f"signal/{signal.signal_id}", HotkeySpec(0, 0x70)), manager._hotkeys.bindings)
+        manager.stop(1.0)
+
+    def test_slot_summary_failure_is_isolated_from_the_host(self) -> None:
+        class BrokenSummaryPlugin(_FakePlugin):
+            def get_slot_actions(self) -> list[SlotAction]:
+                return [SlotAction("switch", "Switch")]
+
+            def run_slot(self, action_id: str, parameters: object) -> None:
+                return None
+
+            def get_slot_ui(self, action_id: str, parameters: object) -> dict[str, object]:
+                return {"schema_version": 1, "title": "Step", "fields": [], "actions": []}
+
+            def invoke_slot_ui_action(self, action_id: str, ui_action_id: str, values: object) -> dict[str, object]:
+                return {"status": "save", "values": {}}
+
+            def slot_summary(self, action_id: str, parameters: object) -> str:
+                raise RuntimeError("broken summary")
+
+        manager, _ = self.make_manager(BrokenSummaryPlugin())
+        manager.start()
+
+        self.assertEqual(manager.slot_summary("fake", "switch", {}), "Configuration unavailable")
+        self.assertEqual(manager.slot_summary("missing", "switch", {}), "Unavailable")
+        manager.stop(1.0)
+
+    def test_action_signal_overlap_is_suppressed_and_wait_is_shutdown_interruptible(self) -> None:
+        plugin = _FakePlugin()
+        manager, _ = self.make_manager(plugin)
+        manager.start()
+        signal = settings.ActionSignal(
+            "signal-wait",
+            "Wait then act",
+            settings.ActionHotkeyBinding(None),
+            "Wait then act",
+            (settings.WaitSlot(300_000), settings.ActionSlot("fake", "shortcut", {})),
+        )
+        manager._action_signals = (signal,)
+
+        manager.dispatch_action_signal(signal.signal_id)
+        manager.dispatch_action_signal(signal.signal_id)
+        started = time.monotonic()
+        self.assertTrue(manager.stop(0.5))
+
+        self.assertLess(time.monotonic() - started, 0.4)
+        self.assertEqual(plugin.trigger_count, 0)
+
+    def test_removed_builtin_direct_shortcut_migrates_to_a_signal(self) -> None:
+        class WindowsSlotPlugin(_FakePlugin):
+            plugin_id = "windows-default-device"
+            name = "Windows default device switch"
+            get_shortcut_actions = None
+            trigger_shortcut = None
+
+            def get_slot_actions(self) -> list[SlotAction]:
+                return [SlotAction("cycle-playback", "Cycle Windows playback")]
+
+            def run_slot(self, action_id: str, parameters: object) -> None:
+                return None
+
+        plugin = WindowsSlotPlugin()
+        with tempfile.TemporaryDirectory() as directory:
+            shortcut_path = Path(directory) / "shortcuts.json"
+            hotkey = HotkeySpec(MOD_CONTROL, ord("D"))
+            plugin_manager._save_shortcut_bindings(shortcut_path, {
+                "windows-default-device/cycle-playback": plugin_manager.ActionHotkeyBinding(hotkey, False),
+            })
+            manager, _ = self.make_manager(plugin)
+            manager._shortcut_path = shortcut_path
+            manager.start()
+
+            signal = manager.action_signals[0]
+            self.assertEqual(signal.name, "Cycle Windows playback")
+            self.assertEqual(signal.hotkey, plugin_manager.ActionHotkeyBinding(hotkey, False))
+            self.assertEqual(signal.slots, (settings.ActionSlot("windows-default-device", "cycle-playback", {}),))
+            manager.stop(1.0)
+
+    def test_startup_automation_dispatches_once(self) -> None:
+        class StartupPlugin(_FakePlugin):
+            def __init__(self) -> None:
+                super().__init__()
+                self.runs = 0
+                self.finished = threading.Event()
+
+            def get_slot_actions(self) -> list[SlotAction]:
+                return [SlotAction("initialize", "Initialize")]
+
+            def run_slot(self, action_id: str, parameters: object) -> None:
+                self.runs += 1
+                self.finished.set()
+
+        signal = settings.ActionSignal(
+            "signal-startup",
+            "Startup",
+            settings.ActionHotkeyBinding(None),
+            None,
+            (settings.ActionSlot("fake", "initialize", {}),),
+            True,
+        )
+        plugin = StartupPlugin()
+        manager, _ = self.make_manager(plugin)
+        with patch("plugin_manager.load_action_signals", return_value=(signal,)):
+            manager.start()
+
+        manager.dispatch_startup_automations()
+        manager.dispatch_startup_automations()
+
+        self.assertTrue(plugin.finished.wait(1.0))
+        self.assertEqual(plugin.runs, 1)
+        manager.stop(1.0)
+
     def test_legacy_action_binding_migrates_to_forwarding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "shortcuts.json"
@@ -823,6 +972,77 @@ class FluentPanelStateTests(unittest.TestCase):
 
 
 class PluginGuiIntegrationTests(unittest.TestCase):
+    def test_configured_automation_step_round_trips_plugin_parameters(self) -> None:
+        from gui import MonitorVolumeApp
+
+        manager = Mock()
+        manager.get_slot_ui.return_value = {
+            "schema_version": 1,
+            "title": "Configure step",
+            "description": "Choose a target.",
+            "fields": [{
+                "id": "target",
+                "type": "select",
+                "label": "Target",
+                "value": 2,
+                "required": True,
+                "options": [{"label": "Two", "value": 2}],
+            }],
+            "actions": [{"id": "save", "label": "Save", "kind": "submit", "async": False}],
+        }
+        manager.invoke_slot_ui_action.return_value = {
+            "status": "save",
+            "values": {"target": 2},
+        }
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._plugin_manager = manager
+
+        form = app._dispatch_web_action("slot.ui", {
+            "target": "plugin/action",
+            "parameters": {"target": 1},
+        })
+        saved = app._dispatch_web_action("slot.save", {
+            "target": "plugin/action",
+            "action_id": "save",
+            "values": {"target": 2},
+        })
+
+        manager.get_slot_ui.assert_called_once_with("plugin", "action", {"target": 1})
+        manager.invoke_slot_ui_action.assert_called_once_with("plugin", "action", "save", {"target": 2})
+        self.assertEqual(form["fields"][0]["key"], "target")
+        self.assertEqual(saved["parameters"], {"target": 2})
+
+    def test_disabled_automation_trigger_sections_clear_hidden_values(self) -> None:
+        from gui import MonitorVolumeApp
+
+        manager = Mock()
+        manager.save_action_signal.return_value = True
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._plugin_manager = manager
+
+        app._dispatch_web_action("signal.save", {
+            "values": {
+                "name": "Startup only",
+                "on_start": True,
+                "keyboard_enabled": False,
+                "hotkey": {"modifiers": 0, "virtual_key": 112},
+                "forward_keys": True,
+                "tray_enabled": False,
+                "tray_label": "Stale item",
+                "slots": [{"kind": "wait", "milliseconds": 1}],
+            },
+        })
+
+        manager.save_action_signal.assert_called_once_with(
+            None,
+            "Startup only",
+            None,
+            True,
+            None,
+            [{"kind": "wait", "milliseconds": 1}],
+            True,
+        )
+
     def test_embedded_panels_are_built_after_plugin_startup(self) -> None:
         from gui import MonitorVolumeApp
 
@@ -851,8 +1071,9 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         manager.start.assert_called_once_with()
         manager.create_overlay_renderer.assert_called_once_with(app.dark_mode, app.high_contrast)
         manager.build_routes_panel.assert_called_once_with(app.routes_panel)
-        manager.build_action_plugins_panel.assert_called_once_with(app.plugins_panel)
+        manager.build_action_plugins_panel.assert_not_called()
         manager.build_appearance_panel.assert_called_once_with(app.appearance_panel)
+        manager.dispatch_startup_automations.assert_called_once_with()
 
     def test_plugin_manager_startup_failure_keeps_an_actionable_routes_error_visible(self) -> None:
         from gui import MonitorVolumeApp

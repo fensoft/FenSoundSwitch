@@ -13,10 +13,11 @@ Build named routes for the rooms and devices you use. Choose a monitor or receiv
 - Use Windows volume keys for a monitor, receiver, or several devices at once.
 - Create clearly named routes such as `Desk monitor`, `Living room`, or `Movie night`.
 - Control compatible displays and popular network receivers.
+- Optionally turn a configured receiver on and select its input when its route first activates.
 - Control a route from MQTT, with Home Assistant MQTT discovery buttons.
 - See a clean Windows 11 or macOS-style volume overlay.
 - Keep the app quietly available in the notification area.
-- Configure separate shortcuts for Windows playback, voice output, input, and microphone switching, or optional Discord output switching.
+- Build automations for monitor input selection, Windows playback, voice output, input, microphone, or optional Discord output switching. Run them when the app starts, from a keyboard shortcut, from a notification-area menu item, or from any combination of those triggers.
 - Keep the Windows default playback and/or voice output active by rendering silence, continuously or after recent mouse movement.
 - Start automatically with Windows.
 - Export and restore complete non-secret configuration archives.
@@ -39,7 +40,7 @@ On first launch, FenSoundSwitch creates `%APPDATA%\fensoundswitch\configurations
 - The Discord action is disabled.
 - Audio keep-alive is enabled for both the default playback and voice outputs. It remains active while the mouse is moving and for 60 seconds afterward.
 
-Default device shortcuts:
+Default device automations:
 
 - To cycle playback devices, press `Ctrl + Alt + F11`.
 - To cycle recording devices, press `Ctrl + Alt + F7`.

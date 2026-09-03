@@ -12,12 +12,15 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Added
 
+- Added a bundled DDC monitor-input automation action with background discovery, independent per-step stable monitor/input configuration, advertised-input validation, serialized hardware access, and verified readback.
+- Added optional one-shot route activation for all bundled AVR providers, with main-zone power-on and model-spanning protocol input selection before the initial volume probe.
+- Added host-owned automations triggered when the primary app starts, by a keyboard shortcut, by a notification-area menu item, or by any combination of those triggers. Automations run up to 32 action or interruptible wait steps synchronously in persisted order, support repeated actions with independent parameters, suppress overlapping runs, and stop on step failure.
 - Added main-window configuration export/import controls. Exports bundle main and plugin JSON settings into `.fsc` archives; every export is recorded in import history, bundled `default.py` creates the user default archive, Import's arrow lists the five latest exports, and Default restores `default.fsc` after restart confirmation.
 - Added a bundled configurable audio output keep-alive plugin that renders silence to the current Windows default playback and/or voice output continuously or following recent mouse movement.
 - Added persisted Enable/Disable controls for action plugins; disabled plugins do not initialize or register shortcuts, and unconfigured shortcut cells are blank.
 - Added a bundled MQTT route input with retained Home Assistant MQTT configurable 0-to-100 slider discovery for per-route volume commands.
 - Added a persisted **Forward keys to other applications** policy to every action-plugin shortcut. Existing action bindings migrate to forwarding; disabled forwarding consumes only the configured held key pair.
-- Added a bundled Windows default-device plugin with independent shortcuts for active playback, voice output, input, and microphone devices. Each shortcut cycles only its corresponding Windows default roles and needs no plugin configuration dialog.
+- Added a bundled Windows default-device plugin with automation steps for active playback, voice output, input, and microphone devices. Each step cycles only its corresponding Windows default roles and needs no plugin configuration dialog.
 - Added a typed per-keyboard-route **Forward keys to other applications** setting. Existing keyboard routes migrate to forwarding; routes that disable it consume only their configured held key pairs, while action-plugin shortcuts remain passive.
 - Added `BUILD.md`, a complete user manual, and a technical documentation index while simplifying the root README into a product overview and brief setup guide.
 - Added selectable bundled Windows 11 and macOS-style overlay renderers. Overlay selection and renderer settings are persisted under plugin settings; the Windows 11 renderer safely migrates the former global `overlay_mode` setting and retains typed current/all configuration.
@@ -56,7 +59,7 @@ That audited history contains one parentless commit. The audit clone had no loca
 - Moved bundled first-party plugins into the `plugins` package and reserved the adjacent `external-plugins\` directory for dynamically discovered trusted external plugins; `%APPDATA%\fensoundswitch\plugins\` is the per-user external location.
 - Replaced the single active volume provider and root volume slider with ordered independent routes. Schema version 5 persists stable route IDs and migrates schema-4 input maps; one input may fan out to several outputs while writes remain serialized.
 - Split configuration into **Plugins** for initialized action-only plugins and **Routes** for volume-provider setup, input assignment, overlay configuration, and Start with Windows.
-- Moved Discord output switching to the host-configured `switch-output` shortcut action and removed Discord-local shortcut storage and key capture UI.
+- Moved Discord output switching to a signal-only `switch-output` slot and removed Discord-local/direct shortcut storage and key capture UI.
 - Apply Windows light/dark, system-color, and High Contrast changes live, and reflow the control window at its current DPI.
 - Expanded user and operator documentation without changing runtime behavior.
 - Place the volume/error overlay on the cursor's DPI-scaled Windows work area, fall back to the selected display when needed, and enforce native no-activate presentation.

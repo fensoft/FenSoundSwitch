@@ -107,6 +107,9 @@ class ConfigurationArchiveTests(unittest.TestCase):
         routes = payload["volume_routes"]
         self.assertEqual([route["name"] for route in routes], ["Output", "Voice"])
         self.assertEqual(routes[1]["input"]["plugin_id"], "keyboard-keys")
+        signals = payload["action_signals"]
+        self.assertEqual([signal["signal_id"] for signal in signals], ["cycle-playback", "cycle-input"])
+        self.assertEqual(signals[0]["slots"][0]["action_id"], "cycle-playback")
         voice_keys = routes[1]["input"]["parameters"]
         self.assertEqual(voice_keys["volume_down"], {"modifiers": 3, "virtual_key": 0x78})
         self.assertEqual(voice_keys["volume_up"], {"modifiers": 3, "virtual_key": 0x79})

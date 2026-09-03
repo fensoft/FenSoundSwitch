@@ -97,6 +97,17 @@ class PioneerEliteVolumePluginTests(unittest.TestCase):
         self.assertEqual(fake.sent, [b"139V\r"])
         self.assertTrue(fake.closed)
 
+    def test_activation_powers_on_and_selects_input_once(self) -> None:
+        fake = FakeSocket([])
+        plugin = pioneer.PioneerEliteVolumePlugin()
+        plugin._config = pioneer.ReceiverConfig("receiver", power_on=True, startup_input="25")
+        with patch("plugins.pioneer_elite_volume_plugin.socket.create_connection", return_value=fake) as connect:
+            plugin.activate_volume_provider()
+            plugin.activate_volume_provider()
+        connect.assert_called_once()
+        self.assertEqual(fake.sent, [b"PO\r", b"25FN\r"])
+        self.assertTrue(fake.closed)
+
 
 if __name__ == "__main__":
     unittest.main()
