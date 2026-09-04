@@ -339,13 +339,17 @@ class SlotAction:
 
     action_id: str
     label: str
+    description: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.action_id, str) or SHORTCUT_ACTION_ID_PATTERN.fullmatch(self.action_id) is None:
             raise ValueError("Slot action ID must match [a-z][a-z0-9-]{0,63}.")
         if not isinstance(self.label, str) or not self.label.strip():
             raise ValueError("Slot action label must be a non-empty string.")
+        if not isinstance(self.description, str):
+            raise ValueError("Slot action description must be a string.")
         object.__setattr__(self, "label", self.label.strip())
+        object.__setattr__(self, "description", self.description.strip())
 
 
 @dataclass(frozen=True)

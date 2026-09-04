@@ -689,7 +689,7 @@ class PluginManagerTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 0.4)
         self.assertEqual(plugin.trigger_count, 0)
 
-    def test_removed_builtin_direct_shortcut_migrates_to_a_signal(self) -> None:
+    def test_removed_builtin_direct_shortcut_does_not_create_an_automation(self) -> None:
         class WindowsSlotPlugin(_FakePlugin):
             plugin_id = "windows-default-device"
             name = "Windows default device switch"
@@ -713,10 +713,7 @@ class PluginManagerTests(unittest.TestCase):
             manager._shortcut_path = shortcut_path
             manager.start()
 
-            signal = manager.action_signals[0]
-            self.assertEqual(signal.name, "Cycle Windows playback")
-            self.assertEqual(signal.hotkey, plugin_manager.ActionHotkeyBinding(hotkey, False))
-            self.assertEqual(signal.slots, (settings.ActionSlot("windows-default-device", "cycle-playback", {}),))
+            self.assertEqual(manager.action_signals, ())
             manager.stop(1.0)
 
     def test_startup_automation_dispatches_once(self) -> None:
@@ -1047,13 +1044,12 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         app._dispatch_web_action("signal.save", {
             "values": {
                 "name": "Movie mode",
-                "on_start": False,
-                "keyboard_enabled": False,
-                "tray_enabled": False,
-                "mqtt_enabled": True,
-                "mqtt_profile_id": "p-home",
-                "mqtt_ha_name": "Movie mode",
-                "mqtt_ha_id": "movie_mode",
+                "triggers": [{
+                    "kind": "mqtt",
+                    "profile_id": "p-home",
+                    "ha_name": "Movie mode",
+                    "ha_id": "movie_mode",
+                }],
                 "slots": [{"kind": "wait", "milliseconds": 1}],
             },
         })
@@ -1105,7 +1101,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         self.assertEqual(saved["parameters"], {"target": 2})
         self.assertEqual(saved["summary"], "Target: Two")
 
-    def test_disabled_automation_trigger_sections_clear_hidden_values(self) -> None:
+    def test_removed_automation_triggers_are_not_submitted(self) -> None:
         from gui import MonitorVolumeApp
 
         manager = Mock()
@@ -1116,12 +1112,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         app._dispatch_web_action("signal.save", {
             "values": {
                 "name": "Startup only",
-                "on_start": True,
-                "keyboard_enabled": False,
-                "hotkey": {"modifiers": 0, "virtual_key": 112},
-                "forward_keys": True,
-                "tray_enabled": False,
-                "tray_label": "Stale item",
+                "triggers": [{"kind": "app-start"}],
                 "slots": [{"kind": "wait", "milliseconds": 1}],
             },
         })
@@ -1136,6 +1127,57 @@ class PluginGuiIntegrationTests(unittest.TestCase):
             True,
             [],
         )
+
+    def test_trigger_list_combines_keyboard_tray_and_app_start(self) -> None:
+        from gui import MonitorVolumeApp
+
+        manager = Mock()
+        manager.save_action_signal.return_value = True
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._plugin_manager = manager
+        hotkey = {"modifiers": 2, "virtual_key": 77}
+
+        app._dispatch_web_action("signal.save", {
+            "values": {
+                "name": "Several triggers",
+                "triggers": [
+                    {"kind": "app-start"},
+                    {"kind": "keyboard", "hotkey": hotkey, "forward_keys": False},
+                    {"kind": "tray", "label": "Run several triggers"},
+                ],
+                "slots": [{"kind": "wait", "milliseconds": 1}],
+            },
+        })
+
+        manager.save_action_signal.assert_called_once_with(
+            None,
+            "Several triggers",
+            hotkey,
+            False,
+            "Run several triggers",
+            [{"kind": "wait", "milliseconds": 1}],
+            True,
+            [],
+        )
+
+    def test_trigger_list_rejects_duplicate_types(self) -> None:
+        from gui import MonitorVolumeApp
+        from web_presentation import UserActionError
+
+        manager = Mock()
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._plugin_manager = manager
+
+        with self.assertRaisesRegex(UserActionError, "only once"):
+            app._dispatch_web_action("signal.save", {
+                "values": {
+                    "name": "Duplicate",
+                    "triggers": [{"kind": "app-start"}, {"kind": "app-start"}],
+                    "slots": [{"kind": "wait", "milliseconds": 1}],
+                },
+            })
+
+        manager.save_action_signal.assert_not_called()
 
     def test_embedded_panels_are_built_after_plugin_startup(self) -> None:
         from gui import MonitorVolumeApp

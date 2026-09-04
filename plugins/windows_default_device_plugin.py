@@ -83,10 +83,10 @@ class WindowsDefaultDevicePlugin:
 
     def get_slot_actions(self) -> list[SlotAction]:
         return [
-            SlotAction("cycle-playback", "Cycle Windows playback"),
-            SlotAction("cycle-voice-output", "Cycle Windows voice output"),
-            SlotAction("cycle-input", "Cycle Windows input"),
-            SlotAction("cycle-microphone", "Cycle Windows microphone"),
+            SlotAction("cycle-playback", "Cycle Windows playback", "Selects the next active Windows playback device for console and multimedia audio."),
+            SlotAction("cycle-voice-output", "Cycle Windows voice output", "Selects the next active Windows communications playback device."),
+            SlotAction("cycle-input", "Cycle Windows input", "Selects the next active Windows recording device for console and multimedia audio."),
+            SlotAction("cycle-microphone", "Cycle Windows microphone", "Selects the next active Windows communications recording device."),
         ]
 
     def run_slot(self, action_id: str, parameters: Mapping[str, object]) -> None:

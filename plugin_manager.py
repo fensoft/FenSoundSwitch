@@ -576,6 +576,7 @@ class PluginManager:
                     "label": f"{record.name}: {action.label}",
                     "value": f"{record.plugin_id}/{action.action_id}",
                     "configurable": callable(getattr(record.plugin, "get_slot_ui", None)),
+                    "description": action.description or f"Runs {action.label.lower()} using {record.name}.",
                 })
         return tuple(options)
 
@@ -1271,8 +1272,6 @@ class PluginManager:
                 continue
             self._initialize_record(record)
 
-        self._migrate_builtin_shortcuts_to_signals()
-
         active_record = self._records_by_id.get(self._active_overlay_plugin_id)
         if active_record is None or not active_record.initialized or not active_record.is_overlay_renderer:
             default_record = self._records_by_id.get(DEFAULT_OVERLAY_PLUGIN_ID)
@@ -1323,50 +1322,6 @@ class PluginManager:
                     self._signal_trigger_instances[f"{signal.signal_id}/{index}"] = instance
                 except Exception as exc:
                     self._notice(f"Automation {signal.name} trigger failed: {self._format_error(exc)}")
-
-    def _migrate_builtin_shortcuts_to_signals(self) -> None:
-        """Promote removed Discord/Windows direct shortcuts without losing bindings."""
-        signals = list(self._action_signals)
-        used_hotkeys = {signal.hotkey.hotkey for signal in signals if signal.hotkey.hotkey is not None}
-        used_ids = {signal.signal_id for signal in signals}
-        changed = False
-        for plugin_id in ("windows-default-device", "discord-output"):
-            record = self._records_by_id.get(plugin_id)
-            if record is None or record.plugin is None:
-                continue
-            actions = record.slot_actions
-            if not actions:
-                getter = getattr(record.plugin, "get_slot_actions", None)
-                try:
-                    declared = getter() if callable(getter) else ()
-                except Exception:
-                    declared = ()
-                actions = tuple(action for action in declared if isinstance(action, SlotAction))
-            for action in actions:
-                binding = self._shortcut_bindings.get(self._binding_id(plugin_id, action.action_id))
-                if binding is None or binding.hotkey is None or binding.hotkey in used_hotkeys:
-                    continue
-                signal_id = f"signal-{plugin_id}-{action.action_id}"
-                if signal_id in used_ids:
-                    continue
-                signals.append(ActionSignal(
-                    signal_id,
-                    action.label,
-                    binding,
-                    None,
-                    (ActionSlot(plugin_id, action.action_id, {}),),
-                ))
-                used_ids.add(signal_id)
-                used_hotkeys.add(binding.hotkey)
-                changed = True
-        if not changed:
-            return
-        try:
-            save_action_signals(signals)
-        except (OSError, ValueError) as exc:
-            self._notice(f"Could not migrate direct shortcuts to automations: {self._format_error(exc)}")
-            return
-        self._action_signals = tuple(signals)
 
     def notify_volume_topology_changed(self) -> None:
         for _route, provider in self._all_route_providers():

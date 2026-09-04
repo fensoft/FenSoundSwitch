@@ -213,6 +213,21 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
         ), patch.object(plugin, "_start_worker", return_value=True) as start_worker:
             plugin.initialize(self.make_host(Path(temporary_directory) / "settings.json"))
         start_worker.assert_called_once_with(plugin._validate_authorization, False)
+        document = plugin.get_plugin_ui()
+        self.assertEqual(document["fields"], [])
+        self.assertEqual([action["id"] for action in document["actions"]], ["reset"])
+
+    def test_unconfigured_ui_shows_only_setup_actions_and_tutorial(self) -> None:
+        plugin = discord.DiscordOutputPlugin()
+        with patch("plugins.discord_output_plugin._load_saved_oauth", return_value=None):
+            plugin.initialize(self.make_host(Path("unused")))
+
+        document = plugin.get_plugin_ui()
+
+        self.assertEqual([action["id"] for action in document["actions"]], ["open_portal", "setup"])
+        self.assertEqual([field["id"] for field in document["fields"]], ["client_secret", "client_id"])
+        self.assertIn("1. Open the Discord Developer Portal", document["description"])
+        self.assertIn("5. Select Save and authorize", document["description"])
 
     def test_first_setup_saves_client_configuration_then_authorizes(self) -> None:
         saved = discord._saved_client_configuration("123456789012345", "secret")
@@ -231,6 +246,16 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
         self.assertEqual("complete", result["status"])
         save.assert_called_once_with(saved)
         start_worker.assert_called_once_with(plugin._validate_authorization, True)
+        self.assertEqual([action["id"] for action in plugin.get_plugin_ui()["actions"]], ["reset"])
+
+    def test_reset_returns_the_ui_to_setup_state(self) -> None:
+        plugin = discord.DiscordOutputPlugin()
+        plugin._configured = True
+        with patch("plugins.discord_output_plugin._delete_credential") as delete:
+            plugin.invoke_ui_action("reset", {})
+
+        self.assertEqual(delete.call_count, 2)
+        self.assertEqual([action["id"] for action in plugin.get_plugin_ui()["actions"]], ["open_portal", "setup"])
 
     def test_repeat_trigger_is_ignored_while_an_operation_is_active(self) -> None:
         plugin = discord.DiscordOutputPlugin()

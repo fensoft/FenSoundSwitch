@@ -569,10 +569,13 @@ class DiscordOutputPlugin:
         self._clients_lock = threading.Lock()
         self._clients: set[DiscordRpcClient] = set()
         self._shutdown = threading.Event()
+        self._configured = False
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
         saved = _load_saved_oauth()
+        with self._state_lock:
+            self._configured = saved is not None
         if saved is None:
             self._set_status("Setup required")
             return
@@ -650,7 +653,11 @@ class DiscordOutputPlugin:
             self._operation_lock.release()
 
     def get_slot_actions(self) -> list[SlotAction]:
-        return [SlotAction("switch-output", "Switch Discord output")]
+        return [SlotAction(
+            "switch-output",
+            "Switch Discord output",
+            "Temporarily switches Discord to another output, then restores the original output.",
+        )]
 
     def run_slot(self, action_id: str, parameters: Mapping[str, object]) -> None:
         if action_id != "switch-output":
@@ -678,14 +685,23 @@ class DiscordOutputPlugin:
             self._operation_lock.release()
 
     def get_plugin_ui(self) -> dict[str, object]:
+        with self._state_lock:
+            configured = self._configured
+        if configured:
+            return plugin_ui_document("Discord output switch", [], [
+                {"id": "reset", "label": "Reset authorization", "kind": "action", "async": True, "confirm": "Remove the saved Discord client secret and OAuth grant from Windows Credential Manager?"},
+            ], f"OAuth status: {self._current_status()}.")
         return plugin_ui_document("Configure Discord output switch", [
             {"id": "client_secret", "type": "password", "label": "Client secret", "value": "", "required": True, "write_only": True, "description": "Reset the secret in Discord's Developer Portal before copying it here."},
             {"id": "client_id", "type": "text", "label": "Application ID", "value": "", "required": True},
         ], [
             {"id": "open_portal", "label": "Open Developer Portal", "kind": "action", "async": False},
             {"id": "setup", "label": "Save and authorize", "kind": "submit", "async": True},
-            {"id": "reset", "label": "Reset authorization", "kind": "action", "async": True, "confirm": "Remove the saved Discord client secret and OAuth grant from Windows Credential Manager?"},
-        ], f"OAuth status: {self._current_status()}. Add {_DEFAULT_REDIRECT_URI} exactly and request only rpc, rpc.voice.read, and rpc.voice.write. Discord's first consent prompt cannot be skipped.")
+        ], "1. Open the Discord Developer Portal and create or select an application.\n"
+           f"2. Under OAuth2, add {_DEFAULT_REDIRECT_URI} as an exact redirect URI.\n"
+           "3. Reset the client secret, then paste the new secret below.\n"
+           "4. Copy the application's Application ID below.\n"
+           "5. Select Save and authorize, then approve only rpc, rpc.voice.read, and rpc.voice.write in Discord.")
 
     def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
         if action_id == "open_portal":
@@ -707,6 +723,8 @@ class DiscordOutputPlugin:
             try:
                 saved = _saved_client_configuration(client_id, secret)
                 _save_oauth(saved)
+                with self._state_lock:
+                    self._configured = True
             finally:
                 self._operation_lock.release()
             self._set_status("Checking Discord authorization…")
@@ -720,6 +738,8 @@ class DiscordOutputPlugin:
                 _delete_credential(_PROTOTYPE_CREDENTIAL_TARGET)
             finally:
                 self._operation_lock.release()
+            with self._state_lock:
+                self._configured = False
             self._set_status("Setup required")
             return plugin_ui_result("complete", message="Discord authorization was reset.")
         raise ValueError(f"Unknown Discord UI action {action_id!r}.")

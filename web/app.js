@@ -19,6 +19,7 @@ const editorForm = document.querySelector("#editor-form");
 const confirmDialog = document.querySelector("#confirm-dialog");
 const slotDialog = document.querySelector("#slot-dialog");
 const slotForm = document.querySelector("#slot-form");
+const choiceDialog = document.querySelector("#choice-dialog");
 const mqttDialog = document.querySelector("#mqtt-dialog");
 const mqttProfileForm = document.querySelector("#mqtt-profile-form");
 
@@ -36,6 +37,15 @@ function element(tag, options = {}, children = []) {
 
 function safeArray(value) { return Array.isArray(value) ? value : []; }
 function safeText(value, fallback = "") { return typeof value === "string" ? value : fallback; }
+function homeAssistantId(value) {
+  return safeText(value)
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^[_-]+|[_-]+$/g, "")
+    .slice(0, 64);
+}
 function hotkeyLabel(value) {
   if (!value || typeof value !== "object") return "Not set";
   const parts = [];
@@ -348,11 +358,18 @@ function openEntityEditor(kind, entity) {
   editorDialog.dataset.kind = kind;
   document.querySelector("#editor-kicker").textContent = kind === "signal" ? "AUTOMATION" : kind === "mqtt-profile" ? "MQTT / HA" : kind.toUpperCase();
   document.querySelector("#editor-title").textContent = entity ? `Edit ${safeText(entity.name, kind)}` : `Create ${kind === "signal" ? "automation" : kind === "mqtt-profile" ? "MQTT/HA configuration" : kind}`;
+  const editorDescription = document.querySelector("#editor-description");
+  editorDescription.textContent = safeText(schema?.description);
+  editorDescription.hidden = !editorDescription.textContent;
   document.querySelector("#editor-error").hidden = true;
   const container = document.querySelector("#editor-fields");
   container.replaceChildren();
   const values = entity?.values && typeof entity.values === "object" ? entity.values : {};
   for (const field of fields) container.append(renderField(field, values[field.key]));
+  if (kind === "mqtt-profile") {
+    groupEditorFields(container, ["host", "port"], "is-host-port");
+    groupEditorFields(container, ["username", "password"], "");
+  }
   syncConditionalFields(container);
   for (const controller of container.querySelectorAll('input[type="checkbox"], select')) controller.addEventListener("change", () => syncConditionalFields(container));
   if (!fields.length) container.append(element("p", { class: "muted", text: "This item has no configurable fields." }));
@@ -364,25 +381,18 @@ function renderField(field, current) {
   const key = safeText(field.key);
   const type = safeText(field.type, "text");
   const wrapper = element("div", { class: type === "boolean" ? "check-field" : "field" });
+  wrapper.dataset.fieldKey = key;
   if (field.visible_when) wrapper.dataset.visibleWhen = safeText(field.visible_when);
   let input;
   if (type === "hotkey") {
-    input = element("input", { id: `field-${key}`, name: key, type: "text", readonly: "", value: hotkeyLabel(current), "data-hotkey": JSON.stringify(current ?? null), placeholder: "Press a key combination" });
-    input.addEventListener("keydown", event => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.key === "Backspace" || event.key === "Delete") { input.dataset.hotkey = "null"; input.value = "Not set"; return; }
-      if (event.code === "AltRight") { input.dataset.rightAlt = "true"; return; }
-      const virtualKey = virtualKeyFromEvent(event);
-      if (!virtualKey || [16, 17, 18, 91, 92].includes(virtualKey)) return;
-      const altGraph = input.dataset.rightAlt === "true" || event.getModifierState?.("AltGraph") === true;
-      const value = { modifiers: (event.altKey || altGraph ? 1 : 0) | (event.ctrlKey || altGraph ? 2 : 0) | (event.shiftKey ? 4 : 0) | (event.metaKey ? 8 : 0), virtual_key: virtualKey };
-      input.dataset.hotkey = JSON.stringify(value); input.value = hotkeyLabel(value);
-    }, true);
-    input.addEventListener("keyup", event => { event.preventDefault(); event.stopPropagation(); if (event.code === "AltRight") input.dataset.rightAlt = "false"; }, true);
+    input = renderHotkeyInput(`field-${key}`, current);
+    input.name = key;
   }
   else if (type === "sequence") {
     input = renderSequenceField(key, field, current);
+  }
+  else if (type === "trigger-list") {
+    input = renderTriggerListField(key, field, current);
   }
   else if (type === "select") {
     input = element("select", { id: `field-${key}`, name: key, required: field.required ? "" : null });
@@ -402,12 +412,41 @@ function renderField(field, current) {
     input = element("textarea", { id: `field-${key}`, name: key, required: field.required ? "" : null, maxlength: Number.isInteger(field.max_length) ? field.max_length : 4096 }); input.value = safeText(current);
   } else {
     input = element("input", { id: `field-${key}`, name: key, type: type === "boolean" ? "checkbox" : (["number", "password"].includes(type) ? type : "text"), required: field.required ? "" : null, min: field.min, max: field.max, maxlength: Number.isInteger(field.max_length) ? field.max_length : 512, autocomplete: type === "password" ? "off" : "on" });
-    if (type === "boolean") input.checked = Boolean(current ?? field.default); else input.value = current ?? safeText(field.default);
+    if (type === "boolean") input.checked = Boolean(current ?? field.default);
+    else {
+      const initial = current ?? field.default;
+      input.value = typeof initial === "string" || typeof initial === "number" ? initial : "";
+    }
   }
   const label = element("label", { for: `field-${key}`, text: safeText(field.label, key) });
   if (type === "boolean") wrapper.append(input, label); else wrapper.append(label, input);
   if (field.description) wrapper.append(element("small", { text: safeText(field.description) }));
   return wrapper;
+}
+
+function groupEditorFields(container, keys, extraClass) {
+  const fields = keys.map(key => container.querySelector(`[data-field-key="${key}"]`));
+  if (fields.some(field => !field)) return;
+  const row = element("div", { class: `field-row${extraClass ? ` ${extraClass}` : ""}` });
+  fields[0].before(row);
+  row.append(...fields);
+}
+
+function renderHotkeyInput(id, current) {
+  const input = element("input", { id, type: "text", readonly: "", value: hotkeyLabel(current), "data-hotkey": JSON.stringify(current ?? null), placeholder: "Press a key combination" });
+  input.addEventListener("keydown", event => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === "Backspace" || event.key === "Delete") { input.dataset.hotkey = "null"; input.value = "Not set"; return; }
+    if (event.code === "AltRight") { input.dataset.rightAlt = "true"; return; }
+    const virtualKey = virtualKeyFromEvent(event);
+    if (!virtualKey || [16, 17, 18, 91, 92].includes(virtualKey)) return;
+    const altGraph = input.dataset.rightAlt === "true" || event.getModifierState?.("AltGraph") === true;
+    const value = { modifiers: (event.altKey || altGraph ? 1 : 0) | (event.ctrlKey || altGraph ? 2 : 0) | (event.shiftKey ? 4 : 0) | (event.metaKey ? 8 : 0), virtual_key: virtualKey };
+    input.dataset.hotkey = JSON.stringify(value); input.value = hotkeyLabel(value);
+  }, true);
+  input.addEventListener("keyup", event => { event.preventDefault(); event.stopPropagation(); if (event.code === "AltRight") input.dataset.rightAlt = "false"; }, true);
+  return input;
 }
 
 function syncConditionalFields(container) {
@@ -421,40 +460,142 @@ function syncConditionalFields(container) {
   }
 }
 
+function openChoiceDialog(kicker, title, description, options, onSelect) {
+  state.choice = { onSelect };
+  document.querySelector("#choice-kicker").textContent = kicker;
+  document.querySelector("#choice-title").textContent = title;
+  document.querySelector("#choice-description").textContent = description;
+  const container = document.querySelector("#choice-options");
+  container.replaceChildren();
+  for (const option of options) {
+    const button = element("button", { class: "choice-card", type: "button", disabled: option.disabled ? "" : null, onclick: () => {
+      const callback = state.choice?.onSelect;
+      choiceDialog.close();
+      state.choice = null;
+      if (callback) callback(option.value);
+    } }, [
+      element("strong", { text: safeText(option.label, String(option.value ?? "")) }),
+      element("span", { text: safeText(option.description, "No additional configuration is required.") }),
+      ...(option.disabled ? [element("small", { text: safeText(option.disabled_reason, "Unavailable") })] : []),
+    ]);
+    container.append(button);
+  }
+  choiceDialog.showModal();
+  window.setTimeout(() => container.querySelector("button:not(:disabled)")?.focus(), 0);
+}
+
 function renderSequenceField(key, field, current) {
   const root = element("div", { id: `field-${key}`, name: key, class: "sequence-editor" });
   const list = element("div", { class: "sequence-list" });
   const options = safeArray(field.options);
+  const optionByTarget = new Map(options.map(option => [safeText(option.value), option]));
   function addSlot(value) {
-    const slot = value && typeof value === "object" ? value : { kind: "action", target: options[0]?.value || "", parameters: {} };
+    if (!value || typeof value !== "object") return;
+    const slot = value;
     const kind = slot.kind === "wait" ? "wait" : "action";
     const row = element("div", { class: "sequence-row", "data-kind": kind });
     const index = element("strong", { class: "sequence-index" });
     let control;
+    let configurable = false;
     if (kind === "wait") {
       control = element("label", { class: "sequence-wait" }, [element("span", { text: "Wait" }), element("input", { type: "number", min: "0", max: "300000", step: "100", value: Number.isInteger(slot.milliseconds) ? slot.milliseconds : 1000, "aria-label": "Wait milliseconds" }), element("span", { text: "ms" })]);
     } else {
-      control = element("select", { "aria-label": "Action step" });
-      for (const option of options) control.append(element("option", { value: safeText(option.value), text: safeText(option.label, option.value), selected: option.value === slot.target ? "" : null, disabled: option.disabled ? "" : null, "data-configurable": option.configurable ? "true" : "false" }));
+      const option = optionByTarget.get(safeText(slot.target));
+      const label = safeText(option?.label, `Unavailable: ${safeText(slot.target)}`);
+      const description = safeText(option?.description, "This saved action is currently unavailable.");
+      configurable = option?.configurable === true;
+      row.dataset.target = safeText(slot.target);
+      control = element("div", { class: "sequence-action" }, [element("strong", { text: label }), element("small", { text: description })]);
     }
-    const configure = element("button", { class: "secondary sequence-config", type: "button", text: "Configure", onclick: () => openSlotEditor(row, control.value) });
+    const configure = element("button", { class: "secondary sequence-config", type: "button", text: "Configure", hidden: !configurable ? "" : null, onclick: () => openSlotEditor(row, row.dataset.target) });
     const summary = element("small", { class: "sequence-summary", text: safeText(slot.summary) });
     summary.hidden = !summary.textContent;
-    function refreshConfigure() { configure.hidden = kind !== "action" || control.selectedOptions?.[0]?.dataset.configurable !== "true"; }
-    if (kind === "action") control.addEventListener("change", () => { row._parameters = {}; summary.textContent = ""; summary.hidden = true; refreshConfigure(); });
     const moveUp = element("button", { class: "icon-button", type: "button", text: "↑", title: "Move up", "aria-label": "Move step up", onclick: () => { row.previousElementSibling?.before(row); refresh(); } });
     const moveDown = element("button", { class: "icon-button", type: "button", text: "↓", title: "Move down", "aria-label": "Move step down", onclick: () => { row.nextElementSibling?.after(row); refresh(); } });
     const remove = element("button", { class: "icon-button", type: "button", text: "×", title: "Remove step", "aria-label": "Remove step", onclick: () => { row.remove(); refresh(); } });
     row._parameters = slot.parameters && typeof slot.parameters === "object" ? slot.parameters : {};
     row._summary = summary;
-    row.append(index, control, configure, moveUp, moveDown, remove, summary); list.append(row); refreshConfigure(); refresh();
+    row.append(index, control, configure, moveUp, moveDown, remove, summary); list.append(row); refresh();
   }
   function refresh() { [...list.children].forEach((row, index) => { row.querySelector(".sequence-index").textContent = String(index + 1); }); }
-  root._sequenceValue = () => [...list.children].map(row => row.dataset.kind === "wait" ? { kind: "wait", milliseconds: Number(row.querySelector("input").value) } : { kind: "action", target: row.querySelector("select").value, parameters: row._parameters || {} });
+  root._sequenceValue = () => [...list.children].map(row => row.dataset.kind === "wait" ? { kind: "wait", milliseconds: Number(row.querySelector("input").value) } : { kind: "action", target: row.dataset.target, parameters: row._parameters || {} });
   for (const slot of safeArray(current)) addSlot(slot);
-  const addAction = element("button", { class: "secondary", type: "button", text: "Add action step", disabled: options.length ? null : "", onclick: () => addSlot(null) });
-  const addWait = element("button", { class: "secondary", type: "button", text: "Add wait step", onclick: () => addSlot({ kind: "wait", milliseconds: 1000 }) });
-  root.append(list, element("div", { class: "button-row sequence-add" }, [addAction, addWait]));
+  const addAction = element("button", { class: "secondary", type: "button", text: "Add action", onclick: () => openChoiceDialog(
+    "ADD ACTION",
+    "Choose an action",
+    "Select the next step to append to this automation.",
+    [...options, { value: "__wait__", label: "Wait", description: "Pauses the automation before running the following step." }],
+    value => addSlot(value === "__wait__" ? { kind: "wait", milliseconds: 1000 } : { kind: "action", target: value, parameters: {} }),
+  ) });
+  root.append(list, element("div", { class: "button-row sequence-add" }, [addAction]));
+  return root;
+}
+
+function renderTriggerListField(key, field, current) {
+  const root = element("div", { id: `field-${key}`, name: key, class: "trigger-editor" });
+  const list = element("div", { class: "trigger-list" });
+  const options = safeArray(field.options);
+  const optionByKind = new Map(options.map(option => [safeText(option.value), option]));
+  const addButton = element("button", { class: "secondary", type: "button", text: "Add trigger", onclick: () => {
+    const used = new Set([...list.children].map(row => row.dataset.kind));
+    openChoiceDialog(
+      "ADD TRIGGER",
+      "Choose a trigger",
+      "Select an event that should run this automation.",
+      options.map(option => used.has(option.value) ? { ...option, disabled: true, disabled_reason: "Already added" } : option),
+      kind => addTrigger(kind === "mqtt" ? { kind, ha_name: safeText(document.querySelector("#field-name")?.value) } : { kind }),
+    );
+  } });
+
+  function refresh() {
+    const used = new Set([...list.children].map(row => row.dataset.kind));
+    addButton.disabled = options.length > 0 && used.size >= options.length;
+    [...list.children].forEach((row, index) => { row.querySelector(".trigger-index").textContent = String(index + 1); });
+  }
+
+  function addTrigger(value) {
+    const trigger = value && typeof value === "object" ? value : {};
+    const kind = safeText(trigger.kind);
+    const option = optionByKind.get(kind);
+    if (!option || [...list.children].some(row => row.dataset.kind === kind)) return;
+    const row = element("div", { class: "trigger-row", "data-kind": kind });
+    const index = element("strong", { class: "trigger-index" });
+    const body = element("div", { class: "trigger-body" });
+    body.append(element("strong", { text: safeText(option.label, kind) }));
+    if (kind === "app-start") {
+      body.append(element("small", { text: "Runs once after the application is ready." }));
+      row._triggerValue = () => ({ kind });
+    } else if (kind === "keyboard") {
+      const hotkey = renderHotkeyInput(`trigger-${kind}-hotkey`, trigger.hotkey);
+      const forward = element("input", { id: `trigger-${kind}-forward`, type: "checkbox" });
+      forward.checked = trigger.forward_keys !== false;
+      body.append(element("label", { for: hotkey.id, text: "Key combination" }), hotkey, element("label", { class: "trigger-check", for: forward.id }, [forward, element("span", { text: "Forward keys to other applications" })]));
+      row._triggerValue = () => ({ kind, hotkey: JSON.parse(hotkey.dataset.hotkey), forward_keys: forward.checked });
+    } else if (kind === "tray") {
+      const label = element("input", { id: `trigger-${kind}-label`, type: "text", maxlength: "80", value: safeText(trigger.label), placeholder: "Menu option text" });
+      body.append(element("label", { for: label.id, text: "Tray menu option text" }), label);
+      row._triggerValue = () => ({ kind, label: label.value });
+    } else {
+      const profile = element("select", { id: `trigger-${kind}-profile` });
+      for (const profileOption of safeArray(field.mqtt_profiles)) profile.append(element("option", { value: safeText(profileOption.value), text: safeText(profileOption.label, profileOption.value), selected: profileOption.value === trigger.profile_id ? "" : null }));
+      const name = element("input", { id: `trigger-${kind}-name`, type: "text", maxlength: "80", value: safeText(trigger.ha_name), placeholder: "Home Assistant name" });
+      const savedIdentifier = safeText(trigger.ha_id).trim();
+      const identifier = element("input", { id: `trigger-${kind}-id`, type: "text", maxlength: "64", value: savedIdentifier || homeAssistantId(name.value), placeholder: "Home Assistant ID", "data-autogenerated": savedIdentifier ? "false" : "true" });
+      name.addEventListener("input", () => { if (identifier.dataset.autogenerated === "true") identifier.value = homeAssistantId(name.value); });
+      identifier.addEventListener("input", () => { identifier.dataset.autogenerated = "false"; });
+      body.append(element("label", { for: profile.id, text: "MQTT/HA configuration" }), profile, element("label", { for: name.id, text: "Home Assistant name" }), name, element("label", { for: identifier.id, text: "Home Assistant ID" }), identifier);
+      row._triggerValue = () => ({ kind, profile_id: profile.value, ha_name: name.value, ha_id: identifier.value });
+    }
+    const remove = element("button", { class: "icon-button", type: "button", text: "×", title: "Remove trigger", "aria-label": `Remove ${safeText(option.label, kind)} trigger`, onclick: () => { row.remove(); refresh(); } });
+    row.append(index, body, remove);
+    list.append(row);
+    refresh();
+  }
+
+  root._triggerValue = () => [...list.children].map(row => row._triggerValue());
+  for (const trigger of safeArray(current)) addTrigger(trigger);
+  root.append(list, element("div", { class: "button-row trigger-add" }, [addButton]));
+  refresh();
   return root;
 }
 
@@ -556,26 +697,29 @@ async function saveEditor(event) {
   const save = document.querySelector("#editor-save");
   save.disabled = true; save.textContent = "Saving…";
   const values = {};
-  for (const input of editorForm.querySelectorAll("[name]")) values[input.getAttribute("name")] = typeof input._sequenceValue === "function" ? input._sequenceValue() : input.dataset.hotkey !== undefined ? JSON.parse(input.dataset.hotkey) : input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.selectedOptions?.[0]?.dataset.json === "true" ? JSON.parse(input.value) : input.value;
-  if (state.editor.kind === "signal" && !values.on_start && !values.keyboard_enabled && !values.tray_enabled && !values.mqtt_enabled) {
+  for (const input of editorForm.querySelectorAll("[name]")) values[input.getAttribute("name")] = typeof input._sequenceValue === "function" ? input._sequenceValue() : typeof input._triggerValue === "function" ? input._triggerValue() : input.dataset.hotkey !== undefined ? JSON.parse(input.dataset.hotkey) : input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.selectedOptions?.[0]?.dataset.json === "true" ? JSON.parse(input.value) : input.value;
+  if (state.editor.kind === "signal" && !safeArray(values.triggers).length) {
     const target = document.querySelector("#editor-error");
-    target.textContent = "Choose at least one trigger."; target.hidden = false; target.focus();
+    target.textContent = "Add at least one trigger."; target.hidden = false; target.focus();
     save.disabled = false; save.textContent = "Save changes";
     return;
   }
-  if (state.editor.kind === "signal" && values.keyboard_enabled && !values.hotkey) {
+  const keyboardTrigger = safeArray(values.triggers).find(trigger => trigger.kind === "keyboard");
+  if (state.editor.kind === "signal" && keyboardTrigger && !keyboardTrigger.hotkey) {
     const target = document.querySelector("#editor-error");
     target.textContent = "Press the key combination that should run this automation."; target.hidden = false; target.focus();
     save.disabled = false; save.textContent = "Save changes";
     return;
   }
-  if (state.editor.kind === "signal" && values.tray_enabled && !safeText(values.tray_label).trim()) {
+  const trayTrigger = safeArray(values.triggers).find(trigger => trigger.kind === "tray");
+  if (state.editor.kind === "signal" && trayTrigger && !safeText(trayTrigger.label).trim()) {
     const target = document.querySelector("#editor-error");
     target.textContent = "Enter the tray menu option text."; target.hidden = false; target.focus();
     save.disabled = false; save.textContent = "Save changes";
     return;
   }
-  if (state.editor.kind === "signal" && values.mqtt_enabled && (!safeText(values.mqtt_profile_id).trim() || !safeText(values.mqtt_ha_name).trim() || !safeText(values.mqtt_ha_id).trim())) {
+  const mqttTrigger = safeArray(values.triggers).find(trigger => trigger.kind === "mqtt");
+  if (state.editor.kind === "signal" && mqttTrigger && (!safeText(mqttTrigger.profile_id).trim() || !safeText(mqttTrigger.ha_name).trim() || !safeText(mqttTrigger.ha_id).trim())) {
     const target = document.querySelector("#editor-error");
     target.textContent = "Choose an MQTT/HA configuration and enter the Home Assistant name and ID."; target.hidden = false; target.focus();
     save.disabled = false; save.textContent = "Save changes";
@@ -640,8 +784,10 @@ document.querySelector("#mqtt-close").addEventListener("click", () => mqttDialog
 document.querySelector("#slot-refresh").addEventListener("click", refreshSlotEditor);
 for (const button of document.querySelectorAll("#editor-close, #editor-cancel")) button.addEventListener("click", () => { editorDialog.close("cancel"); state.editor = null; });
 for (const button of document.querySelectorAll("#slot-close, #slot-cancel")) button.addEventListener("click", () => { slotDialog.close("cancel"); state.slotEditor = null; });
+for (const button of document.querySelectorAll("#choice-close, #choice-cancel")) button.addEventListener("click", () => { choiceDialog.close("cancel"); state.choice = null; });
 confirmDialog.addEventListener("close", () => { if (confirmDialog.returnValue === "confirm") execute(confirmDialog.dataset.method, JSON.parse(confirmDialog.dataset.params || "{}")); });
 editorDialog.addEventListener("close", () => { state.editor = null; delete editorDialog.dataset.kind; });
 slotDialog.addEventListener("close", () => { state.slotEditor = null; });
+choiceDialog.addEventListener("close", () => { state.choice = null; });
 mqttDialog.addEventListener("close", () => { state.mqttProfileId = null; showMqttProfileList(); });
 window.addEventListener("pywebviewready", pollSnapshot, { once: true });

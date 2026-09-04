@@ -121,6 +121,7 @@ CI is validation-only. Keep it free of `python app.py`, live controller `start()
 - `ddc.change_monitor_volume(monitor_ref, delta) -> int` (currently unused by the GUI)
 - `ddc.enumerate_monitor_inputs(monitor_ref) -> tuple[MonitorInput, ...]`
 - `ddc.set_monitor_input(monitor_ref, target) -> int`
+- `ddc.set_monitor_input_if_needed(monitor_ref, target) -> bool`
 - `audio_outputs.match_monitor_audio_endpoints(...)` and `build_audio_output_plan(...)`
 - `audio_outputs.reconcile_monitor_audio_outputs(...) -> AudioOutputResult`
 - `audio_outputs.parse_internal_rename_request(...)` and `run_internal_rename_helper(...)`

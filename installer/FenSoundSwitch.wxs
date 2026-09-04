@@ -29,6 +29,7 @@
                 Name="FenSoundSwitch"
                 Description="Control monitor and audio volume routes"
                 Advertise="yes"
+                Icon="FenSoundSwitch.ico"
                 WorkingDirectory="INSTALLFOLDER" />
           </File>
           <RemoveFolder

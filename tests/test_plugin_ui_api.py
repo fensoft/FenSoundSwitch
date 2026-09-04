@@ -9,6 +9,7 @@ from ddc import MonitorIdentity, SavedMonitorSelection
 from plugin_api import (
     PLUGIN_API_VERSION,
     PluginHostContext,
+    SlotAction,
     validate_plugin_ui_document,
     validate_plugin_ui_result,
 )
@@ -34,6 +35,12 @@ def _json_round_trip(value: object) -> object:
 
 
 class PluginUiApiTests(unittest.TestCase):
+    def test_slot_action_supports_optional_chooser_documentation(self) -> None:
+        self.assertEqual(SlotAction("run", "Run").description, "")
+        self.assertEqual(SlotAction("run", "Run", "  Explains the action.  ").description, "Explains the action.")
+        with self.assertRaisesRegex(ValueError, "description"):
+            SlotAction("run", "Run", None)  # type: ignore[arg-type]
+
     def test_api_version_and_strict_document_result_validation(self) -> None:
         self.assertEqual(4, PLUGIN_API_VERSION)
         with self.assertRaisesRegex(ValueError, "JSON-serializable"):
@@ -81,8 +88,8 @@ class PluginUiApiTests(unittest.TestCase):
         self.assertTrue(secret["write_only"])
         discord_actions = {action["id"]: action for action in discord_document["actions"]}
         self.assertTrue(discord_actions["setup"]["async"])
-        self.assertTrue(discord_actions["reset"]["async"])
-        self.assertIn("confirm", discord_actions["reset"])
+        self.assertFalse(discord_actions["open_portal"]["async"])
+        self.assertNotIn("reset", discord_actions)
 
     def test_route_save_actions_use_authoritative_normalizers(self) -> None:
         receiver_cases = (

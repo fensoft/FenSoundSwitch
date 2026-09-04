@@ -14,7 +14,7 @@ from ddc import (
     match_selected_monitor,
     saved_monitor_selection_from_json,
     saved_monitor_selection_to_json,
-    set_monitor_input,
+    set_monitor_input_if_needed,
 )
 from plugin_api import (
     PLUGIN_API_VERSION as HOST_PLUGIN_API_VERSION,
@@ -83,7 +83,11 @@ class DdcInputSourcePlugin:
         host.report_status("Ready")
 
     def get_slot_actions(self) -> list[SlotAction]:
-        return [SlotAction(ACTION_ID, "Select monitor input")]
+        return [SlotAction(
+            ACTION_ID,
+            "Select monitor input",
+            "Selects and verifies one configured monitor input through DDC/CI.",
+        )]
 
     def get_slot_ui(self, action_id: str, parameters: Mapping[str, object]) -> dict[str, object]:
         if action_id != ACTION_ID:
@@ -305,7 +309,9 @@ class DdcInputSourcePlugin:
             match = match_selected_monitor(monitors, selection)
             if match.status != SelectionMatchStatus.FOUND or match.index is None:
                 raise DDCError("The selected monitor is unavailable or its identity is ambiguous.")
-            set_monitor_input(monitors[match.index], monitor_input.value)
+            changed = set_monitor_input_if_needed(monitors[match.index], monitor_input.value)
+            if not changed:
+                return
             host = self._require_host()
             message = f"{selection.description}: {monitor_input.label}"
             host.report_status(message)

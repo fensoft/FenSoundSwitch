@@ -348,7 +348,7 @@ def enumerate_monitor_inputs(monitor_ref: MonitorRef) -> tuple[MonitorInput, ...
     return _normalize_monitor_inputs(capabilities)
 
 
-def set_monitor_input(monitor_ref: MonitorRef, target: int) -> int:
+def _set_monitor_input(monitor_ref: MonitorRef, target: int) -> tuple[int, bool]:
     if isinstance(target, bool) or not isinstance(target, int) or not 0 <= target <= 0xFF:
         raise ValueError("Monitor input must be an integer from 0 to 255.")
     try:
@@ -360,7 +360,7 @@ def set_monitor_input(monitor_ref: MonitorRef, target: int) -> int:
                     raise DDCError("The selected input is no longer advertised by this monitor.")
                 current = monitor_ref.monitor.get_input_source()
                 if current == target:
-                    return current
+                    return current, False
                 monitor_ref.monitor.set_input_source(target)
                 try:
                     confirmed = monitor_ref.monitor.get_input_source()
@@ -374,4 +374,14 @@ def set_monitor_input(monitor_ref: MonitorRef, target: int) -> int:
         raise DDCError(f"Failed to change input on {monitor_ref.description}: {exc}") from exc
     if confirmed != target:
         raise DDCError("The monitor did not confirm the selected input.")
+    return confirmed, True
+
+
+def set_monitor_input(monitor_ref: MonitorRef, target: int) -> int:
+    confirmed, _changed = _set_monitor_input(monitor_ref, target)
     return confirmed
+
+
+def set_monitor_input_if_needed(monitor_ref: MonitorRef, target: int) -> bool:
+    _confirmed, changed = _set_monitor_input(monitor_ref, target)
+    return changed

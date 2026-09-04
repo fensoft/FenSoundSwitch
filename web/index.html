@@ -44,6 +44,7 @@
   <dialog id="editor-dialog" aria-labelledby="editor-title">
     <form method="dialog" id="editor-form">
       <header><div><p class="eyebrow" id="editor-kicker">EDIT</p><h2 id="editor-title">Edit item</h2></div><button class="icon-button" id="editor-close" type="button" aria-label="Close">×</button></header>
+      <p id="editor-description" class="dialog-description tutorial"></p>
       <div id="editor-fields" class="dialog-body"></div>
       <div id="editor-error" class="inline-error" role="alert" hidden></div>
       <footer><button class="secondary" id="editor-cancel" type="button">Cancel</button><button class="primary" id="editor-save" value="default">Save changes</button></footer>
@@ -55,6 +56,14 @@
       <p id="confirm-message" class="dialog-body"></p>
       <footer><button class="secondary" value="cancel">Cancel</button><button class="danger" value="confirm">Continue</button></footer>
     </form>
+  </dialog>
+  <dialog id="choice-dialog" aria-labelledby="choice-title">
+    <div class="dialog-shell">
+      <header><div><p class="eyebrow" id="choice-kicker">ADD ITEM</p><h2 id="choice-title">Choose an item</h2></div><button class="icon-button" id="choice-close" type="button" aria-label="Close">×</button></header>
+      <p id="choice-description" class="dialog-description"></p>
+      <div id="choice-options" class="dialog-body choice-options"></div>
+      <footer><button class="secondary" id="choice-cancel" type="button">Cancel</button></footer>
+    </div>
   </dialog>
   <dialog id="slot-dialog" aria-labelledby="slot-title">
     <form method="dialog" id="slot-form">

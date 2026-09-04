@@ -1024,12 +1024,29 @@ class MonitorVolumeApp:
                     if not field.get("write_only"): values[str(field["id"])] = field.get("value")
                 submit = next((item for item in document["actions"] if isinstance(item, dict) and item.get("kind") == "submit"), None)
                 ui_action = str(submit.get("id", "")) if isinstance(submit, dict) else ""
-            integrations.append({"id": record.plugin_id, "name": record.name, "description": record.display_status, "values": values, "ui_actions": document["actions"] if document else [], "form": {"method": "action.save", "ui_action": ui_action, "fields": fields}})
+            integrations.append({"id": record.plugin_id, "name": record.name, "description": record.display_status, "values": values, "ui_actions": document["actions"] if document else [], "form": {"method": "action.save", "ui_action": ui_action, "description": document.get("description", "") if document else "", "fields": fields}})
         signal_options = list(manager.signal_action_options())
         try:
             mqtt_profile_options = list(manager.mqtt_profile_options())
         except Exception:
             mqtt_profile_options = []
+        trigger_field = {
+            "key": "triggers",
+            "type": "trigger-list",
+            "label": "Triggers",
+            "options": [
+                {"value": "app-start", "label": "App start", "description": "Runs once when the primary application has finished starting."},
+                {"value": "keyboard", "label": "Key press", "description": "Runs when the configured global key combination is pressed."},
+                {"value": "tray", "label": "Tray menu option", "description": "Adds a named command under Automations in the notification-area menu."},
+                {"value": "mqtt", "label": "MQTT / Home Assistant", "description": "Exposes a Home Assistant MQTT button that runs this automation when pressed."},
+            ],
+            "mqtt_profiles": mqtt_profile_options,
+        }
+        signal_form_fields = [
+            {"key": "name", "type": "text", "label": "Automation name", "required": True, "max_length": 80},
+            trigger_field,
+            {"key": "slots", "type": "sequence", "label": "Ordered steps", "options": signal_options},
+        ]
         signals = []
         for signal in manager.action_signals:
             signal_options_for_form = list(signal_options)
@@ -1055,7 +1072,17 @@ class MonitorVolumeApp:
             mqtt_trigger = next((trigger for trigger in signal.plugin_triggers if trigger.plugin_id == "mqtt-input" and trigger.trigger_id == "mqtt-ha"), None)
             if mqtt_trigger is not None: trigger_labels.append("MQTT / Home Assistant")
             mqtt_parameters = mqtt_trigger.parameters if mqtt_trigger is not None else {}
-            signals.append({"id": signal.signal_id, "name": signal.name, "description": " then ".join(slot_labels), "steps": slot_labels, "trigger": " + ".join(trigger_labels) or "No trigger", "values": {"name": signal.name, "hotkey": signal.hotkey.hotkey.to_json() if signal.hotkey.hotkey is not None else None, "keyboard_enabled": signal.hotkey.hotkey is not None, "forward_keys": signal.hotkey.forward_keys, "tray_label": signal.tray_label or "", "tray_enabled": signal.tray_label is not None, "on_start": signal.on_start, "mqtt_enabled": mqtt_trigger is not None, "mqtt_profile_id": mqtt_parameters.get("profile_id", ""), "mqtt_ha_name": mqtt_parameters.get("ha_name", signal.name), "mqtt_ha_id": mqtt_parameters.get("ha_id", ""), "slots": slot_values}, "form": {"method": "signal.save", "fields": [{"key": "name", "type": "text", "label": "Automation name", "required": True, "max_length": 80}, {"key": "on_start", "type": "boolean", "label": "Run when the app starts"}, {"key": "keyboard_enabled", "type": "boolean", "label": "Run when a key is pressed"}, {"key": "hotkey", "type": "hotkey", "label": "Key combination", "visible_when": "keyboard_enabled"}, {"key": "forward_keys", "type": "boolean", "label": "Forward keys to other applications", "visible_when": "keyboard_enabled"}, {"key": "tray_enabled", "type": "boolean", "label": "Run when a tray menu option is chosen"}, {"key": "tray_label", "type": "text", "label": "Tray menu option text", "max_length": 80, "visible_when": "tray_enabled"}, {"key": "mqtt_enabled", "type": "boolean", "label": "Run from MQTT / Home Assistant"}, {"key": "mqtt_profile_id", "type": "select", "label": "MQTT/HA configuration", "options": mqtt_profile_options, "visible_when": "mqtt_enabled"}, {"key": "mqtt_ha_name", "type": "text", "label": "Home Assistant name", "max_length": 80, "visible_when": "mqtt_enabled"}, {"key": "mqtt_ha_id", "type": "text", "label": "Home Assistant ID", "max_length": 64, "visible_when": "mqtt_enabled"}, {"key": "slots", "type": "sequence", "label": "Ordered steps", "options": signal_options_for_form}]}})
+            trigger_values = []
+            if signal.on_start:
+                trigger_values.append({"kind": "app-start"})
+            if signal.hotkey.hotkey is not None:
+                trigger_values.append({"kind": "keyboard", "hotkey": signal.hotkey.hotkey.to_json(), "forward_keys": signal.hotkey.forward_keys})
+            if signal.tray_label is not None:
+                trigger_values.append({"kind": "tray", "label": signal.tray_label})
+            if mqtt_trigger is not None:
+                trigger_values.append({"kind": "mqtt", "profile_id": mqtt_parameters.get("profile_id", ""), "ha_name": mqtt_parameters.get("ha_name", signal.name), "ha_id": mqtt_parameters.get("ha_id", "")})
+            fields = [dict(signal_form_fields[0]), dict(trigger_field), {"key": "slots", "type": "sequence", "label": "Ordered steps", "options": signal_options_for_form}]
+            signals.append({"id": signal.signal_id, "name": signal.name, "description": " then ".join(slot_labels), "steps": slot_labels, "trigger": " + ".join(trigger_labels) or "No trigger", "values": {"name": signal.name, "triggers": trigger_values, "slots": slot_values}, "form": {"method": "signal.save", "fields": fields}})
         renderers = []
         for record in manager.records:
             if not record.initialized or not record.is_overlay_renderer or not record.plugin_id: continue
@@ -1071,7 +1098,7 @@ class MonitorVolumeApp:
         diagnostic_text = read_log_contents()
         if len(diagnostic_text) > 12000: diagnostic_text = diagnostic_text[-12000:]
         recent_archives = [{"name": path.stem, "path": str(path)} for path in recent_configurations()]
-        signal_form = {"method": "signal.save", "fields": [{"key": "name", "type": "text", "label": "Automation name", "required": True, "max_length": 80}, {"key": "on_start", "type": "boolean", "label": "Run when the app starts", "default": False}, {"key": "keyboard_enabled", "type": "boolean", "label": "Run when a key is pressed", "default": False}, {"key": "hotkey", "type": "hotkey", "label": "Key combination", "visible_when": "keyboard_enabled"}, {"key": "forward_keys", "type": "boolean", "label": "Forward keys to other applications", "default": True, "visible_when": "keyboard_enabled"}, {"key": "tray_enabled", "type": "boolean", "label": "Run when a tray menu option is chosen", "default": False}, {"key": "tray_label", "type": "text", "label": "Tray menu option text", "max_length": 80, "visible_when": "tray_enabled"}, {"key": "mqtt_enabled", "type": "boolean", "label": "Run from MQTT / Home Assistant", "default": False}, {"key": "mqtt_profile_id", "type": "select", "label": "MQTT/HA configuration", "options": mqtt_profile_options, "visible_when": "mqtt_enabled"}, {"key": "mqtt_ha_name", "type": "text", "label": "Home Assistant name", "max_length": 80, "visible_when": "mqtt_enabled"}, {"key": "mqtt_ha_id", "type": "text", "label": "Home Assistant ID", "max_length": 64, "visible_when": "mqtt_enabled"}, {"key": "slots", "type": "sequence", "label": "Ordered steps", "options": signal_options}]}
+        signal_form = {"method": "signal.save", "fields": signal_form_fields}
         def mqtt_profile_entity(profile_id: str | None) -> dict[str, object]:
             document = manager.get_mqtt_profile_ui(profile_id)
             profile_fields = []
@@ -1079,7 +1106,7 @@ class MonitorVolumeApp:
             type_map = {"integer": "number", "choice": "select"}
             for field in document["fields"]:
                 if not isinstance(field, dict): continue
-                profile_fields.append({"key": field["id"], "type": type_map.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", [])})
+                profile_fields.append({"key": field["id"], "type": type_map.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", []), "default": field.get("value")})
                 if not field.get("write_only"): profile_values[str(field["id"])] = field.get("value")
             return {"values": profile_values, "form": {"method": "mqtt.profile.save", "ui_action": "save", "fields": profile_fields}}
         mqtt_profiles = []
@@ -1129,27 +1156,43 @@ class MonitorVolumeApp:
             if not isinstance(values, dict): raise ValueError("Automation values are invalid.")
             if not isinstance(values.get("slots"), list) or not values["slots"]:
                 raise UserActionError("Add at least one action or wait step.")
-            on_start = values.get("on_start", False)
-            keyboard_enabled = values.get("keyboard_enabled", False)
-            tray_enabled = values.get("tray_enabled", False)
-            mqtt_enabled = values.get("mqtt_enabled", False)
-            if not all(isinstance(value, bool) for value in (on_start, keyboard_enabled, tray_enabled, mqtt_enabled)):
-                raise UserActionError("Automation triggers are invalid.")
-            if not on_start and not keyboard_enabled and not tray_enabled and not mqtt_enabled:
+            triggers = values.get("triggers")
+            if not isinstance(triggers, list) or not triggers or len(triggers) > 4:
                 raise UserActionError("Choose at least one trigger.")
-            if keyboard_enabled and values.get("hotkey") is None:
-                raise UserActionError("Press the key combination that should run this automation.")
-            if tray_enabled and (not isinstance(values.get("tray_label"), str) or not values["tray_label"].strip()):
-                raise UserActionError("Enter the tray menu option text.")
-            mqtt_values = (values.get("mqtt_profile_id"), values.get("mqtt_ha_name"), values.get("mqtt_ha_id"))
-            if mqtt_enabled and not all(isinstance(value, str) and value.strip() for value in mqtt_values):
-                raise UserActionError("Choose an MQTT/HA configuration and enter the Home Assistant name and ID.")
+            seen_kinds: set[str] = set()
+            on_start = False
+            hotkey = None
+            forward_keys = True
+            tray_label = None
+            plugin_triggers = []
+            for trigger in triggers:
+                if not isinstance(trigger, dict) or not isinstance(trigger.get("kind"), str):
+                    raise UserActionError("Automation triggers are invalid.")
+                kind = trigger["kind"]
+                if kind in seen_kinds or kind not in {"app-start", "keyboard", "tray", "mqtt"}:
+                    raise UserActionError("Each trigger type can be added only once.")
+                seen_kinds.add(kind)
+                if kind == "app-start":
+                    on_start = True
+                elif kind == "keyboard":
+                    hotkey = trigger.get("hotkey")
+                    forward_keys = trigger.get("forward_keys", True)
+                    if hotkey is None:
+                        raise UserActionError("Press the key combination that should run this automation.")
+                    if not isinstance(forward_keys, bool):
+                        raise UserActionError("The keyboard forwarding setting is invalid.")
+                elif kind == "tray":
+                    tray_label = trigger.get("label")
+                    if not isinstance(tray_label, str) or not tray_label.strip():
+                        raise UserActionError("Enter the tray menu option text.")
+                else:
+                    mqtt_values = (trigger.get("profile_id"), trigger.get("ha_name"), trigger.get("ha_id"))
+                    if not all(isinstance(value, str) and value.strip() for value in mqtt_values):
+                        raise UserActionError("Choose an MQTT/HA configuration and enter the Home Assistant name and ID.")
+                    plugin_triggers.append({"target": "mqtt-input/mqtt-ha", "parameters": {"profile_id": mqtt_values[0], "ha_name": mqtt_values[1], "ha_id": mqtt_values[2]}})
             signal_id = arguments.get("id")
             if signal_id is not None and not isinstance(signal_id, str): raise ValueError("Automation ID is invalid.")
-            hotkey = values.get("hotkey") if keyboard_enabled else None
-            tray_label = values.get("tray_label") if tray_enabled else None
-            plugin_triggers = [{"target": "mqtt-input/mqtt-ha", "parameters": {"profile_id": mqtt_values[0], "ha_name": mqtt_values[1], "ha_id": mqtt_values[2]}}] if mqtt_enabled else []
-            if not manager.save_action_signal(signal_id, values.get("name"), hotkey, values.get("forward_keys", True), tray_label, values.get("slots"), on_start, plugin_triggers):
+            if not manager.save_action_signal(signal_id, values.get("name"), hotkey, forward_keys, tray_label, values.get("slots"), on_start, plugin_triggers):
                 raise ValueError("The automation could not be saved.")
         elif action == "signal.delete":
             if not manager.remove_action_signal(str(arguments.get("id", ""))): raise ValueError("The automation could not be removed.")

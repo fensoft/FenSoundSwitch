@@ -13,6 +13,7 @@ from ddc import (
     saved_monitor_selection_from_json,
     saved_monitor_selection_to_json,
     set_monitor_input,
+    set_monitor_input_if_needed,
 )
 from plugin_api import PluginHostContext, validate_plugin_ui_document
 from plugins import ddc_input_source_plugin
@@ -102,6 +103,15 @@ class DdcInputHelpersTests(unittest.TestCase):
         with self.assertRaisesRegex(DDCError, "no longer advertised"):
             set_monitor_input(ref, 0x10)
         self.assertEqual(monitor.set_calls, [0x11])
+
+    def test_input_change_status_distinguishes_an_already_active_input(self) -> None:
+        monitor = FakeMonitor(current=0x11)
+        ref = monitor_ref(monitor=monitor)
+
+        self.assertFalse(set_monitor_input_if_needed(ref, 0x11))
+        self.assertEqual(monitor.set_calls, [])
+        self.assertTrue(set_monitor_input_if_needed(ref, 0x0F))
+        self.assertEqual(monitor.set_calls, [0x0F])
 
     def test_write_validation_rejects_non_integer_capability_values(self) -> None:
         monitor = FakeMonitor(inputs=(True, 17.0))
@@ -262,13 +272,35 @@ class DdcInputSourcePluginTests(unittest.TestCase):
         plugin.initialize(host)
         current_ref = monitor_ref(path="new-path")
 
-        with patch.object(ddc_input_source_plugin, "enumerate_monitors", return_value=[current_ref]) as enumerate_mock, patch.object(ddc_input_source_plugin, "set_monitor_input", return_value=0x11) as set_mock:
+        with patch.object(ddc_input_source_plugin, "enumerate_monitors", return_value=[current_ref]) as enumerate_mock, patch.object(ddc_input_source_plugin, "set_monitor_input_if_needed", return_value=True) as set_mock:
             plugin.run_slot("select-input", parameters)
 
         enumerate_mock.assert_called_once_with()
         set_mock.assert_called_once_with(current_ref, 0x11)
         self.assertEqual(overlays[-1], "Test monitor: HDMI1")
         self.assertEqual(statuses[-1], "Test monitor: HDMI1")
+
+    def test_action_does_not_notify_when_input_is_already_active(self) -> None:
+        ref = monitor_ref()
+        selection = ref.selection_key
+        self.assertIsNotNone(selection)
+        parameters = {
+            "selected_monitor": saved_monitor_selection_to_json(selection),
+            "input_value": 0x11,
+            "input_label": "HDMI1",
+        }
+        plugin = ddc_input_source_plugin.DdcInputSourcePlugin()
+        host, _saved, statuses, overlays = host_context()
+        plugin.initialize(host)
+        statuses_before = list(statuses)
+        overlays_before = list(overlays)
+
+        with patch.object(ddc_input_source_plugin, "enumerate_monitors", return_value=[ref]), patch.object(ddc_input_source_plugin, "set_monitor_input_if_needed", return_value=False) as set_mock:
+            plugin.run_slot("select-input", parameters)
+
+        set_mock.assert_called_once_with(ref, 0x11)
+        self.assertEqual(statuses, statuses_before)
+        self.assertEqual(overlays, overlays_before)
 
     def test_each_step_uses_its_own_monitor_and_input_parameters(self) -> None:
         first = monitor_ref(path="first", serial="first")
@@ -289,7 +321,7 @@ class DdcInputSourcePluginTests(unittest.TestCase):
         host, _saved, _statuses, _overlays = host_context()
         plugin.initialize(host)
 
-        with patch.object(ddc_input_source_plugin, "enumerate_monitors", return_value=[first, second]), patch.object(ddc_input_source_plugin, "set_monitor_input") as set_mock:
+        with patch.object(ddc_input_source_plugin, "enumerate_monitors", return_value=[first, second]), patch.object(ddc_input_source_plugin, "set_monitor_input_if_needed", return_value=True) as set_mock:
             plugin.run_slot("select-input", first_parameters)
             plugin.run_slot("select-input", second_parameters)
 

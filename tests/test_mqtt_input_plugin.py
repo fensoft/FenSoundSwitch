@@ -45,6 +45,17 @@ def _profile(profile_id="living-room", password="secret"):
 
 
 class MqttInputPluginTests(unittest.TestCase):
+    def test_new_profile_form_exposes_standard_mqtt_defaults(self) -> None:
+        plugin = MqttInputPlugin()
+        plugin.initialize(_host())
+
+        document = plugin.get_mqtt_profile_ui(None)
+        values = {field["id"]: field.get("value") for field in document["fields"]}
+
+        self.assertEqual(values["port"], 1883)
+        self.assertEqual(values["discovery_prefix"], "homeassistant")
+        self.assertEqual(values["topic_prefix"], "fensoundswitch")
+
     def test_profiles_are_normalized_detached_and_persisted(self) -> None:
         saves = []
         plugin = MqttInputPlugin()

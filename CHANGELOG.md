@@ -57,6 +57,14 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Changed
 
+- Replaced automation trigger checkboxes and mutable action selectors with documented add-item chooser dialogs. The trigger list combines app-start, keyboard, tray, and MQTT/Home Assistant triggers; the action chooser includes Wait, while inserted action types remain fixed.
+- Made the automation editor content-sized so empty trigger and action lists no longer stretch the name field or leave a large blank dialog.
+- Stopped converting obsolete Windows and Discord direct shortcut records into automations at startup, preventing deleted legacy automations from returning.
+- Automatically generate new MQTT automation Home Assistant IDs from their names until the ID is edited manually.
+- Show standard MQTT defaults in new profile forms and group broker host/port and username/password into compact rows.
+- Split Discord integration controls by credential state: setup and Developer Portal actions appear only before configuration, reset appears only afterward, and Configure now includes a numbered OAuth tutorial.
+- Suppressed DDC monitor-input status and overlay notifications when the selected input is already active.
+- Assigned the packaged application icon explicitly to the MSI Start Menu shortcut.
 - Replaced the Nuitka one-file release with a standalone build packaged as a native WiX MSI, removing executable self-extraction while retaining normal install, upgrade, Start Menu, and uninstall behavior.
 - Replaced the user-facing Tk interface and plugin UI API v3 with a local WebView2 HTML application and declarative plugin UI API v4. The primary process retains hardware, tray, hook, worker, and overlay ownership; the presentation child uses authenticated Windows named-pipe IPC, opens no TCP port, loads no remote UI assets, and keeps Discord secrets write-only and Credential Manager-only.
 - Redesigned the complete Tk interface around a refined Windows 11 visual system matching the approved Fluent Command Center concept: the persistent sidebar now exposes Routes, Actions, Appearance, Settings, and Diagnostics; route and plugin tables are replaced by selectable status cards; live route values, summary cards, quick settings, overlay preview, configuration management, dialogs, and the Windows 11 overlay share one surface and accent system while retaining light, dark, High Contrast, DPI, keyboard, tray, and no-activate behavior.
