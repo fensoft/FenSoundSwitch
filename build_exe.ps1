@@ -63,6 +63,7 @@ try {
 
     & $pythonExe -m nuitka `
         --onefile `
+        --onefile-no-compression `
         --windows-console-mode=disable `
         --enable-plugins=tk-inter `
         --include-package-data=webview `

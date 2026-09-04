@@ -385,13 +385,14 @@ External plugins can use arbitrary network paths. The bundled Discord plugin con
 app, app_version, audio_outputs, autostart, diagnostics, plugins.discord_output_plugin, plugins.windows11_overlay_plugin, plugins.macos_overlay_plugin, gui, ddc, settings, theme, plugin_api, plugin_hotkeys, plugin_manager, windows_platform
 ```
 
-Direct runtime dependencies pin `monitorcontrol==4.2.0`, `paho-mqtt==2.1.0`, `pywebview==6.1`, and `pythonnet==3.0.5`. The latter two host the local Windows WebView2 presentation child. The `build` extra pins `Nuitka==2.4.8`. There is no lockfile; build-system requirements and transitive build dependencies are not fully pinned.
+Direct runtime dependencies pin `monitorcontrol==4.2.0`, `paho-mqtt==2.1.0`, `pywebview==6.1`, and `pythonnet==3.0.5`. The latter two host the local Windows WebView2 presentation child. The `build` extra pins `Nuitka==4.2`. There is no lockfile; build-system requirements and transitive build dependencies are not fully pinned.
 
 `gui.py`'s function-local import is still a direct Python import, and `plugin_manager.py` directly imports every bundled provider from `plugins`; `build_exe.ps1` also passes `--include-package=plugins`, so Nuitka embeds the bundled framework/plugins. Files discovered from adjacent `external-plugins`, per-user `%APPDATA%\fensoundswitch\plugins`, or the legacy trusted `%APPDATA%\windows-ddc\plugins` fallback are deliberately not build inputs or embedded data; the executable imports them from disk after restart.
 
 `build_exe.ps1` resolves `python`, changes to its own repository directory, checks `app.py` and `FenSoundSwitch.ico`, then creates a temporary ignored `fensoundswitch-version.txt` build resource and invokes Nuitka. The default build version is `dev`. Tag publication passes the exact `github.ref_name`; `app_version.py` reads that bundled resource for the About page, while source execution falls back to `dev`. Numeric tag components are padded for Windows file/product version metadata; nonnumeric tags retain their exact About value and use `0.0.0.0` for numeric PE metadata. The temporary resource is removed in `finally`.
 
 - `--onefile`
+- `--onefile-no-compression` to avoid a high-entropy compressed payload that can increase unsigned self-extractor false positives
 - `--windows-console-mode=disable`
 - `--enable-plugins=tk-inter`
 - `--include-package=plugins`

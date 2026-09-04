@@ -18,7 +18,9 @@ python -m pip install -e .[build]
 
 The build produces `dist\FenSoundSwitch.exe`. A normal local build embeds `dev`, which is shown on the application's **About** page. The release workflow passes the pushed tag name to the build, so a tag named `2.0` is displayed exactly as version `2.0`. Numeric tags may have a leading `v` and are padded to four components for Windows executable metadata. Other tag names are still displayed exactly while their numeric Windows file version remains `0.0.0.0`.
 
-The build can download Nuitka support or toolchain components, overwrites an existing output with the same name, and removes intermediate output. Do not run it as a routine test.
+The build can download Nuitka support or toolchain components, overwrites an existing output with the same name, and removes intermediate output. The one-file payload is deliberately uncompressed to reduce antivirus heuristic false positives. Do not run it as a routine test.
+
+Release executables are currently unsigned. Defender can classify an unfamiliar one-file executable with low-level keyboard hooks and Windows device control as a generic machine-learning threat even when its published digest matches. Signing releases with a trusted Authenticode certificate is the durable reputation fix. Until signing is configured, submit false positives to [Microsoft Security Intelligence](https://www.microsoft.com/en-us/wdsi/filesubmission) and compare the downloaded SHA-256 with the digest shown for the GitHub Release asset. Do not advise users to disable Defender or add broad exclusions.
 
 ## Validate Before Building
 

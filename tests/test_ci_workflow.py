@@ -9,6 +9,7 @@ RELEASE_WORKFLOW_PATH = (
     Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
 )
 BUILD_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "build_exe.ps1"
+PYPROJECT_PATH = Path(__file__).resolve().parents[1] / "pyproject.toml"
 
 
 class CIWorkflowTests(unittest.TestCase):
@@ -82,9 +83,11 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn('[string]$Version = "dev"', script)
         self.assertIn("--file-version=$windowsVersion", script)
         self.assertIn("--product-version=$windowsVersion", script)
+        self.assertIn("--onefile-no-compression", script)
         self.assertIn("--include-data-files=fensoundswitch-version.txt=fensoundswitch-version.txt", script)
         self.assertIn("[System.IO.File]::WriteAllText", script)
         self.assertIn("Remove-Item -LiteralPath $versionFile", script)
+        self.assertIn('"Nuitka==4.2"', PYPROJECT_PATH.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
