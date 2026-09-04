@@ -70,6 +70,7 @@ from settings import (
     ActionSignal,
     ActionSlot,
     WaitSlot,
+    PluginSignalTrigger,
     normalize_signal_label,
     MAX_SIGNAL_SLOTS,
     MAX_WAIT_MILLISECONDS,
@@ -540,6 +541,7 @@ class PluginManager:
         self._input_routes: tuple[VolumeRoute, ...] = ()
         self._route_instances: dict[str, VolumeProvider] = {}
         self._route_input_instances: dict[str, object] = {}
+        self._signal_trigger_instances: dict[str, object] = {}
         self._route_hotkeys: dict[str, int] = {}
         self._action_signals: tuple[ActionSignal, ...] = ()
         self._startup_automations_dispatched = False
@@ -576,6 +578,56 @@ class PluginManager:
                     "configurable": callable(getattr(record.plugin, "get_slot_ui", None)),
                 })
         return tuple(options)
+
+    def mqtt_profile_options(self) -> tuple[dict[str, str], ...]:
+        record = self._records_by_id.get("mqtt-input")
+        getter = getattr(record.plugin, "mqtt_profile_options", None) if record is not None and record.initialized else None
+        return tuple(getter()) if callable(getter) else ()
+
+    def mqtt_profiles(self) -> tuple[dict[str, object], ...]:
+        record = self._records_by_id.get("mqtt-input")
+        getter = getattr(record.plugin, "list_mqtt_profiles", None) if record is not None and record.initialized else None
+        return tuple(getter()) if callable(getter) else ()
+
+    def get_mqtt_profile_ui(self, profile_id: str | None) -> dict[str, object]:
+        record = self._records_by_id.get("mqtt-input")
+        getter = getattr(record.plugin, "get_mqtt_profile_ui", None) if record is not None and record.initialized else None
+        if not callable(getter):
+            raise ValueError("The MQTT/HA integration is unavailable.")
+        return validate_plugin_ui_document(getter(profile_id))
+
+    def invoke_mqtt_profile_ui(self, profile_id: str | None, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        record = self._records_by_id.get("mqtt-input")
+        invoke = getattr(record.plugin, "invoke_mqtt_profile_ui", None) if record is not None and record.initialized else None
+        if not callable(invoke):
+            raise ValueError("The MQTT/HA integration is unavailable.")
+        result = validate_plugin_ui_result(invoke(profile_id, action_id, values))
+        if result.get("status") == "save":
+            self._rebuild_route_instances()
+            self._rebuild_signal_triggers()
+            self._on_action_signals_changed()
+            self._on_volume_routes_changed()
+            self.refresh_routes_panel(rebuild=True)
+        return result
+
+    def remove_mqtt_profile(self, profile_id: str) -> bool:
+        in_use = any(
+            route.input_id == "mqtt" and route.input.parameters.get("profile_id") == profile_id
+            for route in self._input_routes
+        ) or any(
+            trigger.plugin_id == "mqtt-input" and trigger.parameters.get("profile_id") == profile_id
+            for signal in self._action_signals for trigger in signal.plugin_triggers
+        )
+        if in_use:
+            self._notice("That MQTT/HA configuration is still used by a route or automation.")
+            return False
+        record = self._records_by_id.get("mqtt-input")
+        remove = getattr(record.plugin, "remove_mqtt_profile", None) if record is not None and record.initialized else None
+        removed = bool(remove(profile_id)) if callable(remove) else False
+        if removed:
+            self._on_action_signals_changed()
+            self._on_volume_routes_changed()
+        return removed
 
     def get_slot_ui(
         self,
@@ -638,6 +690,7 @@ class PluginManager:
         tray_label_value: object,
         slots_value: object,
         on_start_value: object = False,
+        plugin_triggers_value: object = None,
     ) -> bool:
         normalized_name = normalize_signal_label(name)
         tray_label = None if tray_label_value in (None, "") else normalize_signal_label(tray_label_value)
@@ -672,8 +725,26 @@ class PluginManager:
                     raise ValueError("Automation action parameters must be an object.")
                 slots.append(ActionSlot(plugin_id, action_id, parameters))
             binding = ActionHotkeyBinding(HotkeySpec.from_json(hotkey_value), bool(forward_keys))
+            plugin_triggers: list[PluginSignalTrigger] = []
+            raw_triggers = [] if plugin_triggers_value is None else plugin_triggers_value
+            if not isinstance(raw_triggers, list):
+                raise ValueError("Automation integration triggers are invalid.")
+            for raw_trigger in raw_triggers:
+                if not isinstance(raw_trigger, dict):
+                    raise ValueError("Automation integration trigger is invalid.")
+                target = raw_trigger.get("target")
+                parameters = raw_trigger.get("parameters", {})
+                if not isinstance(target, str) or not isinstance(parameters, dict):
+                    raise ValueError("Automation integration trigger is invalid.")
+                plugin_id, separator, trigger_id = target.partition("/")
+                record = self._records_by_id.get(plugin_id)
+                if not separator or record is None or not record.initialized or not callable(getattr(record.plugin, "create_signal_trigger", None)):
+                    raise ValueError("A selected automation trigger is unavailable.")
+                if plugin_id == "mqtt-input" and trigger_id != "mqtt-ha":
+                    raise ValueError("A selected automation trigger is unavailable.")
+                plugin_triggers.append(PluginSignalTrigger(plugin_id, trigger_id, parameters))
             resolved_id = signal_id if isinstance(signal_id, str) else f"signal-{uuid.uuid4().hex}"
-            signal = ActionSignal(resolved_id, normalized_name, binding, tray_label, tuple(slots), on_start_value)
+            signal = ActionSignal(resolved_id, normalized_name, binding, tray_label, tuple(slots), on_start_value, tuple(plugin_triggers))
         except ValueError as exc:
             self._notice(self._format_error(exc))
             return False
@@ -687,6 +758,16 @@ class PluginManager:
         return len(updated) != len(self._action_signals) and self._save_action_signals(updated)
 
     def _save_action_signals(self, signals: tuple[ActionSignal, ...]) -> bool:
+        mqtt_entities: set[tuple[object, object]] = set()
+        for signal in signals:
+            for trigger in signal.plugin_triggers:
+                if trigger.plugin_id != "mqtt-input":
+                    continue
+                identity = (trigger.parameters.get("profile_id"), trigger.parameters.get("ha_id"))
+                if identity in mqtt_entities:
+                    self._notice("MQTT automations using the same configuration need unique Home Assistant IDs.")
+                    return False
+                mqtt_entities.add(identity)
         previous = self._action_signals
         try:
             self._replace_signal_hotkeys(previous, signals)
@@ -699,6 +780,7 @@ class PluginManager:
             self._notice(f"Could not save automation: {self._format_error(exc)}")
             return False
         self._action_signals = signals
+        self._rebuild_signal_triggers()
         self._on_action_signals_changed()
         return True
 
@@ -1031,6 +1113,15 @@ class PluginManager:
         return self._save_routes(routes)
 
     def _save_routes(self, routes: tuple[VolumeRoute, ...]) -> bool:
+        mqtt_entities: set[tuple[object, object]] = set()
+        for route in routes:
+            if route.input_id != "mqtt" or "profile_id" not in route.input.parameters:
+                continue
+            identity = (route.input.parameters.get("profile_id"), route.input.parameters.get("ha_id"))
+            if identity in mqtt_entities:
+                self._notice("MQTT routes using the same configuration need unique Home Assistant IDs.")
+                return False
+            mqtt_entities.add(identity)
         try:
             self._validate_route_hotkeys(routes)
         except ValueError as exc:
@@ -1192,12 +1283,46 @@ class PluginManager:
         except ValueError as exc:
             self._notice(f"Saved keyboard routes are unavailable: {exc}")
         self._rebuild_route_instances()
+        self._rebuild_signal_triggers()
         try:
             self._replace_signal_hotkeys((), self._action_signals)
         except Exception as exc:
             self._notice(f"Saved automations have unavailable shortcuts: {self._format_error(exc)}")
         self._on_action_signals_changed()
         self._on_volume_routes_changed()
+
+    def _rebuild_signal_triggers(self) -> None:
+        previous, self._signal_trigger_instances = self._signal_trigger_instances, {}
+        stop_deadline = time.monotonic() + 0.25
+        for instance in previous.values():
+            try:
+                remove = getattr(instance, "remove", None)
+                remaining = max(0.0, stop_deadline - time.monotonic())
+                remove(remaining) if callable(remove) else instance.shutdown(remaining)
+            except Exception:
+                pass
+        if self._closing.is_set():
+            return
+        mqtt_entities: set[tuple[object, object]] = set()
+        for signal in self._action_signals:
+            for index, trigger in enumerate(signal.plugin_triggers):
+                if trigger.plugin_id == "mqtt-input":
+                    identity = (trigger.parameters.get("profile_id"), trigger.parameters.get("ha_id"))
+                    if identity in mqtt_entities:
+                        self._notice(f"Automation {signal.name} trigger is unavailable: duplicate MQTT Home Assistant ID.")
+                        continue
+                    mqtt_entities.add(identity)
+                record = self._records_by_id.get(trigger.plugin_id)
+                creator = getattr(record.plugin, "create_signal_trigger", None) if record is not None and record.initialized else None
+                if not callable(creator):
+                    self._notice(f"Automation {signal.name} trigger is unavailable.")
+                    continue
+                try:
+                    instance = creator(signal.signal_id, trigger.parameters, self.dispatch_action_signal)
+                    instance.start()
+                    self._signal_trigger_instances[f"{signal.signal_id}/{index}"] = instance
+                except Exception as exc:
+                    self._notice(f"Automation {signal.name} trigger failed: {self._format_error(exc)}")
 
     def _migrate_builtin_shortcuts_to_signals(self) -> None:
         """Promote removed Discord/Windows direct shortcuts without losing bindings."""
@@ -1267,7 +1392,24 @@ class PluginManager:
         self._route_instances = {}
         previous_inputs = self._route_input_instances
         self._route_input_instances = {}
+        input_stop_deadline = time.monotonic() + 0.25
+        for route_id, route_input in tuple(previous_inputs.items()):
+            remove = getattr(route_input, "remove", None)
+            if not callable(remove):
+                continue
+            try:
+                remove(max(0.0, input_stop_deadline - time.monotonic()))
+            except Exception:
+                pass
+            previous_inputs.pop(route_id, None)
+        mqtt_entities: set[tuple[object, object]] = set()
         for route in self._input_routes:
+            if route.input_id == "mqtt" and "profile_id" in route.input.parameters:
+                identity = (route.input.parameters.get("profile_id"), route.input.parameters.get("ha_id"))
+                if identity in mqtt_entities:
+                    self._notice(f"Route {route.name} is unavailable: duplicate MQTT Home Assistant ID.")
+                    continue
+                mqtt_entities.add(identity)
             # Route input endpoints use the logical source ID (for example,
             # ``windows-volume-keys``), not the plugin module ID.
             input_record = next(
@@ -2638,6 +2780,13 @@ class PluginManager:
             except Exception:
                 stopped = False
         self._route_input_instances = {}
+
+        for signal_trigger in tuple(self._signal_trigger_instances.values()):
+            try:
+                stopped = bool(signal_trigger.shutdown(max(0.0, deadline - time.monotonic()))) and stopped
+            except Exception:
+                stopped = False
+        self._signal_trigger_instances = {}
 
         for record in self._records:
             if not record.initialized or record.plugin is None:

@@ -458,7 +458,7 @@ def run(bootstrap: Bootstrap) -> int:
         "FenSoundSwitch Command Center",
         html=render_document(),
         js_api=api,
-        width=1120,
+        width=1456,
         height=760,
         min_size=(760, 560),
         text_select=True,

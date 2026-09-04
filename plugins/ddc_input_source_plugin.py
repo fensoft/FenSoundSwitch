@@ -33,6 +33,14 @@ def _selection_key(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _monitor_label(label: str, selection: SavedMonitorSelection) -> str:
+    identity = selection.identity
+    serial = identity.serial_number if identity is not None else None
+    if serial is None or "s/n" in label.casefold():
+        return label
+    return f"{label} - S/N {serial}"
+
+
 def _input_value(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 0xFF:
         return None
@@ -101,12 +109,15 @@ class DdcInputSourcePlugin:
         selection, configured_input = configured if configured is not None else (None, None)
 
         selected = saved_monitor_selection_to_json(selection) if selection is not None else None
-        monitor_options = [
-            {"label": label, "value": value}
-            for value, label, _inputs in discovered.values()
-        ]
+        monitor_options = []
+        for value, label, _inputs in discovered.values():
+            discovered_selection = saved_monitor_selection_from_json(value)
+            monitor_options.append({
+                "label": _monitor_label(label, discovered_selection) if discovered_selection is not None else label,
+                "value": value,
+            })
         if selected is not None and not any(option["value"] == selected for option in monitor_options):
-            monitor_options.append({"label": selection.description, "value": selected})
+            monitor_options.append({"label": _monitor_label(selection.description, selection), "value": selected})
 
         input_options: list[dict[str, object]] = []
         for monitor_value, _label, inputs in discovered.values():
@@ -199,7 +210,7 @@ class DdcInputSourcePlugin:
         if configured is None:
             return "Not configured"
         selection, monitor_input = configured
-        return f"{selection.description} / {monitor_input.label}"
+        return f"{_monitor_label(selection.description, selection)} / {monitor_input.label}"
 
     def _start_discovery(self, *, force: bool = False) -> bool:
         if self._shutdown.is_set():

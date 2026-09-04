@@ -2,7 +2,7 @@
 
 ## Install
 
-Download `FenSoundSwitch.exe` from [GitHub Releases](https://github.com/fensoft/windows-ddc/releases), put it in a folder you control, and run it. The app starts in the notification area. Double-click its icon to open the main window.
+Download `FenSoundSwitch.msi` from [GitHub Releases](https://github.com/fensoft/windows-ddc/releases) and install it. Windows Installer places the standalone application under Program Files and creates an all-users Start Menu shortcut. Launch **FenSoundSwitch** from there. The app starts in the notification area; double-click its icon to open the main window. Disable **Start with Windows** before uninstalling: the per-machine installer cannot safely remove that current-user value from every Windows profile. Uninstalling removes application files and shortcuts but preserves per-user configuration and credentials.
 
 The **About** page shows the exact tag embedded in a release executable. Source runs and ordinary local builds show version `dev`.
 
@@ -28,7 +28,7 @@ Choose **Keyboard volume keys** as a route input to capture separate volume-down
 
 ### MQTT Input
 
-Choose **MQTT / Home Assistant** as a route input, then configure its broker host, port, optional credentials, discovery prefix, topic prefix, and slider maximum. The route connects to the broker in the background and publishes retained Home Assistant MQTT discovery for a 0-to-maximum volume slider. It accepts integer slider values from `0` to the configured maximum on `<topic prefix>/<route id>/command`. MQTT credentials are stored in the route settings, so use a restricted broker account.
+First open **Integrations**, select **Configure** on **MQTT / Home Assistant**, and manage one or more named configurations inside that window. Each stores a broker host, port, optional credentials, discovery prefix, and topic prefix. Choose **MQTT / Home Assistant** as a route input, select which shared configuration to reuse, then provide that route's Home Assistant name, stable ID, and slider maximum. The route publishes retained Home Assistant discovery and accepts integer values on `<topic prefix>/<Home Assistant ID>/command`. Existing routes with inline broker settings continue to work until edited. Use a restricted broker account because exported configurations include MQTT credentials.
 
 ## Outputs
 
@@ -62,13 +62,15 @@ Choose an overlay in the **Overlay** section of Routes.
 
 Current route shows the route most recently changed. All shows every configured route and its current status.
 
-## Automations And Integrations
+## Automations
 
-The **Automations** section combines one or more triggers with an ordered list of steps. An automation may run when the primary app starts, from a keyboard shortcut, from an item in the notification-area icon's right-click menu, or from any combination of those triggers. Enable **Run when a key is pressed** to reveal the key and forwarding controls. Enable **Run when a tray menu option is chosen** to reveal its menu-text field. Disabled trigger sections are hidden and cleared when the automation is saved. Add action steps in the order they must run, insert wait steps where a delay is needed, and use the arrow buttons to reorder them. Every action completes before the next step starts. Repeated triggers while the same automation is running are ignored; a failing step stops that run. Waits are interrupted during application shutdown.
+The **Automations** section combines one or more triggers with an ordered list of steps. An automation may run when the primary app starts, from a keyboard shortcut, from the notification-area menu, from an MQTT/Home Assistant button, or from any combination of those triggers. MQTT-triggered automations select a shared MQTT/HA configuration and define their own Home Assistant name and stable ID. Home Assistant receives retained button discovery and a press publishes `PRESS` to `<topic prefix>/automation/<Home Assistant ID>/command`. Disabled trigger sections are hidden and cleared when saved. Every action completes before the next step starts; a failing step stops that run.
 
 For example, create `Movie mode`, assign `F1`, add **Cycle Windows playback**, add a 1000 ms wait, and then add **Cycle Windows voice output**. Setting a tray label also exposes the same automation under **Automations** in the tray icon's right-click menu.
 
-The **Integrations** section contains setup only for integrations used by steps, such as Discord output switching and audio keep-alive. Discord and Windows device switching do not expose separate direct actions or action shortcuts; add their steps to an automation and configure the automation's trigger instead. Existing saved Discord and Windows direct shortcuts are promoted to equivalent one-step automations.
+## Integrations
+
+The separate **Integrations** tab is a simple integration list. Select **Configure** on MQTT/Home Assistant to add, edit, or remove all reusable broker configurations within one management window. Other integrations expose their own Configure button when setup is available. MQTT routes and automations ask which named MQTT/HA configuration to reuse. A configuration cannot be removed while a route or automation references it.
 
 **DDC monitor input** adds a **Select monitor input** automation step. Add the step and select **Configure** beside it. The configuration dialog opens immediately with a waiting message while monitor discovery runs, then shows the stable monitor and input choices. Use **Refresh monitors** in that dialog to repeat discovery. Every step keeps its own target, so one automation can configure several screens independently. The monitor is saved by stable EDID identity when available, with its Windows device path as the fallback; its temporary list number is never saved. Each run finds that exact monitor again, confirms that it still advertises the selected input, changes it once, and verifies the result. A missing or ambiguous monitor stops the automation without changing another display.
 

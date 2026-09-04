@@ -311,6 +311,13 @@ class MonitorVolumeApp:
             sticky="ew",
             pady=(self._scaled_px(4), 0),
         )
+        self.integrations_nav_button = ttk.Button(
+            self.navigation,
+            text="Integrations",
+            style="Nav.TButton",
+            command=lambda: self._show_page("integrations"),
+        )
+        self.integrations_nav_button.grid(row=2, column=0, sticky="ew", pady=(self._scaled_px(4), 0))
         self.appearance_nav_button = ttk.Button(
             self.navigation,
             text="Appearance",
@@ -318,7 +325,7 @@ class MonitorVolumeApp:
             command=lambda: self._show_page("appearance"),
         )
         self.appearance_nav_button.grid(
-            row=2,
+            row=3,
             column=0,
             sticky="ew",
             pady=(self._scaled_px(4), 0),
@@ -330,7 +337,7 @@ class MonitorVolumeApp:
             command=lambda: self._show_page("settings"),
         )
         self.settings_nav_button.grid(
-            row=3,
+            row=4,
             column=0,
             sticky="ew",
             pady=(self._scaled_px(4), 0),
@@ -385,6 +392,8 @@ class MonitorVolumeApp:
         self.routes_panel.grid(row=0, column=0, sticky="nsew")
         self.plugins_panel = ttk.Frame(self.pages, style="Content.TFrame")
         self.plugins_panel.grid(row=0, column=0, sticky="nsew")
+        self.integrations_panel = ttk.Frame(self.pages, style="Content.TFrame")
+        self.integrations_panel.grid(row=0, column=0, sticky="nsew")
         self.appearance_panel = ttk.Frame(self.pages, style="Content.TFrame")
         self.appearance_panel.grid(row=0, column=0, sticky="nsew")
         self.settings_panel = ttk.Frame(self.pages, style="Content.TFrame")
@@ -518,8 +527,14 @@ class MonitorVolumeApp:
             "plugins": (
                 self.plugins_panel,
                 self.plugin_nav_button,
-                "Automations and integrations",
-                "Build ordered steps and configure the integrations they use.",
+                "Automations",
+                "Build ordered steps and choose how they run.",
+            ),
+            "integrations": (
+                self.integrations_panel,
+                self.integrations_nav_button,
+                "Integrations",
+                "Configure shared connections used by routes and automations.",
             ),
             "appearance": (
                 self.appearance_panel,
@@ -883,6 +898,7 @@ class MonitorVolumeApp:
                 self.high_contrast,
             )
             manager.build_routes_panel(self.routes_panel)
+            manager.build_action_plugins_panel(self.integrations_panel)
             manager.build_appearance_panel(self.appearance_panel)
             manager.dispatch_startup_automations()
             # Panels are added after the initial window-size lock. Measure them
@@ -952,7 +968,7 @@ class MonitorVolumeApp:
             post_to_ui=self._post_to_ui,
             get_snapshot=self._web_snapshot,
             dispatch_action=self._dispatch_web_action,
-            allowed_actions={"route.save", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
+            allowed_actions={"route.save", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
             on_exit=self.on_close,
             on_minimize=self._on_web_minimize,
             on_visibility=self._on_web_visibility,
@@ -987,7 +1003,7 @@ class MonitorVolumeApp:
                     route_fields.append({"key": key, "type": type_map.get(str(field["type"]), field["type"]), "label": f"{endpoint.title()}: {field['label']}", "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", [])})
                     if not field.get("write_only"): route_values[key] = field.get("value")
             routes.append({"id": route.route_id, "name": route.name, "description": "Audio volume route", "input": {"name": input_name, "summary": ""}, "output": {"name": output_name, "summary": ""}, "summary": f"{status.confirmed_volume}%" if status and status.confirmed_volume is not None else (status.reason if status else "Checking"), "enabled": bool(status and status.confirmed_volume is not None), "values": route_values, "form": {"method": "route.save", "fields": route_fields}})
-        actions = []
+        integrations = []
         for record in manager.records:
             if not manager._is_action_plugin(record) or not record.plugin_id or not callable(getattr(record.plugin, "get_plugin_ui", None)):
                 continue
@@ -1008,8 +1024,12 @@ class MonitorVolumeApp:
                     if not field.get("write_only"): values[str(field["id"])] = field.get("value")
                 submit = next((item for item in document["actions"] if isinstance(item, dict) and item.get("kind") == "submit"), None)
                 ui_action = str(submit.get("id", "")) if isinstance(submit, dict) else ""
-            actions.append({"id": record.plugin_id, "name": record.name, "description": record.display_status, "values": values, "ui_actions": document["actions"] if document else [], "form": {"method": "action.save", "ui_action": ui_action, "fields": fields}})
+            integrations.append({"id": record.plugin_id, "name": record.name, "description": record.display_status, "values": values, "ui_actions": document["actions"] if document else [], "form": {"method": "action.save", "ui_action": ui_action, "fields": fields}})
         signal_options = list(manager.signal_action_options())
+        try:
+            mqtt_profile_options = list(manager.mqtt_profile_options())
+        except Exception:
+            mqtt_profile_options = []
         signals = []
         for signal in manager.action_signals:
             signal_options_for_form = list(signal_options)
@@ -1024,15 +1044,18 @@ class MonitorVolumeApp:
                     target = f"{slot.plugin_id}/{slot.action_id}"
                     if not any(option["value"] == target for option in signal_options_for_form):
                         signal_options_for_form.append({"label": f"Unavailable: {target}", "value": target, "configurable": False, "disabled": True})
-                    slot_values.append({"kind": "action", "target": target, "parameters": slot.parameters})
                     label = next((str(option["label"]) for option in signal_options if option["value"] == target), target)
                     summary = manager.slot_summary(slot.plugin_id, slot.action_id, slot.parameters)
+                    slot_values.append({"kind": "action", "target": target, "parameters": slot.parameters, "summary": summary})
                     slot_labels.append(f"{label} ({summary})" if summary else label)
             trigger_labels = []
             if signal.hotkey.hotkey is not None: trigger_labels.append(signal.hotkey.hotkey.label)
             if signal.tray_label is not None: trigger_labels.append(f"Tray: {signal.tray_label}")
             if signal.on_start: trigger_labels.append("App start")
-            signals.append({"id": signal.signal_id, "name": signal.name, "description": " then ".join(slot_labels), "trigger": " + ".join(trigger_labels) or "No trigger", "values": {"name": signal.name, "hotkey": signal.hotkey.hotkey.to_json() if signal.hotkey.hotkey is not None else None, "keyboard_enabled": signal.hotkey.hotkey is not None, "forward_keys": signal.hotkey.forward_keys, "tray_label": signal.tray_label or "", "tray_enabled": signal.tray_label is not None, "on_start": signal.on_start, "slots": slot_values}, "form": {"method": "signal.save", "fields": [{"key": "name", "type": "text", "label": "Automation name", "required": True, "max_length": 80}, {"key": "on_start", "type": "boolean", "label": "Run when the app starts"}, {"key": "keyboard_enabled", "type": "boolean", "label": "Run when a key is pressed"}, {"key": "hotkey", "type": "hotkey", "label": "Key combination", "visible_when": "keyboard_enabled"}, {"key": "forward_keys", "type": "boolean", "label": "Forward keys to other applications", "visible_when": "keyboard_enabled"}, {"key": "tray_enabled", "type": "boolean", "label": "Run when a tray menu option is chosen"}, {"key": "tray_label", "type": "text", "label": "Tray menu option text", "max_length": 80, "visible_when": "tray_enabled"}, {"key": "slots", "type": "sequence", "label": "Ordered steps", "options": signal_options_for_form}]}})
+            mqtt_trigger = next((trigger for trigger in signal.plugin_triggers if trigger.plugin_id == "mqtt-input" and trigger.trigger_id == "mqtt-ha"), None)
+            if mqtt_trigger is not None: trigger_labels.append("MQTT / Home Assistant")
+            mqtt_parameters = mqtt_trigger.parameters if mqtt_trigger is not None else {}
+            signals.append({"id": signal.signal_id, "name": signal.name, "description": " then ".join(slot_labels), "steps": slot_labels, "trigger": " + ".join(trigger_labels) or "No trigger", "values": {"name": signal.name, "hotkey": signal.hotkey.hotkey.to_json() if signal.hotkey.hotkey is not None else None, "keyboard_enabled": signal.hotkey.hotkey is not None, "forward_keys": signal.hotkey.forward_keys, "tray_label": signal.tray_label or "", "tray_enabled": signal.tray_label is not None, "on_start": signal.on_start, "mqtt_enabled": mqtt_trigger is not None, "mqtt_profile_id": mqtt_parameters.get("profile_id", ""), "mqtt_ha_name": mqtt_parameters.get("ha_name", signal.name), "mqtt_ha_id": mqtt_parameters.get("ha_id", ""), "slots": slot_values}, "form": {"method": "signal.save", "fields": [{"key": "name", "type": "text", "label": "Automation name", "required": True, "max_length": 80}, {"key": "on_start", "type": "boolean", "label": "Run when the app starts"}, {"key": "keyboard_enabled", "type": "boolean", "label": "Run when a key is pressed"}, {"key": "hotkey", "type": "hotkey", "label": "Key combination", "visible_when": "keyboard_enabled"}, {"key": "forward_keys", "type": "boolean", "label": "Forward keys to other applications", "visible_when": "keyboard_enabled"}, {"key": "tray_enabled", "type": "boolean", "label": "Run when a tray menu option is chosen"}, {"key": "tray_label", "type": "text", "label": "Tray menu option text", "max_length": 80, "visible_when": "tray_enabled"}, {"key": "mqtt_enabled", "type": "boolean", "label": "Run from MQTT / Home Assistant"}, {"key": "mqtt_profile_id", "type": "select", "label": "MQTT/HA configuration", "options": mqtt_profile_options, "visible_when": "mqtt_enabled"}, {"key": "mqtt_ha_name", "type": "text", "label": "Home Assistant name", "max_length": 80, "visible_when": "mqtt_enabled"}, {"key": "mqtt_ha_id", "type": "text", "label": "Home Assistant ID", "max_length": 64, "visible_when": "mqtt_enabled"}, {"key": "slots", "type": "sequence", "label": "Ordered steps", "options": signal_options_for_form}]}})
         renderers = []
         for record in manager.records:
             if not record.initialized or not record.is_overlay_renderer or not record.plugin_id: continue
@@ -1048,8 +1071,28 @@ class MonitorVolumeApp:
         diagnostic_text = read_log_contents()
         if len(diagnostic_text) > 12000: diagnostic_text = diagnostic_text[-12000:]
         recent_archives = [{"name": path.stem, "path": str(path)} for path in recent_configurations()]
-        signal_form = {"method": "signal.save", "fields": [{"key": "name", "type": "text", "label": "Automation name", "required": True, "max_length": 80}, {"key": "on_start", "type": "boolean", "label": "Run when the app starts", "default": False}, {"key": "keyboard_enabled", "type": "boolean", "label": "Run when a key is pressed", "default": False}, {"key": "hotkey", "type": "hotkey", "label": "Key combination", "visible_when": "keyboard_enabled"}, {"key": "forward_keys", "type": "boolean", "label": "Forward keys to other applications", "default": True, "visible_when": "keyboard_enabled"}, {"key": "tray_enabled", "type": "boolean", "label": "Run when a tray menu option is chosen", "default": False}, {"key": "tray_label", "type": "text", "label": "Tray menu option text", "max_length": 80, "visible_when": "tray_enabled"}, {"key": "slots", "type": "sequence", "label": "Ordered steps", "options": signal_options}]}
-        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "actions": actions, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form}}
+        signal_form = {"method": "signal.save", "fields": [{"key": "name", "type": "text", "label": "Automation name", "required": True, "max_length": 80}, {"key": "on_start", "type": "boolean", "label": "Run when the app starts", "default": False}, {"key": "keyboard_enabled", "type": "boolean", "label": "Run when a key is pressed", "default": False}, {"key": "hotkey", "type": "hotkey", "label": "Key combination", "visible_when": "keyboard_enabled"}, {"key": "forward_keys", "type": "boolean", "label": "Forward keys to other applications", "default": True, "visible_when": "keyboard_enabled"}, {"key": "tray_enabled", "type": "boolean", "label": "Run when a tray menu option is chosen", "default": False}, {"key": "tray_label", "type": "text", "label": "Tray menu option text", "max_length": 80, "visible_when": "tray_enabled"}, {"key": "mqtt_enabled", "type": "boolean", "label": "Run from MQTT / Home Assistant", "default": False}, {"key": "mqtt_profile_id", "type": "select", "label": "MQTT/HA configuration", "options": mqtt_profile_options, "visible_when": "mqtt_enabled"}, {"key": "mqtt_ha_name", "type": "text", "label": "Home Assistant name", "max_length": 80, "visible_when": "mqtt_enabled"}, {"key": "mqtt_ha_id", "type": "text", "label": "Home Assistant ID", "max_length": 64, "visible_when": "mqtt_enabled"}, {"key": "slots", "type": "sequence", "label": "Ordered steps", "options": signal_options}]}
+        def mqtt_profile_entity(profile_id: str | None) -> dict[str, object]:
+            document = manager.get_mqtt_profile_ui(profile_id)
+            profile_fields = []
+            profile_values: dict[str, object] = {}
+            type_map = {"integer": "number", "choice": "select"}
+            for field in document["fields"]:
+                if not isinstance(field, dict): continue
+                profile_fields.append({"key": field["id"], "type": type_map.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", [])})
+                if not field.get("write_only"): profile_values[str(field["id"])] = field.get("value")
+            return {"values": profile_values, "form": {"method": "mqtt.profile.save", "ui_action": "save", "fields": profile_fields}}
+        mqtt_profiles = []
+        mqtt_profile_form = None
+        try:
+            mqtt_profile_form = mqtt_profile_entity(None)["form"]
+            for profile in manager.mqtt_profiles():
+                profile_id = str(profile.get("profile_id", ""))
+                entity = mqtt_profile_entity(profile_id)
+                mqtt_profiles.append({"id": profile_id, "name": str(profile.get("name", profile_id)), "description": f"{profile.get('host', '')}:{profile.get('port', '')}", **entity})
+        except ValueError:
+            pass
+        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "integrations": integrations, "mqtt_profiles": mqtt_profiles, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form, "mqtt_profile": mqtt_profile_form}}
         return PresentationSnapshot(self._presentation_revision, snapshot)
 
     def _dispatch_web_action(self, action: str, arguments: Mapping[str, Any]) -> Any:
@@ -1089,19 +1132,24 @@ class MonitorVolumeApp:
             on_start = values.get("on_start", False)
             keyboard_enabled = values.get("keyboard_enabled", False)
             tray_enabled = values.get("tray_enabled", False)
-            if not all(isinstance(value, bool) for value in (on_start, keyboard_enabled, tray_enabled)):
+            mqtt_enabled = values.get("mqtt_enabled", False)
+            if not all(isinstance(value, bool) for value in (on_start, keyboard_enabled, tray_enabled, mqtt_enabled)):
                 raise UserActionError("Automation triggers are invalid.")
-            if not on_start and not keyboard_enabled and not tray_enabled:
+            if not on_start and not keyboard_enabled and not tray_enabled and not mqtt_enabled:
                 raise UserActionError("Choose at least one trigger.")
             if keyboard_enabled and values.get("hotkey") is None:
                 raise UserActionError("Press the key combination that should run this automation.")
             if tray_enabled and (not isinstance(values.get("tray_label"), str) or not values["tray_label"].strip()):
                 raise UserActionError("Enter the tray menu option text.")
+            mqtt_values = (values.get("mqtt_profile_id"), values.get("mqtt_ha_name"), values.get("mqtt_ha_id"))
+            if mqtt_enabled and not all(isinstance(value, str) and value.strip() for value in mqtt_values):
+                raise UserActionError("Choose an MQTT/HA configuration and enter the Home Assistant name and ID.")
             signal_id = arguments.get("id")
             if signal_id is not None and not isinstance(signal_id, str): raise ValueError("Automation ID is invalid.")
             hotkey = values.get("hotkey") if keyboard_enabled else None
             tray_label = values.get("tray_label") if tray_enabled else None
-            if not manager.save_action_signal(signal_id, values.get("name"), hotkey, values.get("forward_keys", True), tray_label, values.get("slots"), on_start):
+            plugin_triggers = [{"target": "mqtt-input/mqtt-ha", "parameters": {"profile_id": mqtt_values[0], "ha_name": mqtt_values[1], "ha_id": mqtt_values[2]}}] if mqtt_enabled else []
+            if not manager.save_action_signal(signal_id, values.get("name"), hotkey, values.get("forward_keys", True), tray_label, values.get("slots"), on_start, plugin_triggers):
                 raise ValueError("The automation could not be saved.")
         elif action == "signal.delete":
             if not manager.remove_action_signal(str(arguments.get("id", ""))): raise ValueError("The automation could not be removed.")
@@ -1154,7 +1202,18 @@ class MonitorVolumeApp:
             result = manager.invoke_slot_ui_action(plugin_id, action_id, ui_action_id, values)
             if result.get("status") != "save":
                 raise ValueError("Automation step configuration was not saved.")
-            return {"parameters": result["values"], "message": result.get("message")}
+            parameters = result["values"]
+            return {"parameters": parameters, "summary": manager.slot_summary(plugin_id, action_id, parameters), "message": result.get("message")}
+        elif action == "mqtt.profile.save":
+            values = arguments.get("values", {})
+            profile_id = arguments.get("id")
+            if not isinstance(values, dict) or (profile_id is not None and not isinstance(profile_id, str)):
+                raise UserActionError("MQTT/HA configuration values are invalid.")
+            manager.invoke_mqtt_profile_ui(profile_id, "save", values)
+            return {"saved": True}
+        elif action == "mqtt.profile.delete":
+            if not manager.remove_mqtt_profile(str(arguments.get("id", ""))):
+                raise UserActionError("The MQTT/HA configuration is unavailable or still in use.")
         elif action == "action.save":
             values = arguments.get("values", {})
             plugin_id = str(arguments.get("id", ""))

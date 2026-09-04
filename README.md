@@ -14,21 +14,23 @@ Build named routes for the rooms and devices you use. Choose a monitor or receiv
 - Create clearly named routes such as `Desk monitor`, `Living room`, or `Movie night`.
 - Control compatible displays and popular network receivers.
 - Optionally turn a configured receiver on and select its input when its route first activates.
-- Control a route from MQTT, with Home Assistant MQTT discovery buttons.
+- Reuse named MQTT/Home Assistant broker configurations across volume routes and button-triggered automations, with per-use Home Assistant names and IDs.
 - See a clean Windows 11 or macOS-style volume overlay.
 - Keep the app quietly available in the notification area.
 - Build automations for monitor input selection, Windows playback, voice output, input, microphone, or optional Discord output switching. Run them when the app starts, from a keyboard shortcut, from a notification-area menu item, or from any combination of those triggers.
 - Keep the Windows default playback and/or voice output active by rendering silence, continuously or after recent mouse movement.
 - Start automatically with Windows.
-- Export and restore complete non-secret configuration archives.
+- Export and restore configuration archives; protect exports because MQTT credentials are included.
 - Check the exact release tag, or `dev` for source/local builds, on the About page.
 
 ## Get Started
 
-1. Download `FenSoundSwitch.exe` from [GitHub Releases](https://github.com/fensoft/windows-ddc/releases).
-2. Run it and open the window from the notification area if needed.
+1. Download `FenSoundSwitch.msi` from [GitHub Releases](https://github.com/fensoft/windows-ddc/releases) and install it.
+2. Launch **FenSoundSwitch** from the Start Menu and open the window from the notification area if needed.
 3. Add a route, give it a name, select **Windows Volume keys** as the input, and choose an output.
 4. Configure the output, then press Volume Up or Volume Down at a safe listening level.
+
+Pass `--foreground` when launching the executable, or run `python app.py --foreground` from source, to open the command center immediately instead of starting in the notification area.
 
 The app is made for Windows 10 and Windows 11 and requires the [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section), which is included with current Windows installations. Compatible monitor control requires DDC/CI enabled in the monitor menu. Receiver control requires a supported receiver on your home network.
 

@@ -120,6 +120,24 @@ class CompositionRootTests(unittest.TestCase):
         configure_logging_mock.assert_called_once_with()
         close_logging_mock.assert_called_once_with()
 
+    def test_foreground_argument_restores_primary_window_before_mainloop(self) -> None:
+        guard = Mock()
+        root = Mock()
+        application = Mock(restart_requested=False)
+        with patch.object(app.sys, "argv", ["app.py", app.FOREGROUND_ARGUMENT]), patch(
+            "app.configure_logging"
+        ), patch("app.close_logging"), patch(
+            "app.SingleInstanceGuard", return_value=guard
+        ), patch("app.tk.Tk", return_value=root), patch(
+            "app.MonitorVolumeApp", return_value=application
+        ), patch("app.ensure_default_configuration"):
+            result = app.main()
+
+        self.assertEqual(result, 0)
+        application.restore_from_tray.assert_called_once_with()
+        root.mainloop.assert_called_once_with()
+        guard.close.assert_called_once_with()
+
     def test_import_restart_reexecutes_after_normal_shutdown(self) -> None:
         guard = Mock()
         root = Mock()
@@ -135,6 +153,28 @@ class CompositionRootTests(unittest.TestCase):
         execv.assert_called_once_with(
             app.sys.executable,
             [app.sys.executable, str(Path(app.__file__).resolve())],
+        )
+
+    def test_import_restart_preserves_foreground_argument(self) -> None:
+        guard = Mock()
+        root = Mock()
+        application = Mock(restart_requested=True)
+        with patch.object(app.sys, "argv", ["app.py", app.FOREGROUND_ARGUMENT]), patch(
+            "app.configure_logging"
+        ), patch("app.close_logging"), patch(
+            "app.SingleInstanceGuard", return_value=guard
+        ), patch("app.tk.Tk", return_value=root), patch(
+            "app.MonitorVolumeApp", return_value=application
+        ), patch("app.os.execv") as execv, patch("app.ensure_default_configuration"):
+            app.main()
+
+        execv.assert_called_once_with(
+            app.sys.executable,
+            [
+                app.sys.executable,
+                str(Path(app.__file__).resolve()),
+                app.FOREGROUND_ARGUMENT,
+            ],
         )
 
     def test_duplicate_exits_before_tk_and_requests_existing_window(self) -> None:

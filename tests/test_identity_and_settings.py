@@ -279,6 +279,7 @@ class SettingsTests(unittest.TestCase):
                 settings.ActionSlot("windows-default-device", "cycle-voice-output", {"profile": "voice"}),
             ),
             True,
+            (settings.PluginSignalTrigger("mqtt-input", "mqtt-ha", {"profile_id": "p-home", "ha_name": "Movie", "ha_id": "movie"}),),
         )
 
         settings.save_action_signals([signal])
@@ -289,6 +290,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(payload["schema_version"], settings.SCHEMA_VERSION)
         self.assertEqual([slot["kind"] for slot in payload["action_signals"][0]["slots"]], ["action", "wait", "action"])
         self.assertTrue(payload["action_signals"][0]["on_start"])
+        self.assertEqual(payload["action_signals"][0]["plugin_triggers"][0]["trigger_id"], "mqtt-ha")
 
     def test_app_start_is_a_valid_automation_trigger_by_itself(self) -> None:
         signal = settings.ActionSignal(

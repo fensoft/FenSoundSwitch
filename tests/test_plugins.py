@@ -753,6 +753,70 @@ class PluginManagerTests(unittest.TestCase):
         self.assertEqual(plugin.runs, 1)
         manager.stop(1.0)
 
+    def test_plugin_signal_trigger_starts_dispatches_and_stops_with_manager(self) -> None:
+        class TriggerInstance:
+            def __init__(self, dispatch: object, signal_id: str) -> None:
+                self.dispatch = dispatch
+                self.signal_id = signal_id
+                self.started = False
+                self.stopped = False
+
+            def start(self) -> None:
+                self.started = True
+
+            def shutdown(self, timeout: float) -> bool:
+                self.stopped = True
+                return True
+
+        class TriggerPlugin(_FakePlugin):
+            def __init__(self) -> None:
+                super().__init__()
+                self.instance = None
+
+            def create_signal_trigger(self, signal_id: str, parameters: object, dispatch: object) -> object:
+                self.asserted_parameters = parameters
+                self.instance = TriggerInstance(dispatch, signal_id)
+                return self.instance
+
+        signal = settings.ActionSignal(
+            "signal-mqtt",
+            "MQTT automation",
+            settings.ActionHotkeyBinding(None),
+            None,
+            (settings.WaitSlot(1),),
+            False,
+            (settings.PluginSignalTrigger("fake", "mqtt-ha", {"profile_id": "p-home"}),),
+        )
+        plugin = TriggerPlugin()
+        manager, _ = self.make_manager(plugin)
+        with patch("plugin_manager.load_action_signals", return_value=(signal,)):
+            manager.start()
+
+        self.assertTrue(plugin.instance.started)
+        self.assertEqual(plugin.asserted_parameters, {"profile_id": "p-home"})
+        plugin.instance.dispatch(plugin.instance.signal_id)
+        self.assertTrue(manager.stop(1.0))
+        self.assertTrue(plugin.instance.stopped)
+
+    def test_duplicate_mqtt_ha_ids_fail_closed_per_shared_profile(self) -> None:
+        plugin = _FakePlugin()
+        manager, notices = self.make_manager(plugin)
+        trigger = settings.PluginSignalTrigger("mqtt-input", "mqtt-ha", {"profile_id": "p-home", "ha_name": "One", "ha_id": "shared"})
+        signals = (
+            settings.ActionSignal("signal-one", "One", settings.ActionHotkeyBinding(None), None, (settings.WaitSlot(1),), False, (trigger,)),
+            settings.ActionSignal("signal-two", "Two", settings.ActionHotkeyBinding(None), None, (settings.WaitSlot(1),), False, (trigger,)),
+        )
+
+        self.assertFalse(manager._save_action_signals(signals))
+        self.assertIn("unique Home Assistant IDs", notices[-1])
+
+        routes = (
+            settings.VolumeRoute("route-one", "One", settings.RouteEndpoint("mqtt", {"profile_id": "p-home", "ha_name": "One", "ha_id": "shared", "max_value": 100}), settings.RouteEndpoint("fake", {})),
+            settings.VolumeRoute("route-two", "Two", settings.RouteEndpoint("mqtt", {"profile_id": "p-home", "ha_name": "Two", "ha_id": "shared", "max_value": 100}), settings.RouteEndpoint("fake", {})),
+        )
+        self.assertFalse(manager._save_routes(routes))
+        self.assertIn("unique Home Assistant IDs", notices[-1])
+
     def test_legacy_action_binding_migrates_to_forwarding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "shortcuts.json"
@@ -972,6 +1036,33 @@ class FluentPanelStateTests(unittest.TestCase):
 
 
 class PluginGuiIntegrationTests(unittest.TestCase):
+    def test_mqtt_automation_trigger_uses_a_shared_profile_and_ha_identity(self) -> None:
+        from gui import MonitorVolumeApp
+
+        manager = Mock()
+        manager.save_action_signal.return_value = True
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._plugin_manager = manager
+
+        app._dispatch_web_action("signal.save", {
+            "values": {
+                "name": "Movie mode",
+                "on_start": False,
+                "keyboard_enabled": False,
+                "tray_enabled": False,
+                "mqtt_enabled": True,
+                "mqtt_profile_id": "p-home",
+                "mqtt_ha_name": "Movie mode",
+                "mqtt_ha_id": "movie_mode",
+                "slots": [{"kind": "wait", "milliseconds": 1}],
+            },
+        })
+
+        self.assertEqual(manager.save_action_signal.call_args.args[-1], [{
+            "target": "mqtt-input/mqtt-ha",
+            "parameters": {"profile_id": "p-home", "ha_name": "Movie mode", "ha_id": "movie_mode"},
+        }])
+
     def test_configured_automation_step_round_trips_plugin_parameters(self) -> None:
         from gui import MonitorVolumeApp
 
@@ -994,6 +1085,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
             "status": "save",
             "values": {"target": 2},
         }
+        manager.slot_summary.return_value = "Target: Two"
         app = MonitorVolumeApp.__new__(MonitorVolumeApp)
         app._plugin_manager = manager
 
@@ -1011,6 +1103,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         manager.invoke_slot_ui_action.assert_called_once_with("plugin", "action", "save", {"target": 2})
         self.assertEqual(form["fields"][0]["key"], "target")
         self.assertEqual(saved["parameters"], {"target": 2})
+        self.assertEqual(saved["summary"], "Target: Two")
 
     def test_disabled_automation_trigger_sections_clear_hidden_values(self) -> None:
         from gui import MonitorVolumeApp
@@ -1041,6 +1134,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
             None,
             [{"kind": "wait", "milliseconds": 1}],
             True,
+            [],
         )
 
     def test_embedded_panels_are_built_after_plugin_startup(self) -> None:
@@ -1052,6 +1146,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         app._resize_for_content = Mock()
         app.routes_panel = Mock()
         app.plugins_panel = Mock()
+        app.integrations_panel = Mock()
         app.appearance_panel = Mock()
         app._post_to_ui = Mock()
         app._set_status = Mock()
@@ -1071,7 +1166,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
         manager.start.assert_called_once_with()
         manager.create_overlay_renderer.assert_called_once_with(app.dark_mode, app.high_contrast)
         manager.build_routes_panel.assert_called_once_with(app.routes_panel)
-        manager.build_action_plugins_panel.assert_not_called()
+        manager.build_action_plugins_panel.assert_called_once_with(app.integrations_panel)
         manager.build_appearance_panel.assert_called_once_with(app.appearance_panel)
         manager.dispatch_startup_automations.assert_called_once_with()
 

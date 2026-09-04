@@ -11,7 +11,7 @@ from ddc import MonitorIdentity, SavedMonitorSelection
 from plugin_api import ActionHotkeyBinding, HotkeySpec
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 DEFAULT_CHANGE_SPEED = "slow"
 CHANGE_SPEEDS = frozenset(("slow", "medium", "fast"))
 USER_DATA_DIRECTORY = Path(os.environ.get("APPDATA") or Path.home()) / "fensoundswitch"
@@ -24,6 +24,7 @@ MAX_ROUTE_NAME_LENGTH = 80
 MAX_SIGNAL_NAME_LENGTH = 80
 MAX_ACTION_SIGNALS = 100
 MAX_SIGNAL_SLOTS = 32
+MAX_SIGNAL_TRIGGERS = 8
 MAX_WAIT_MILLISECONDS = 300_000
 
 
@@ -88,6 +89,26 @@ SignalSlot = ActionSlot | WaitSlot
 
 
 @dataclass(frozen=True)
+class PluginSignalTrigger:
+    plugin_id: str
+    trigger_id: str
+    parameters: dict[str, object]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.plugin_id, str) or _PLUGIN_ID_PATTERN.fullmatch(self.plugin_id) is None
+            or not isinstance(self.trigger_id, str) or _PLUGIN_ID_PATTERN.fullmatch(self.trigger_id) is None
+            or not isinstance(self.parameters, dict)
+        ):
+            raise ValueError("Automation integration trigger is invalid.")
+        try:
+            normalized = json.loads(json.dumps(self.parameters))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Automation trigger parameters must contain only JSON values.") from exc
+        object.__setattr__(self, "parameters", normalized)
+
+
+@dataclass(frozen=True)
 class ActionSignal:
     signal_id: str
     name: str
@@ -95,6 +116,7 @@ class ActionSignal:
     tray_label: str | None
     slots: tuple[SignalSlot, ...]
     on_start: bool = False
+    plugin_triggers: tuple[PluginSignalTrigger, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.signal_id, str) or _ROUTE_ID_PATTERN.fullmatch(self.signal_id) is None:
@@ -103,6 +125,8 @@ class ActionSignal:
             raise ValueError("Automation keyboard trigger is invalid.")
         if not isinstance(self.on_start, bool):
             raise ValueError("Automation start trigger must be true or false.")
+        if not isinstance(self.plugin_triggers, tuple) or len(self.plugin_triggers) > MAX_SIGNAL_TRIGGERS or not all(isinstance(trigger, PluginSignalTrigger) for trigger in self.plugin_triggers):
+            raise ValueError("Automation integration triggers are invalid.")
         if not isinstance(self.slots, tuple) or not 1 <= len(self.slots) <= MAX_SIGNAL_SLOTS or not all(isinstance(slot, (ActionSlot, WaitSlot)) for slot in self.slots):
             raise ValueError("An automation needs one to 32 valid ordered steps.")
         name = normalize_signal_label(self.name)
@@ -111,8 +135,8 @@ class ActionSignal:
             raise ValueError("Automation name must be non-empty and at most 80 characters.")
         if self.tray_label is not None and tray_label is None:
             raise ValueError("Tray item label must be non-empty and at most 80 characters.")
-        if self.hotkey.hotkey is None and tray_label is None and not self.on_start:
-            raise ValueError("An automation needs a keyboard shortcut, a tray item, or an app-start trigger.")
+        if self.hotkey.hotkey is None and tray_label is None and not self.on_start and not self.plugin_triggers:
+            raise ValueError("An automation needs at least one trigger.")
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "tray_label", tray_label)
 
@@ -430,7 +454,7 @@ def _normalized_action_signals(value: object) -> tuple[ActionSignal, ...] | None
     signals: list[ActionSignal] = []
     signal_ids: set[str] = set()
     for item in value:
-        if not isinstance(item, dict) or set(item) - {"signal_id", "name", "hotkey", "forward_keys", "tray_label", "slots", "on_start"}:
+        if not isinstance(item, dict) or set(item) - {"signal_id", "name", "hotkey", "forward_keys", "tray_label", "slots", "on_start", "plugin_triggers"}:
             return None
         signal_id = _optional_string(item.get("signal_id"))
         name = normalize_signal_label(item.get("name"))
@@ -438,10 +462,12 @@ def _normalized_action_signals(value: object) -> tuple[ActionSignal, ...] | None
         tray_label = None if tray_value is None else normalize_signal_label(tray_value)
         slots_value = item.get("slots")
         on_start = item.get("on_start", False)
+        plugin_triggers_value = item.get("plugin_triggers", [])
         if (
             signal_id is None or _ROUTE_ID_PATTERN.fullmatch(signal_id) is None or signal_id in signal_ids
             or name is None or (tray_value is not None and tray_label is None)
             or not isinstance(on_start, bool)
+            or not isinstance(plugin_triggers_value, list) or len(plugin_triggers_value) > MAX_SIGNAL_TRIGGERS
             or not isinstance(slots_value, list) or not 1 <= len(slots_value) <= MAX_SIGNAL_SLOTS
         ):
             return None
@@ -452,9 +478,20 @@ def _normalized_action_signals(value: object) -> tuple[ActionSignal, ...] | None
         slots = tuple(_normalized_signal_slot(slot) for slot in slots_value)
         if any(slot is None for slot in slots):
             return None
+        plugin_triggers: list[PluginSignalTrigger] = []
+        try:
+            for trigger in plugin_triggers_value:
+                if not isinstance(trigger, dict) or set(trigger) != {"plugin_id", "trigger_id", "parameters"}:
+                    return None
+                parameters = _json_object(trigger.get("parameters"))
+                if parameters is None:
+                    return None
+                plugin_triggers.append(PluginSignalTrigger(trigger.get("plugin_id"), trigger.get("trigger_id"), parameters))  # type: ignore[arg-type]
+        except ValueError:
+            return None
         signal_ids.add(signal_id)
         try:
-            signals.append(ActionSignal(signal_id, name, hotkey, tray_label, slots, on_start))  # type: ignore[arg-type]
+            signals.append(ActionSignal(signal_id, name, hotkey, tray_label, slots, on_start, tuple(plugin_triggers)))  # type: ignore[arg-type]
         except ValueError:
             return None
     return tuple(signals)
@@ -489,6 +526,10 @@ def save_action_signals(signals: tuple[ActionSignal, ...] | list[ActionSignal]) 
             "tray_label": signal.tray_label,
             "slots": slots,
             "on_start": signal.on_start,
+            "plugin_triggers": [
+                {"plugin_id": trigger.plugin_id, "trigger_id": trigger.trigger_id, "parameters": trigger.parameters}
+                for trigger in signal.plugin_triggers
+            ],
         })
     normalized = _normalized_action_signals(raw)
     if normalized is None or len(normalized) != len(signals):
@@ -514,7 +555,7 @@ def load_selected_monitor_key() -> SavedMonitorSelection | None:
         return None
 
     schema_version = data.get("schema_version")
-    if schema_version in (2, 3, 4, 5, 6, 7, 8, SCHEMA_VERSION):
+    if schema_version in (2, 3, 4, 5, 6, 7, 8, 9, SCHEMA_VERSION):
         identity_data = selected_monitor.get("identity")
         if not isinstance(identity_data, dict):
             return None

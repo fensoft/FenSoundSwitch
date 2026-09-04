@@ -122,6 +122,9 @@ button:disabled { cursor: default; opacity: .55; }
 .notice p { margin: 0; }
 
 dialog { width: min(560px, calc(100vw - 38px)); max-height: calc(100vh - 50px); padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-solid); color: var(--text); box-shadow: 0 22px 70px rgba(0, 0, 0, .25); }
+#editor-dialog[data-kind="signal"] { width: min(820px, calc(100vw - 38px)); height: min(820px, calc(100vh - 38px)); overflow: hidden; }
+#editor-dialog[data-kind="signal"] #editor-form { display: flex; height: 100%; min-height: 0; flex-direction: column; }
+#editor-dialog[data-kind="signal"] #editor-fields { flex: 1; min-height: 0; overflow-y: auto; }
 dialog::backdrop { background: rgba(18, 25, 33, .38); backdrop-filter: blur(2px); }
 dialog header { display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 15px; }
 .dialog-body { display: grid; gap: 15px; margin: 0; padding: 8px 24px 20px; }
@@ -170,13 +173,23 @@ dialog footer .spacer { flex: 1; }
 .section-heading h2 { margin: 0; font-size: 1.05rem; }
 .section-heading p { margin: 4px 0 0; }
 .signal-trigger { margin: 8px 0 0; color: var(--accent); font-size: .84rem; font-weight: 650; }
+.automation-summary { margin: 8px 0 0; padding-left: 22px; color: var(--muted); }
+.automation-summary li + li { margin-top: 4px; }
 .sequence-editor { display: grid; gap: 12px; }
 .sequence-list { display: grid; gap: 8px; }
-.sequence-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto 34px 34px 34px; gap: 6px; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-solid); }
+.sequence-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto 36px 36px 36px; gap: 8px; align-items: center; min-height: 56px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-solid); }
 .sequence-index { text-align: center; color: var(--muted); }
 .sequence-row select { width: 100%; }
 .sequence-wait { display: grid; grid-template-columns: auto minmax(80px, 1fr) auto; align-items: center; gap: 8px; }
 .sequence-wait input { min-width: 0; }
 .sequence-row .icon-button { width: 34px; height: 34px; }
+.sequence-summary { grid-column: 2 / -1; color: var(--muted); line-height: 1.35; }
 .sequence-config[hidden] { display: block; visibility: hidden; }
 .sequence-add { justify-content: flex-start; }
+#mqtt-dialog { width: min(720px, calc(100vw - 38px)); }
+.dialog-shell { min-width: 0; }
+.dialog-subheader { display: flex; align-items: center; gap: 12px; padding: 0 24px; }
+.dialog-subheader h3 { margin: 0; }
+.compact-stack { gap: 8px; margin-top: 16px; }
+.profile-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.profile-row > div:first-child { display: grid; gap: 3px; }

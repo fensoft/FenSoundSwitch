@@ -5,7 +5,8 @@ on:
     branches:
       - master
     tags:
-      - "**"
+      - "[0-9]*.[0-9]*"
+      - "v[0-9]*.[0-9]*"
 
 concurrency:
   group: release-${{ github.ref }}
@@ -13,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build release executable
+    name: Build release installer
     if: github.ref == 'refs/heads/master'
     runs-on: windows-latest
     timeout-minutes: 20
@@ -31,23 +32,29 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
       - name: Install build dependencies
         run: python -m pip install -e .[build]
 
-      - name: Build executable
+      - name: Build installer
         shell: powershell
-        run: .\build_exe.ps1
+        run: .\build_installer.ps1
 
       - name: Verify release asset
         shell: powershell
         run: |
-          $asset = Resolve-Path .\dist\FenSoundSwitch.exe -ErrorAction Stop
+          $asset = Resolve-Path .\dist\FenSoundSwitch.msi -ErrorAction Stop
           if ((Get-Item $asset).Length -le 0) {
-              throw "Release executable is empty."
+              throw "Release installer is empty."
           }
+          Resolve-Path .\dist\FenSoundSwitch\FenSoundSwitch.exe -ErrorAction Stop
 
   publish:
-    name: Publish release executable
+    name: Publish release installer
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: windows-latest
     timeout-minutes: 20
@@ -65,25 +72,31 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
       - name: Install build dependencies
         run: python -m pip install -e .[build]
 
-      - name: Build executable
+      - name: Build installer
         shell: powershell
-        run: .\build_exe.ps1 -Version $env:FENSOUNDSWITCH_BUILD_VERSION
+        run: .\build_installer.ps1 -Version $env:FENSOUNDSWITCH_BUILD_VERSION
         env:
           FENSOUNDSWITCH_BUILD_VERSION: ${{ github.ref_name }}
 
       - name: Verify release asset
         shell: powershell
         run: |
-          $asset = Resolve-Path .\dist\FenSoundSwitch.exe -ErrorAction Stop
+          $asset = Resolve-Path .\dist\FenSoundSwitch.msi -ErrorAction Stop
           if ((Get-Item $asset).Length -le 0) {
-              throw "Release executable is empty."
+              throw "Release installer is empty."
           }
+          Resolve-Path .\dist\FenSoundSwitch\FenSoundSwitch.exe -ErrorAction Stop
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/FenSoundSwitch.exe
+          files: dist/FenSoundSwitch.msi
           generate_release_notes: true

@@ -62,7 +62,7 @@ def export_configuration(
     settings_path: Path = SETTINGS_PATH,
     plugin_settings_path: Path | None = None,
 ) -> None:
-    """Write all non-secret application configuration to one archive."""
+    """Write application configuration, including MQTT credentials, to one archive."""
     plugin_settings_path = plugin_settings_path or plugin_settings_directory(settings_path)
     settings_payload = _read_json_object(settings_path) if settings_path.exists() else {}
     plugin_payloads: dict[str, dict[str, object]] = {}
@@ -139,7 +139,7 @@ def import_configuration(
     settings_path: Path = SETTINGS_PATH,
     plugin_settings_path: Path | None = None,
 ) -> None:
-    """Replace saved non-secret configuration after fully validating an archive."""
+    """Replace saved configuration after fully validating an archive."""
     settings_payload, plugin_payloads = _read_archive(source)
     plugin_settings_path = plugin_settings_path or plugin_settings_directory(settings_path)
     try:

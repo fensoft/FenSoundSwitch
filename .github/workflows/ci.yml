@@ -47,20 +47,24 @@ jobs:
       - name: Check installed dependencies
         run: python -m pip check
 
-      - name: Parse build script without executing it
+      - name: Parse packaging sources without executing them
         shell: powershell
         run: |
-          $tokens = $null
-          $parseErrors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-              (Resolve-Path .\build_exe.ps1),
-              [ref]$tokens,
-              [ref]$parseErrors
-          ) | Out-Null
-          if ($parseErrors.Count -ne 0) {
-              $parseErrors
-              exit 1
+          foreach ($script in @(".\build_exe.ps1", ".\build_installer.ps1")) {
+              $tokens = $null
+              $parseErrors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                  (Resolve-Path $script),
+                  [ref]$tokens,
+                  [ref]$parseErrors
+              ) | Out-Null
+              if ($parseErrors.Count -ne 0) {
+                  $parseErrors
+                  exit 1
+              }
           }
+          [xml]$wixSource = Get-Content -LiteralPath .\installer\FenSoundSwitch.wxs -Raw
+          if ($wixSource.DocumentElement.LocalName -ne "Wix") { exit 1 }
 
       - name: Check tracked diff whitespace
         run: |

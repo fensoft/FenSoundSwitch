@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="FenSoundSwitch"
+      Manufacturer="FenSoft"
+      Version="$(var.ProductVersion)"
+      UpgradeCode="{E8592D89-64E6-4C32-B8F9-4DBBD80A4B7E}"
+      Scope="perMachine"
+      InstallerVersion="500"
+      Compressed="yes">
+    <MajorUpgrade
+        AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="FenSoundSwitch.ico" SourceFile="!(bindpath.ProjectRoot)\FenSoundSwitch.ico" />
+    <Property Id="ARPPRODUCTICON" Value="FenSoundSwitch.ico" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="FenSoundSwitch">
+        <Component Id="MainExecutableComponent" Guid="*">
+          <File
+              Id="MainExecutable"
+              Source="!(bindpath.StandaloneDir)\FenSoundSwitch.exe"
+              KeyPath="yes">
+            <Shortcut
+                Id="StartMenuShortcut"
+                Directory="ApplicationProgramsFolder"
+                Name="FenSoundSwitch"
+                Description="Control monitor and audio volume routes"
+                Advertise="yes"
+                WorkingDirectory="INSTALLFOLDER" />
+          </File>
+          <RemoveFolder
+              Id="RemoveApplicationProgramsFolder"
+              Directory="ApplicationProgramsFolder"
+              On="uninstall" />
+        </Component>
+        <Component Id="InstallFolderRegistration" Guid="*">
+          <RegistryValue
+              Root="HKLM"
+              Key="Software\FenSoft\FenSoundSwitch\Installer"
+              Name="Installed"
+              Type="integer"
+              Value="1"
+              KeyPath="yes" />
+          <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="FenSoundSwitch" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="FenSoundSwitch" Level="1">
+      <Files
+          Directory="INSTALLFOLDER"
+          Include="!(bindpath.StandaloneDir)\**">
+        <Exclude Files="!(bindpath.StandaloneDir)\FenSoundSwitch.exe" />
+      </Files>
+      <ComponentRef Id="MainExecutableComponent" />
+      <ComponentRef Id="InstallFolderRegistration" />
+    </Feature>
+  </Package>
+</Wix>

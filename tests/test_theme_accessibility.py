@@ -167,8 +167,10 @@ class KeyboardAccessibilityTests(unittest.TestCase):
         app = MonitorVolumeApp.__new__(MonitorVolumeApp)
         app.routes_panel = Mock()
         app.plugins_panel = Mock()
+        app.integrations_panel = Mock()
         app.route_nav_button = Mock()
         app.plugin_nav_button = Mock()
+        app.integrations_nav_button = Mock()
         app.appearance_panel = Mock()
         app.settings_panel = Mock()
         app.appearance_nav_button = Mock()
@@ -184,7 +186,8 @@ class KeyboardAccessibilityTests(unittest.TestCase):
         app.route_nav_button.configure.assert_called_with(style="Nav.TButton")
         app.appearance_nav_button.configure.assert_called_with(style="Nav.TButton")
         app.settings_nav_button.configure.assert_called_with(style="Nav.TButton")
-        app.page_title_var.set.assert_called_with("Automations and integrations")
+        app.integrations_nav_button.configure.assert_called_with(style="Nav.TButton")
+        app.page_title_var.set.assert_called_with("Automations")
 
         app._show_page("routes")
 

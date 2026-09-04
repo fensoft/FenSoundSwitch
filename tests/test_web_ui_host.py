@@ -180,6 +180,19 @@ class WebUiProtocolTests(unittest.TestCase):
         window.show.assert_called_once_with()
         window.create_file_dialog.assert_called_once_with(30, directory=r"C:\Users\tester\AppData\Roaming\fensoundswitch\configurations", save_filename="FenSoundSwitch.fsc", file_types=("FenSoundSwitch configuration (*.fsc)",))
 
+    def test_open_picker_uses_supplied_directory(self) -> None:
+        api = web_ui_host.WebApi(Mock())
+        window = Mock()
+        window.create_file_dialog.return_value = (r"C:\tmp\config.fsc",)
+        webview = Mock()
+        webview.FileDialog.OPEN = 20
+        api.attach_window(window, webview)
+
+        result = api.pick_open_file({"directory": r"C:\Users\tester\AppData\Roaming\fensoundswitch\configurations", "file_types": ["FenSoundSwitch configuration (*.fsc)"]})
+
+        self.assertEqual(result, {"ok": True, "result": r"C:\tmp\config.fsc"})
+        window.create_file_dialog.assert_called_once_with(20, directory=r"C:\Users\tester\AppData\Roaming\fensoundswitch\configurations", save_filename="", file_types=("FenSoundSwitch configuration (*.fsc)",))
+
 
 class WebUiAssetTests(unittest.TestCase):
     def test_native_window_uses_bundled_application_icon(self) -> None:
@@ -236,19 +249,25 @@ class WebUiAssetTests(unittest.TestCase):
         script = web_ui_host.resolve_asset("app.js").read_text(encoding="utf-8")
         styles = web_ui_host.resolve_asset("app.css").read_text(encoding="utf-8")
 
-        for page in ("routes", "actions", "appearance", "settings", "diagnostics", "about"):
+        for page in ("routes", "actions", "integrations", "appearance", "settings", "diagnostics", "about"):
             self.assertIn(f"{page}:", script)
-        for method in ("snapshot.get", "route.save", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "action.save"):
+        for method in ("snapshot.get", "route.save", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "action.save"):
             self.assertIn(method, script)
         self.assertIn("pick_open_file", script)
         self.assertIn("pick_save_file", script)
         self.assertIn("configuration_directory", script)
+        self.assertIn('pick_open_file({ title: "Import FenSoundSwitch configuration", directory,', script)
         self.assertIn('event.submitter?.value === "cancel"', script)
         self.assertIn('#editor-close, #editor-cancel', script)
         self.assertNotIn("if (shortcut) buttons.unshift", script)
         self.assertIn('type === "hotkey"', script)
         self.assertIn('type === "sequence"', script)
         self.assertIn("syncConditionalFields", script)
+        self.assertIn("openMqttIntegration", script)
+        self.assertIn("mqtt-profile-list", html)
+        self.assertIn("sequence-summary", script)
+        self.assertIn("automation-summary", script)
+        self.assertIn('#editor-dialog[data-kind="signal"]', styles)
         self.assertIn("select[data-depends-on]", script)
         self.assertIn("option.when", script)
         self.assertIn("openSlotEditor", script)

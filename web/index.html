@@ -20,6 +20,7 @@
       <nav id="navigation">
         <button class="nav-item is-active" type="button" data-page="routes" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h13m0 0-3-3m3 3-3 3M20 17H7m0 0 3-3m-3 3 3 3"/></svg></span>Routes</button>
         <button class="nav-item" type="button" data-page="actions"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m13 2-8 12h7l-1 8 8-12h-7z"/></svg></span>Automations</button>
+        <button class="nav-item" type="button" data-page="integrations"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 3v5m8-5v5M6 8h12v4a6 6 0 0 1-12 0zM12 18v3"/></svg></span>Integrations</button>
         <button class="nav-item" type="button" data-page="appearance"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18 4 4 0 0 0 0-8h-1a2 2 0 0 1 0-4h6.5A8.9 8.9 0 0 0 12 3Z"/><circle cx="7.5" cy="10" r="1" fill="currentColor" stroke="none"/><circle cx="9.5" cy="6.5" r="1" fill="currentColor" stroke="none"/><circle cx="14" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg></span>Appearance</button>
         <button class="nav-item" type="button" data-page="settings"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9.8 3h4.4l.7 2.2 2 .9 2.1-1 2 3.8-1.8 1.5v2.3l1.8 1.5-2 3.8-2.1-1-2 .9-.7 2.1H9.8l-.7-2.1-2-.9-2.1 1-2-3.8 1.8-1.5v-2.3L3 8.9 5 5.1l2.1 1 2-.9z"/><circle cx="12" cy="11.6" r="3"/></svg></span>Settings</button>
         <button class="nav-item diagnostics-link" type="button" data-page="diagnostics"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3"/></svg></span>Diagnostics</button>
@@ -63,6 +64,21 @@
       <div id="slot-error" class="inline-error" role="alert" hidden></div>
       <footer><button class="secondary" id="slot-refresh" type="button" hidden>Refresh monitors</button><span class="spacer"></span><button class="secondary" id="slot-cancel" type="button">Cancel</button><button class="primary" id="slot-save" value="default">Save step</button></footer>
     </form>
+  </dialog>
+  <dialog id="mqtt-dialog" aria-labelledby="mqtt-title">
+    <div class="dialog-shell">
+      <header><div><p class="eyebrow">INTEGRATION</p><h2 id="mqtt-title">MQTT / Home Assistant</h2></div><button class="icon-button" id="mqtt-close" type="button" aria-label="Close">×</button></header>
+      <section id="mqtt-list-view" class="dialog-body">
+        <div class="section-heading"><div><h3>Configurations</h3><p class="muted">Reusable broker connections for routes and automations.</p></div><button class="primary" id="mqtt-add" type="button">Add configuration</button></div>
+        <div id="mqtt-profile-list" class="stack compact-stack"></div>
+      </section>
+      <form id="mqtt-profile-form" hidden>
+        <div class="dialog-subheader"><button class="text-button" id="mqtt-back" type="button">Back</button><h3 id="mqtt-profile-title">Add configuration</h3></div>
+        <div id="mqtt-profile-fields" class="dialog-body"></div>
+        <div id="mqtt-error" class="inline-error" role="alert" hidden></div>
+        <footer><button class="secondary" id="mqtt-profile-cancel" type="button">Cancel</button><button class="primary" id="mqtt-profile-save" type="submit">Save configuration</button></footer>
+      </form>
+    </div>
   </dialog>
 </body>
 </html>

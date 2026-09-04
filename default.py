@@ -37,7 +37,7 @@ def ensure_default_configuration(settings_path: Path) -> Path:
     if destination.is_file() and not _has_broken_keyboard_route(destination):
         return destination
     settings_payload: dict[str, object] = {
-        "schema_version": 9,
+        "schema_version": 10,
         "volume_routes": [
             {
                 "route_id": "output",

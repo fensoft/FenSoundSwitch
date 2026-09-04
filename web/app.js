@@ -2,7 +2,8 @@
 
 const pages = {
   routes: ["Routes", "Connect an input to the volume output it controls.", "New route"],
-  actions: ["Automations", "Run an ordered set of steps from a keyboard or tray trigger.", "New automation"],
+  actions: ["Automations", "Run ordered steps from app start, keyboard, tray, or MQTT/HA.", "New automation"],
+  integrations: ["Integrations", "Configure connections used by routes and automations.", ""],
   appearance: ["Appearance", "Choose how volume changes appear on screen.", ""],
   settings: ["Settings", "Manage startup and configuration backups.", ""],
   diagnostics: ["Diagnostics", "Review bounded application health information.", ""],
@@ -18,6 +19,8 @@ const editorForm = document.querySelector("#editor-form");
 const confirmDialog = document.querySelector("#confirm-dialog");
 const slotDialog = document.querySelector("#slot-dialog");
 const slotForm = document.querySelector("#slot-form");
+const mqttDialog = document.querySelector("#mqtt-dialog");
+const mqttProfileForm = document.querySelector("#mqtt-profile-form");
 
 function element(tag, options = {}, children = []) {
   const node = document.createElement(tag);
@@ -129,7 +132,7 @@ function switchPage(page) {
 function render() {
   content.setAttribute("aria-busy", "false");
   if (!state.snapshot) return;
-  const renderer = { routes: renderRoutes, actions: renderActions, appearance: renderAppearance, settings: renderSettings, diagnostics: renderDiagnostics, about: renderAbout }[state.page];
+  const renderer = { routes: renderRoutes, actions: renderActions, integrations: renderIntegrations, appearance: renderAppearance, settings: renderSettings, diagnostics: renderDiagnostics, about: renderAbout }[state.page];
   renderer();
 }
 
@@ -170,21 +173,30 @@ function endpoint(label, data) {
 }
 
 function renderActions() {
-  const actions = safeArray(state.snapshot.actions);
   const signals = safeArray(state.snapshot.signals);
-  if (!actions.length && !signals.length) { content.replaceChildren(emptyState("⌁", "No steps available", "Enable or install an integration that provides automation steps.", "", null)); return; }
+  if (!signals.length) { content.replaceChildren(emptyState("→", "No automations yet", "Choose one or more triggers, then add action and wait steps.", "Create automation", () => openEntityEditor("signal", null))); return; }
   const stack = element("div", { class: "stack" });
-  stack.append(element("div", { class: "section-heading" }, [element("div", {}, [element("h2", { text: "Automations" }), element("p", { class: "muted", text: "One trigger runs every step in order." })])]));
-  if (!signals.length) stack.append(emptyState("→", "No automations yet", "Choose a keyboard shortcut, tray item, or both, then add action and wait steps.", "Create automation", () => openEntityEditor("signal", null)));
   for (const signal of signals) {
     const id = safeText(signal.id);
+    const steps = safeArray(signal.steps);
+    const summary = steps.length ? element("ol", { class: "automation-summary" }, steps.map(step => element("li", { text: safeText(step) }))) : element("p", { class: "muted", text: safeText(signal.description, "Ordered steps") });
     stack.append(element("article", { class: "card setting-row" }, [
-      element("div", {}, [element("h3", { text: safeText(signal.name, "Automation") }), element("p", { class: "muted", text: safeText(signal.description, "Ordered steps") }), element("p", { class: "signal-trigger", text: safeText(signal.trigger, "No trigger") })]),
-      element("div", { class: "button-row" }, [element("button", { class: "secondary", type: "button", text: "Run", onclick: () => execute("signal.run", { id }) }), element("button", { class: "secondary", type: "button", text: "Edit", onclick: () => openEntityEditor("signal", signal) }), element("button", { class: "text-button", type: "button", text: "Remove", onclick: () => confirmAction("Remove automation?", `Remove ${safeText(signal.name, "this automation")}? Its keyboard and tray triggers will stop working.`, "signal.delete", { id }) })])
+      element("div", {}, [element("h3", { text: safeText(signal.name, "Automation") }), summary, element("p", { class: "signal-trigger", text: safeText(signal.trigger, "No trigger") })]),
+      element("div", { class: "button-row" }, [element("button", { class: "secondary", type: "button", text: "Run", onclick: () => execute("signal.run", { id }) }), element("button", { class: "secondary", type: "button", text: "Edit", onclick: () => openEntityEditor("signal", signal) }), element("button", { class: "text-button", type: "button", text: "Remove", onclick: () => confirmAction("Remove automation?", `Remove ${safeText(signal.name, "this automation")}? Its triggers will stop working.`, "signal.delete", { id }) })])
     ]));
   }
-  stack.append(element("div", { class: "section-heading" }, [element("div", {}, [element("h2", { text: "Integrations" }), element("p", { class: "muted", text: "Configure integrations used by automation steps." })])]));
-  for (const action of actions) {
+  content.replaceChildren(stack);
+}
+
+function renderIntegrations() {
+  const stack = element("div", { class: "stack" });
+  const profiles = safeArray(state.snapshot.mqtt_profiles);
+  stack.append(element("article", { class: "card setting-row" }, [
+    element("div", {}, [element("h3", { text: "MQTT / Home Assistant" }), element("p", { class: "muted", text: `${profiles.length} saved configuration${profiles.length === 1 ? "" : "s"}. Reuse broker connections for routes and automations.` })]),
+    element("button", { class: "secondary", type: "button", text: "Configure", onclick: openMqttIntegration })
+  ]));
+  const integrations = safeArray(state.snapshot.integrations);
+  for (const action of integrations) {
     const buttons = [];
     if (safeArray(action.form?.fields).length || action.form?.ui_action) buttons.push(element("button", { class: "secondary", type: "button", text: "Configure", onclick: () => openEntityEditor("action", action) }));
     for (const command of safeArray(action.ui_actions).filter(item => item.kind === "action")) {
@@ -197,6 +209,73 @@ function renderActions() {
     ]));
   }
   content.replaceChildren(stack);
+}
+
+function openMqttIntegration() {
+  state.mqttProfileId = null;
+  showMqttProfileList();
+  mqttDialog.showModal();
+  window.setTimeout(() => document.querySelector("#mqtt-add")?.focus(), 0);
+}
+
+function showMqttProfileList() {
+  mqttProfileForm.hidden = true;
+  document.querySelector("#mqtt-list-view").hidden = false;
+  const list = document.querySelector("#mqtt-profile-list");
+  list.replaceChildren();
+  const profiles = safeArray(state.snapshot?.mqtt_profiles);
+  if (!profiles.length) {
+    list.append(element("p", { class: "muted", text: "No configurations yet." }));
+    return;
+  }
+  for (const profile of profiles) {
+    const id = safeText(profile.id);
+    list.append(element("article", { class: "profile-row" }, [
+      element("div", {}, [element("strong", { text: safeText(profile.name, "MQTT / HA") }), element("span", { class: "muted", text: safeText(profile.description) })]),
+      element("div", { class: "button-row" }, [element("button", { class: "secondary", type: "button", text: "Edit", onclick: () => editMqttProfile(profile) }), element("button", { class: "text-button", type: "button", text: "Remove", onclick: () => removeMqttProfile(id) })])
+    ]));
+  }
+}
+
+function editMqttProfile(profile) {
+  const schemas = state.snapshot?.forms && typeof state.snapshot.forms === "object" ? state.snapshot.forms : {};
+  const schema = profile?.form || schemas.mqtt_profile;
+  const fields = safeArray(schema?.fields);
+  const values = profile?.values && typeof profile.values === "object" ? profile.values : {};
+  state.mqttProfileId = profile?.id || null;
+  document.querySelector("#mqtt-list-view").hidden = true;
+  mqttProfileForm.hidden = false;
+  document.querySelector("#mqtt-profile-title").textContent = profile ? `Edit ${safeText(profile.name, "configuration")}` : "Add configuration";
+  const container = document.querySelector("#mqtt-profile-fields");
+  container.replaceChildren();
+  for (const field of fields) container.append(renderField(field, values[field.key]));
+  syncConditionalFields(container);
+  document.querySelector("#mqtt-error").hidden = true;
+  window.setTimeout(() => container.querySelector("input, select, textarea")?.focus(), 0);
+}
+
+async function saveMqttProfile(event) {
+  event.preventDefault();
+  if (!mqttProfileForm.reportValidity()) return;
+  const save = document.querySelector("#mqtt-profile-save");
+  save.disabled = true; save.textContent = "Saving...";
+  const values = {};
+  for (const input of document.querySelector("#mqtt-profile-fields").querySelectorAll("[name]")) values[input.getAttribute("name")] = input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.value;
+  try {
+    await nativeRequest("mqtt.profile.save", { id: state.mqttProfileId, values });
+    state.revision = -1; await pollSnapshot(); showMqttProfileList();
+  } catch (error) {
+    const target = document.querySelector("#mqtt-error"); target.textContent = safeText(error.message, "The configuration could not be saved."); target.hidden = false; target.focus();
+  } finally { save.disabled = false; save.textContent = "Save configuration"; }
+}
+
+async function removeMqttProfile(id) {
+  try {
+    await nativeRequest("mqtt.profile.delete", { id });
+    state.revision = -1; await pollSnapshot(); showMqttProfileList();
+  } catch (error) {
+    document.querySelector("#mqtt-list-view").prepend(element("div", { class: "inline-error", role: "alert", text: safeText(error.message, "The configuration could not be removed.") }));
+  }
 }
 
 function renderAppearance() {
@@ -220,7 +299,7 @@ function renderSettings() {
   const recent = safeArray(settings.recent_configurations);
   const recentMenu = element("details", { class: `split-menu${recent.length ? "" : " is-empty"}` }, [element("summary", { class: "secondary", title: recent.length ? "Recent configurations" : "No recent configurations", "aria-label": recent.length ? "Recent configurations" : "No recent configurations", "aria-disabled": recent.length ? "false" : "true", text: "▼" }), element("div", { class: "split-menu-items" }, recent.map(item => element("button", { type: "button", text: safeText(item.name, "Configuration"), onclick: () => confirmAction("Import configuration?", `Import ${safeText(item.name, "this configuration")}? The application will restart.`, "config.import", { path: item.path }) })))]);
   const importSplit = element("div", { class: "split-control" }, [element("button", { class: "secondary", type: "button", text: "Import", onclick: importConfiguration }), recentMenu]);
-  const configuration = element("section", { class: "card" }, [element("div", { class: "setting-row" }, [element("div", {}, [element("h3", { text: "Configuration" }), element("p", { class: "muted", text: "Export a backup, import one, or restore bundled defaults." })]), element("div", { class: "button-row" }, [element("button", { class: "primary", type: "button", text: "Export", onclick: exportConfiguration }), importSplit, element("button", { class: "secondary", type: "button", text: "Restore default", onclick: () => confirmAction("Restore default configuration?", "Saved routes and non-secret plugin settings will be replaced, then the application may restart.", "config.restore-default", {}) })])])]);
+  const configuration = element("section", { class: "card" }, [element("div", { class: "setting-row" }, [element("div", {}, [element("h3", { text: "Configuration" }), element("p", { class: "muted", text: "Export a backup, import one, or restore bundled defaults. Protect exports because MQTT credentials are included." })]), element("div", { class: "button-row" }, [element("button", { class: "primary", type: "button", text: "Export", onclick: exportConfiguration }), importSplit, element("button", { class: "secondary", type: "button", text: "Restore default", onclick: () => confirmAction("Restore default configuration?", "Saved routes and plugin settings will be replaced, then the application may restart.", "config.restore-default", {}) })])])]);
   content.replaceChildren(element("div", { class: "stack" }, [startup, configuration]));
 }
 
@@ -263,11 +342,12 @@ function renderAbout() {
 
 function openEntityEditor(kind, entity) {
   const schemas = state.snapshot?.forms && typeof state.snapshot.forms === "object" ? state.snapshot.forms : {};
-  const schema = kind === "route" ? (entity?.form || schemas.route) : kind === "signal" ? (entity?.form || schemas.signal) : entity?.form;
+  const schema = kind === "route" ? (entity?.form || schemas.route) : kind === "signal" ? (entity?.form || schemas.signal) : kind === "mqtt-profile" ? (entity?.form || schemas.mqtt_profile) : entity?.form;
   const fields = safeArray(schema?.fields);
-  state.editor = { kind, id: entity?.id || null, method: safeText(schema?.method, kind === "route" ? "route.save" : kind === "signal" ? "signal.save" : "action.save") };
-  document.querySelector("#editor-kicker").textContent = kind === "signal" ? "AUTOMATION" : kind.toUpperCase();
-  document.querySelector("#editor-title").textContent = entity ? `Edit ${safeText(entity.name, kind)}` : `Create ${kind === "signal" ? "automation" : kind}`;
+  state.editor = { kind, id: entity?.id || null, method: safeText(schema?.method, kind === "route" ? "route.save" : kind === "signal" ? "signal.save" : kind === "mqtt-profile" ? "mqtt.profile.save" : "action.save") };
+  editorDialog.dataset.kind = kind;
+  document.querySelector("#editor-kicker").textContent = kind === "signal" ? "AUTOMATION" : kind === "mqtt-profile" ? "MQTT / HA" : kind.toUpperCase();
+  document.querySelector("#editor-title").textContent = entity ? `Edit ${safeText(entity.name, kind)}` : `Create ${kind === "signal" ? "automation" : kind === "mqtt-profile" ? "MQTT/HA configuration" : kind}`;
   document.querySelector("#editor-error").hidden = true;
   const container = document.querySelector("#editor-fields");
   container.replaceChildren();
@@ -358,13 +438,16 @@ function renderSequenceField(key, field, current) {
       for (const option of options) control.append(element("option", { value: safeText(option.value), text: safeText(option.label, option.value), selected: option.value === slot.target ? "" : null, disabled: option.disabled ? "" : null, "data-configurable": option.configurable ? "true" : "false" }));
     }
     const configure = element("button", { class: "secondary sequence-config", type: "button", text: "Configure", onclick: () => openSlotEditor(row, control.value) });
+    const summary = element("small", { class: "sequence-summary", text: safeText(slot.summary) });
+    summary.hidden = !summary.textContent;
     function refreshConfigure() { configure.hidden = kind !== "action" || control.selectedOptions?.[0]?.dataset.configurable !== "true"; }
-    if (kind === "action") control.addEventListener("change", () => { row._parameters = {}; refreshConfigure(); });
+    if (kind === "action") control.addEventListener("change", () => { row._parameters = {}; summary.textContent = ""; summary.hidden = true; refreshConfigure(); });
     const moveUp = element("button", { class: "icon-button", type: "button", text: "↑", title: "Move up", "aria-label": "Move step up", onclick: () => { row.previousElementSibling?.before(row); refresh(); } });
     const moveDown = element("button", { class: "icon-button", type: "button", text: "↓", title: "Move down", "aria-label": "Move step down", onclick: () => { row.nextElementSibling?.after(row); refresh(); } });
     const remove = element("button", { class: "icon-button", type: "button", text: "×", title: "Remove step", "aria-label": "Remove step", onclick: () => { row.remove(); refresh(); } });
     row._parameters = slot.parameters && typeof slot.parameters === "object" ? slot.parameters : {};
-    row.append(index, control, configure, moveUp, moveDown, remove); list.append(row); refreshConfigure(); refresh();
+    row._summary = summary;
+    row.append(index, control, configure, moveUp, moveDown, remove, summary); list.append(row); refreshConfigure(); refresh();
   }
   function refresh() { [...list.children].forEach((row, index) => { row.querySelector(".sequence-index").textContent = String(index + 1); }); }
   root._sequenceValue = () => [...list.children].map(row => row.dataset.kind === "wait" ? { kind: "wait", milliseconds: Number(row.querySelector("input").value) } : { kind: "action", target: row.querySelector("select").value, parameters: row._parameters || {} });
@@ -454,6 +537,8 @@ async function saveSlotEditor(event) {
   try {
     const result = await nativeRequest("slot.save", { target: state.slotEditor.target, action_id: state.slotEditor.actionId, values });
     state.slotEditor.row._parameters = result.parameters || {};
+    state.slotEditor.row._summary.textContent = safeText(result.summary);
+    state.slotEditor.row._summary.hidden = !state.slotEditor.row._summary.textContent;
     slotDialog.close(); state.slotEditor = null;
   } catch (error) {
     const target = document.querySelector("#slot-error"); target.textContent = safeText(error.message, "The step could not be saved."); target.hidden = false; target.focus();
@@ -472,7 +557,7 @@ async function saveEditor(event) {
   save.disabled = true; save.textContent = "Saving…";
   const values = {};
   for (const input of editorForm.querySelectorAll("[name]")) values[input.getAttribute("name")] = typeof input._sequenceValue === "function" ? input._sequenceValue() : input.dataset.hotkey !== undefined ? JSON.parse(input.dataset.hotkey) : input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.selectedOptions?.[0]?.dataset.json === "true" ? JSON.parse(input.value) : input.value;
-  if (state.editor.kind === "signal" && !values.on_start && !values.keyboard_enabled && !values.tray_enabled) {
+  if (state.editor.kind === "signal" && !values.on_start && !values.keyboard_enabled && !values.tray_enabled && !values.mqtt_enabled) {
     const target = document.querySelector("#editor-error");
     target.textContent = "Choose at least one trigger."; target.hidden = false; target.focus();
     save.disabled = false; save.textContent = "Save changes";
@@ -487,6 +572,12 @@ async function saveEditor(event) {
   if (state.editor.kind === "signal" && values.tray_enabled && !safeText(values.tray_label).trim()) {
     const target = document.querySelector("#editor-error");
     target.textContent = "Enter the tray menu option text."; target.hidden = false; target.focus();
+    save.disabled = false; save.textContent = "Save changes";
+    return;
+  }
+  if (state.editor.kind === "signal" && values.mqtt_enabled && (!safeText(values.mqtt_profile_id).trim() || !safeText(values.mqtt_ha_name).trim() || !safeText(values.mqtt_ha_id).trim())) {
+    const target = document.querySelector("#editor-error");
+    target.textContent = "Choose an MQTT/HA configuration and enter the Home Assistant name and ID."; target.hidden = false; target.focus();
     save.disabled = false; save.textContent = "Save changes";
     return;
   }
@@ -530,8 +621,9 @@ async function exportConfiguration() {
 }
 
 async function importConfiguration() {
-  const choice = await window.pywebview.api.pick_open_file({ title: "Import FenSoundSwitch configuration", file_types: ["FenSoundSwitch configuration (*.fsc)"] });
-  if (choice?.ok && choice.result) confirmAction("Import configuration?", "Saved routes and non-secret plugin settings will be replaced, then the application may restart.", "config.import", { path: choice.result });
+  const directory = safeText(state.snapshot?.settings?.configuration_directory);
+  const choice = await window.pywebview.api.pick_open_file({ title: "Import FenSoundSwitch configuration", directory, file_types: ["FenSoundSwitch configuration (*.fsc)"] });
+  if (choice?.ok && choice.result) confirmAction("Import configuration?", "Saved routes and plugin settings will be replaced, then the application may restart.", "config.import", { path: choice.result });
   else if (choice?.ok === false) showNotice(choice.error?.message || "The file dialog failed.", true);
 }
 
@@ -540,10 +632,16 @@ document.querySelector(".diagnostics-link").addEventListener("click", () => swit
 primaryAction.addEventListener("click", () => { if (state.page === "routes") openEntityEditor("route", null); else if (state.page === "actions") openEntityEditor("signal", null); });
 editorForm.addEventListener("submit", saveEditor);
 slotForm.addEventListener("submit", saveSlotEditor);
+mqttProfileForm.addEventListener("submit", saveMqttProfile);
+document.querySelector("#mqtt-add").addEventListener("click", () => editMqttProfile(null));
+document.querySelector("#mqtt-back").addEventListener("click", showMqttProfileList);
+document.querySelector("#mqtt-profile-cancel").addEventListener("click", showMqttProfileList);
+document.querySelector("#mqtt-close").addEventListener("click", () => mqttDialog.close());
 document.querySelector("#slot-refresh").addEventListener("click", refreshSlotEditor);
 for (const button of document.querySelectorAll("#editor-close, #editor-cancel")) button.addEventListener("click", () => { editorDialog.close("cancel"); state.editor = null; });
 for (const button of document.querySelectorAll("#slot-close, #slot-cancel")) button.addEventListener("click", () => { slotDialog.close("cancel"); state.slotEditor = null; });
 confirmDialog.addEventListener("close", () => { if (confirmDialog.returnValue === "confirm") execute(confirmDialog.dataset.method, JSON.parse(confirmDialog.dataset.params || "{}")); });
-editorDialog.addEventListener("close", () => { state.editor = null; });
+editorDialog.addEventListener("close", () => { state.editor = null; delete editorDialog.dataset.kind; });
 slotDialog.addEventListener("close", () => { state.slotEditor = null; });
+mqttDialog.addEventListener("close", () => { state.mqttProfileId = null; showMqttProfileList(); });
 window.addEventListener("pywebviewready", pollSnapshot, { once: true });

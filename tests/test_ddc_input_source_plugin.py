@@ -216,8 +216,10 @@ class DdcInputSourcePluginTests(unittest.TestCase):
         plugin._discovery_state = "ready"
 
         document = plugin.get_slot_ui("select-input", {})
+        monitor_field = next(field for field in document["fields"] if field["id"] == "selected_monitor")
         input_field = next(field for field in document["fields"] if field["id"] == "input_value")
 
+        self.assertEqual([option["label"] for option in monitor_field["options"]], ["First - S/N first", "Second - S/N second"])
         self.assertEqual(input_field["depends_on"], "selected_monitor")
         self.assertEqual(
             [(option["value"], option["when"]) for option in input_field["options"]],
@@ -297,6 +299,8 @@ class DdcInputSourcePluginTests(unittest.TestCase):
         )
         self.assertIn("DP1", plugin.slot_summary("select-input", first_parameters))
         self.assertIn("HDMI1", plugin.slot_summary("select-input", second_parameters))
+        self.assertIn("S/N first", plugin.slot_summary("select-input", first_parameters))
+        self.assertIn("S/N second", plugin.slot_summary("select-input", second_parameters))
 
     def test_action_rejects_parameters_and_unconfigured_execution(self) -> None:
         plugin = ddc_input_source_plugin.DdcInputSourcePlugin()

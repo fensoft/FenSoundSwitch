@@ -9,10 +9,17 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $versionFile = Join-Path $repoRoot "fensoundswitch-version.txt"
 $versionFileCreated = $false
+$nuitkaOutputDir = Join-Path ([System.IO.Path]::GetTempPath()) "fensoundswitch-nuitka-$PID"
+$generatedStandaloneDir = Join-Path $nuitkaOutputDir "app.dist"
+$standaloneDir = Join-Path $repoRoot "dist\FenSoundSwitch"
 Push-Location $repoRoot
 
 try {
     $pythonExe = (Get-Command python -ErrorAction Stop).Source
+    $pythonBits = & $pythonExe -c "import struct; print(struct.calcsize('P') * 8)"
+    if ($LASTEXITCODE -ne 0 -or $pythonBits -ne "64") {
+        throw "The Windows x64 package requires a 64-bit Python interpreter."
+    }
 
     if (-not (Test-Path "app.py")) {
         throw "app.py was not found in $repoRoot"
@@ -52,18 +59,18 @@ try {
             $windowsVersion = "0.0.0.0"
         }
     }
-    if (Test-Path -LiteralPath $versionFile) {
-        throw "$versionFile already exists; refusing to overwrite it."
-    }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($versionFile, $displayVersion, $utf8NoBom)
     $versionFileCreated = $true
 
-    Write-Host "Building dist\\FenSoundSwitch.exe version $displayVersion with Nuitka..."
+    if (Test-Path -LiteralPath $nuitkaOutputDir) {
+        Remove-Item -LiteralPath $nuitkaOutputDir -Recurse -Force
+    }
+
+    Write-Host "Building standalone dist\\FenSoundSwitch version $displayVersion with Nuitka..."
 
     & $pythonExe -m nuitka `
-        --onefile `
-        --onefile-no-compression `
+        --standalone `
         --windows-console-mode=disable `
         --enable-plugins=tk-inter `
         --include-package-data=webview `
@@ -80,7 +87,7 @@ try {
         --include-data-files=FenSoundSwitch.ico=FenSoundSwitch.ico `
         --include-data-files=fensoundswitch-version.txt=fensoundswitch-version.txt `
         --include-data-dir=web=web `
-        --output-dir=dist `
+        --output-dir=$nuitkaOutputDir `
         --output-filename=FenSoundSwitch.exe `
         --remove-output `
         --assume-yes-for-downloads `
@@ -90,11 +97,23 @@ try {
         throw "Nuitka build failed with exit code $LASTEXITCODE"
     }
 
-    Write-Host "Build complete: dist\\FenSoundSwitch.exe"
+    if (-not (Test-Path -LiteralPath (Join-Path $generatedStandaloneDir "FenSoundSwitch.exe"))) {
+        throw "Nuitka standalone output was not found at $generatedStandaloneDir"
+    }
+    New-Item -ItemType Directory -Path $standaloneDir -Force | Out-Null
+    & robocopy $generatedStandaloneDir $standaloneDir /MIR /R:3 /W:1 /NFL /NDL /NJH /NJS /NP
+    if ($LASTEXITCODE -ge 8) {
+        throw "Failed to synchronize standalone output with robocopy exit code $LASTEXITCODE"
+    }
+
+    Write-Host "Build complete: dist\\FenSoundSwitch"
 }
 finally {
     if ($versionFileCreated -and (Test-Path -LiteralPath $versionFile)) {
         Remove-Item -LiteralPath $versionFile -Force
+    }
+    if (Test-Path -LiteralPath $nuitkaOutputDir) {
+        Remove-Item -LiteralPath $nuitkaOutputDir -Recurse -Force
     }
     Pop-Location
 }

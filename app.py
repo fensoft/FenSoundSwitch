@@ -23,8 +23,12 @@ from windows_platform import (
 from web_presentation import CHILD_MODE_ARGUMENT
 
 
+FOREGROUND_ARGUMENT = "--foreground"
+
+
 def main() -> int:
     restart_requested = False
+    foreground_requested = FOREGROUND_ARGUMENT in sys.argv[1:]
     if sys.argv[1:2] == [CHILD_MODE_ARGUMENT]:
         from web_ui_host import main as web_ui_main
 
@@ -56,6 +60,8 @@ def main() -> int:
         root = tk.Tk()
         root.withdraw()
         application = MonitorVolumeApp(root)
+        if foreground_requested:
+            application.restore_from_tray()
         root.mainloop()
         restart_requested = application.restart_requested is True
     except Exception:
@@ -68,9 +74,13 @@ def main() -> int:
         finally:
             instance_guard.close()
     if restart_requested:
+        restart_arguments = [FOREGROUND_ARGUMENT] if foreground_requested else []
         if getattr(sys, "frozen", False) or "__compiled__" in globals():
-            os.execv(sys.executable, [sys.executable])
-        os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve())])
+            os.execv(sys.executable, [sys.executable, *restart_arguments])
+        os.execv(
+            sys.executable,
+            [sys.executable, str(Path(__file__).resolve()), *restart_arguments],
+        )
     return 0
 
 
