@@ -23,6 +23,7 @@ build = [
 [tool.setuptools]
 py-modules = [
     "app",
+    "app_version",
     "audio_outputs",
     "core_audio",
     "config_archive",

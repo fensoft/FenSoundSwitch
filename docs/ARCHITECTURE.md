@@ -123,7 +123,7 @@ Schema-v9 action signals compose declared `SlotAction` values with ordered waits
 
 The DDC monitor-input plugin exposes one independently configurable `select-input` slot and no Integrations-page form. Opening the action-step editor immediately starts a daemon discovery worker and returns a loading document that the WebView polls until stable monitor/input choices are ready; the editor also owns the explicit refresh command. No discovery work runs on Tk. The editor persists one stable `SavedMonitorSelection` and one advertised numeric input value in each slot's parameters, and dependent select fields keep input choices scoped to that slot's selected monitor. A slot run freshly enumerates monitors, exact-matches the saved identity, rereads capabilities, writes VCP input-source code `0x60` once, and verifies the readback. Missing identities, ambiguous matches, removed inputs, and uncertain readbacks fail without fallback or retry.
 
-The current composition extends that original Routes/Plugins ownership: the manager now builds the Routes, Actions, and Appearance pages, while `gui.py` owns Settings. Routes and Actions use bounded scrollable card lists. Routes and Appearance register synchronized views of the one persisted overlay renderer, and every visible Start with Windows control is refreshed from the same GUI-owned state after a mutation.
+The current composition extends that original Routes/Plugins ownership: the manager builds the Routes, Actions, and Appearance pages, while `gui.py` owns Settings, Diagnostics, and the version-backed About page. Routes and Actions use bounded scrollable card lists. Routes and Appearance register synchronized views of the one persisted overlay renderer, and every visible Start with Windows control is refreshed from the same GUI-owned state after a mutation.
 
 Keyboard route bindings retain an explicit `forward_keys` policy in their input parameters. Action-plugin shortcuts persist the same policy in `shortcuts.json`; legacy bindings migrate to `true`. An action or route with `forward_keys: false` consumes only its configured non-modifier key down/repeats and the matching held key up; modifier and unrelated input always call the next hook. Rebinding, route removal, hook errors, and shutdown release held keys immediately.
 
@@ -382,14 +382,14 @@ External plugins can use arbitrary network paths. The bundled Discord plugin con
 `pyproject.toml` uses `setuptools.build_meta` as its PEP 517 backend, with unpinned `setuptools` and `wheel` build-system requirements. It declares project version `0.1.0`, Python `>=3.10`, and explicit flat modules:
 
 ```text
-app, audio_outputs, autostart, diagnostics, plugins.discord_output_plugin, plugins.windows11_overlay_plugin, plugins.macos_overlay_plugin, gui, ddc, settings, theme, plugin_api, plugin_hotkeys, plugin_manager, windows_platform
+app, app_version, audio_outputs, autostart, diagnostics, plugins.discord_output_plugin, plugins.windows11_overlay_plugin, plugins.macos_overlay_plugin, gui, ddc, settings, theme, plugin_api, plugin_hotkeys, plugin_manager, windows_platform
 ```
 
 Direct runtime dependencies pin `monitorcontrol==4.2.0`, `paho-mqtt==2.1.0`, `pywebview==6.1`, and `pythonnet==3.0.5`. The latter two host the local Windows WebView2 presentation child. The `build` extra pins `Nuitka==2.4.8`. There is no lockfile; build-system requirements and transitive build dependencies are not fully pinned.
 
 `gui.py`'s function-local import is still a direct Python import, and `plugin_manager.py` directly imports every bundled provider from `plugins`; `build_exe.ps1` also passes `--include-package=plugins`, so Nuitka embeds the bundled framework/plugins. Files discovered from adjacent `external-plugins`, per-user `%APPDATA%\fensoundswitch\plugins`, or the legacy trusted `%APPDATA%\windows-ddc\plugins` fallback are deliberately not build inputs or embedded data; the executable imports them from disk after restart.
 
-`build_exe.ps1` resolves `python`, changes to its own repository directory, checks `app.py` and `FenSoundSwitch.ico`, then invokes Nuitka with:
+`build_exe.ps1` resolves `python`, changes to its own repository directory, checks `app.py` and `FenSoundSwitch.ico`, then creates a temporary ignored `fensoundswitch-version.txt` build resource and invokes Nuitka. The default build version is `dev`. Tag publication passes the exact `github.ref_name`; `app_version.py` reads that bundled resource for the About page, while source execution falls back to `dev`. Numeric tag components are padded for Windows file/product version metadata; nonnumeric tags retain their exact About value and use `0.0.0.0` for numeric PE metadata. The temporary resource is removed in `finally`.
 
 - `--onefile`
 - `--windows-console-mode=disable`
@@ -405,7 +405,7 @@ Direct runtime dependencies pin `monitorcontrol==4.2.0`, `paho-mqtt==2.1.0`, `py
 
 The runtime data copy of the icon is essential because `theme.APP_ICON_PATH` resolves a file beside `theme.py`; an embedded PE icon alone does not satisfy that lookup.
 
-The output is ignored `dist\FenSoundSwitch.exe`. Nuitka support/toolchain downloads are accepted automatically, an existing named artifact may be overwritten, and `--remove-output` removes the intermediate build directory after output is produced. The application can create its current-user autostart value interactively. The Release workflow builds and verifies the executable for `master` pushes without uploading it; a pushed Git tag additionally publishes the executable to the matching GitHub release. The repository defines no installer, Windows service, machine-wide startup registration, or signing step.
+The output is ignored `dist\FenSoundSwitch.exe`. Nuitka support/toolchain downloads are accepted automatically, an existing named artifact may be overwritten, and `--remove-output` removes the intermediate build directory after output is produced. The application can create its current-user autostart value interactively. The Release workflow builds and verifies a `dev` executable for `master` pushes without uploading it; a pushed Git tag embeds that tag and publishes the executable to the matching GitHub release. The repository defines no installer, Windows service, machine-wide startup registration, or signing step.
 
 The setuptools configuration defines no package-data rule for `FenSoundSwitch.ico`; generated `SOURCES.txt` also omits it. An ordinary wheel/non-editable source install therefore falls back to default icons at runtime. Editable source execution sees the repository file, while the Nuitka build explicitly includes it.
 

@@ -12,6 +12,7 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Added
 
+- Added tag-derived executable versions and an About page; ordinary source and local builds report `dev`.
 - Added a bundled DDC monitor-input automation action with background discovery, independent per-step stable monitor/input configuration, advertised-input validation, serialized hardware access, and verified readback.
 - Added optional one-shot route activation for all bundled AVR providers, with main-zone power-on and model-spanning protocol input selection before the initial volume probe.
 - Added host-owned automations triggered when the primary app starts, by a keyboard shortcut, by a notification-area menu item, or by any combination of those triggers. Automations run up to 32 action or interruptible wait steps synchronously in persisted order, support repeated actions with independent parameters, suppress overlapping runs, and stop on step failure.

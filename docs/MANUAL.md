@@ -4,6 +4,8 @@
 
 Download `FenSoundSwitch.exe` from [GitHub Releases](https://github.com/fensoft/windows-ddc/releases), put it in a folder you control, and run it. The app starts in the notification area. Double-click its icon to open the main window.
 
+The **About** page shows the exact tag embedded in a release executable. Source runs and ordinary local builds show version `dev`.
+
 ## Create Your First Route
 
 A route connects an input to one or more outputs. The normal input is **Windows Volume keys**.

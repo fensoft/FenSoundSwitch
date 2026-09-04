@@ -32,6 +32,7 @@ Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or 
 | File | Responsibility |
 | --- | --- |
 | `app.py` | Supported process entrypoint, single-instance boundary, and Tk composition root. |
+| `app_version.py` | Loads the build-injected version resource and defaults source/local execution to `dev`. |
 | `audio_outputs.py` | Fail-closed monitor/render-endpoint matching, endpoint visibility policy, and fixed FenSound elevated rename helper. |
 | `core_audio.py` | Focused Core Audio render/capture endpoint enumeration and master-volume adapter for soundcard/capture-gain route workers, explicit default-role changes, and silent WASAPI keep-alive streams. |
 | `autostart.py` | Current-user Run-key state and quoted source/packaged launch commands. |
@@ -98,7 +99,7 @@ There is no database and no migration command. If the settings schema changes, i
 | `python app.py` | The primary reads settings/Run/credentials, auto-imports trusted plugins, can open the Discord Developer Portal/consent, starts native threads and global hooks, contacts Discord/monitor hardware, and can reconcile Windows audio endpoints. A duplicate only broadcasts restore and exits. Run primary startup only with explicit authorization for interactive/manual testing. |
 | `python main.py` | Intentionally prints the unsupported-launcher message and exits `1`; do not treat the nonzero result as a regression. |
 | `python -m pip install -e .[build]` | Also installs pinned Nuitka tooling and may contact package indexes. |
-| `.\build_exe.ps1` | May download Nuitka support/toolchain components, writes under ignored `dist\`, may overwrite an existing artifact, and removes intermediate build output. Run only when a build is requested. |
+| `.\build_exe.ps1` | Defaults to version `dev`; tag CI passes `-Version <tag>`. May download Nuitka support/toolchain components, writes under ignored `dist\`, may overwrite an existing artifact, and removes intermediate/version-resource output. Run only when a build is requested. |
 
 Do not call `enumerate_monitors()`, DDC reads/writes, live audio enumeration/reconciliation/visibility, Discord credential/RPC/OAuth functions, the packaged executable, `monitorcontrol`, `python -m monitorcontrol`, or `start()` on native controllers as generic smoke tests. They cross hardware, credential, network, or user-session boundaries; mock them.
 
@@ -138,7 +139,7 @@ Run these low-risk validation checks from the repository root:
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m compileall -q app.py audio_outputs.py autostart.py core_audio.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py web_presentation.py web_ui_host.py windows_platform.py plugins
+python -m compileall -q app.py app_version.py audio_outputs.py autostart.py core_audio.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py web_presentation.py web_ui_host.py windows_platform.py plugins
 python -m pip check
 git diff --check
 git diff --cached --check

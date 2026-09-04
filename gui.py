@@ -22,6 +22,7 @@ from autostart import (
     is_start_with_windows_enabled,
     set_start_with_windows,
 )
+from app_version import APP_VERSION
 from ddc import (
     MonitorRef,
     SavedMonitorSelection,
@@ -1048,7 +1049,7 @@ class MonitorVolumeApp:
         if len(diagnostic_text) > 12000: diagnostic_text = diagnostic_text[-12000:]
         recent_archives = [{"name": path.stem, "path": str(path)} for path in recent_configurations()]
         signal_form = {"method": "signal.save", "fields": [{"key": "name", "type": "text", "label": "Automation name", "required": True, "max_length": 80}, {"key": "on_start", "type": "boolean", "label": "Run when the app starts", "default": False}, {"key": "keyboard_enabled", "type": "boolean", "label": "Run when a key is pressed", "default": False}, {"key": "hotkey", "type": "hotkey", "label": "Key combination", "visible_when": "keyboard_enabled"}, {"key": "forward_keys", "type": "boolean", "label": "Forward keys to other applications", "default": True, "visible_when": "keyboard_enabled"}, {"key": "tray_enabled", "type": "boolean", "label": "Run when a tray menu option is chosen", "default": False}, {"key": "tray_label", "type": "text", "label": "Tray menu option text", "max_length": 80, "visible_when": "tray_enabled"}, {"key": "slots", "type": "sequence", "label": "Ordered steps", "options": signal_options}]}
-        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "routes": routes, "signals": signals, "actions": actions, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form}}
+        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "actions": actions, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form}}
         return PresentationSnapshot(self._presentation_revision, snapshot)
 
     def _dispatch_web_action(self, action: str, arguments: Mapping[str, Any]) -> Any:

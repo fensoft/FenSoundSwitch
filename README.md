@@ -21,6 +21,7 @@ Build named routes for the rooms and devices you use. Choose a monitor or receiv
 - Keep the Windows default playback and/or voice output active by rendering silence, continuously or after recent mouse movement.
 - Start automatically with Windows.
 - Export and restore complete non-secret configuration archives.
+- Check the exact release tag, or `dev` for source/local builds, on the About page.
 
 ## Get Started
 

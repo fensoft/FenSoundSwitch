@@ -5,7 +5,8 @@ const pages = {
   actions: ["Automations", "Run an ordered set of steps from a keyboard or tray trigger.", "New automation"],
   appearance: ["Appearance", "Choose how volume changes appear on screen.", ""],
   settings: ["Settings", "Manage startup and configuration backups.", ""],
-  diagnostics: ["Diagnostics", "Review bounded application health information.", ""]
+  diagnostics: ["Diagnostics", "Review bounded application health information.", ""],
+  about: ["About", "Application identity and build information.", ""]
 };
 
 const state = { page: "routes", snapshot: null, revision: -1, polling: false, failures: 0, editor: null };
@@ -128,7 +129,7 @@ function switchPage(page) {
 function render() {
   content.setAttribute("aria-busy", "false");
   if (!state.snapshot) return;
-  const renderer = { routes: renderRoutes, actions: renderActions, appearance: renderAppearance, settings: renderSettings, diagnostics: renderDiagnostics }[state.page];
+  const renderer = { routes: renderRoutes, actions: renderActions, appearance: renderAppearance, settings: renderSettings, diagnostics: renderDiagnostics, about: renderAbout }[state.page];
   renderer();
 }
 
@@ -243,6 +244,21 @@ function renderDiagnostics() {
   content.replaceChildren(element("div", { class: "diagnostics-stack" }, [status, output]));
   const current = content.querySelector(".diagnostic-output");
   if (current) window.requestAnimationFrame(() => { current.scrollTop = wasAtBottom ? current.scrollHeight : Math.min(previousScrollTop, Math.max(0, current.scrollHeight - current.clientHeight)); });
+}
+
+function renderAbout() {
+  const application = state.snapshot.application && typeof state.snapshot.application === "object" ? state.snapshot.application : {};
+  const name = safeText(application.name, "FenSoundSwitch");
+  const version = safeText(application.version, "dev");
+  content.replaceChildren(element("section", { class: "card about-card" }, [
+    element("span", { class: "about-mark", "aria-hidden": "true", text: "F" }),
+    element("div", { class: "about-copy" }, [
+      element("p", { class: "eyebrow", text: "WINDOWS AUDIO CONTROL" }),
+      element("h2", { text: name }),
+      element("p", { class: "about-version", text: `Version ${version}` }),
+      element("p", { class: "muted", text: "Monitor DDC/CI, audio routing, automations, and overlays in one current-user application." })
+    ])
+  ]));
 }
 
 function openEntityEditor(kind, entity) {

@@ -8,6 +8,7 @@ WORKFLOW_PATH = Path(__file__).resolve().parents[1] / ".github" / "workflows" / 
 RELEASE_WORKFLOW_PATH = (
     Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
 )
+BUILD_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "build_exe.ps1"
 
 
 class CIWorkflowTests(unittest.TestCase):
@@ -36,6 +37,7 @@ class CIWorkflowTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn(command, self.workflow)
         self.assertIn("autostart.py", self.workflow)
+        self.assertIn("app_version.py", self.workflow)
         self.assertIn("audio_outputs.py", self.workflow)
         self.assertIn("diagnostics.py", self.workflow)
         self.assertIn("plugins", self.workflow)
@@ -72,6 +74,17 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("permissions:\n      contents: read", workflow)
         self.assertIn("permissions:\n      contents: write", workflow)
         self.assertIn("softprops/action-gh-release@v2", workflow)
+        self.assertIn("FENSOUNDSWITCH_BUILD_VERSION: ${{ github.ref_name }}", workflow)
+        self.assertIn(".\\build_exe.ps1 -Version $env:FENSOUNDSWITCH_BUILD_VERSION", workflow)
+
+    def test_build_defaults_to_dev_and_embeds_runtime_and_windows_versions(self) -> None:
+        script = BUILD_SCRIPT_PATH.read_text(encoding="utf-8")
+        self.assertIn('[string]$Version = "dev"', script)
+        self.assertIn("--file-version=$windowsVersion", script)
+        self.assertIn("--product-version=$windowsVersion", script)
+        self.assertIn("--include-data-files=fensoundswitch-version.txt=fensoundswitch-version.txt", script)
+        self.assertIn("[System.IO.File]::WriteAllText", script)
+        self.assertIn("Remove-Item -LiteralPath $versionFile", script)
 
 
 if __name__ == "__main__":

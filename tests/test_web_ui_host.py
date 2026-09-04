@@ -236,7 +236,7 @@ class WebUiAssetTests(unittest.TestCase):
         script = web_ui_host.resolve_asset("app.js").read_text(encoding="utf-8")
         styles = web_ui_host.resolve_asset("app.css").read_text(encoding="utf-8")
 
-        for page in ("routes", "actions", "appearance", "settings", "diagnostics"):
+        for page in ("routes", "actions", "appearance", "settings", "diagnostics", "about"):
             self.assertIn(f"{page}:", script)
         for method in ("snapshot.get", "route.save", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "action.save"):
             self.assertIn(method, script)
@@ -272,6 +272,10 @@ class WebUiAssetTests(unittest.TestCase):
         self.assertIn("previous.textContent !== text", script)
         self.assertIn('id="editor-cancel" type="button"', html)
         self.assertIn('id="slot-dialog"', html)
+        self.assertIn('data-page="about"', html)
+        self.assertIn("renderAbout", script)
+        self.assertIn("application.version", script)
+        self.assertIn(".about-card", styles)
         self.assertNotIn("localStorage", script)
         self.assertNotIn("sessionStorage", script)
         self.assertNotIn("console.", script)

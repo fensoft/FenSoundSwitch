@@ -1,7 +1,14 @@
+param(
+    [ValidateNotNullOrEmpty()]
+    [string]$Version = "dev"
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$versionFile = Join-Path $repoRoot "fensoundswitch-version.txt"
+$versionFileCreated = $false
 Push-Location $repoRoot
 
 try {
@@ -19,7 +26,40 @@ try {
         throw "web\index.html was not found in $repoRoot"
     }
 
-    Write-Host "Building dist\\FenSoundSwitch.exe with Nuitka..."
+    $displayVersion = $Version.Trim()
+    if ($displayVersion.Length -gt 255 -or $displayVersion -match '[\x00-\x1F]') {
+        throw "Build version must be at most 255 printable characters."
+    }
+    if ($displayVersion -eq "dev") {
+        $windowsVersion = "0.0.0.0"
+    }
+    else {
+        $numericVersion = $displayVersion -replace '^v', ''
+        if ($numericVersion -match '^\d+(?:\.\d+){1,3}$') {
+            $components = @($numericVersion.Split('.'))
+            foreach ($component in $components) {
+                $parsedComponent = [uint16]0
+                if (-not [uint16]::TryParse($component, [ref]$parsedComponent)) {
+                    throw "Release version '$displayVersion' contains a component outside the Windows 0-65535 range."
+                }
+            }
+            while ($components.Count -lt 4) {
+                $components += "0"
+            }
+            $windowsVersion = $components -join "."
+        }
+        else {
+            $windowsVersion = "0.0.0.0"
+        }
+    }
+    if (Test-Path -LiteralPath $versionFile) {
+        throw "$versionFile already exists; refusing to overwrite it."
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($versionFile, $displayVersion, $utf8NoBom)
+    $versionFileCreated = $true
+
+    Write-Host "Building dist\\FenSoundSwitch.exe version $displayVersion with Nuitka..."
 
     & $pythonExe -m nuitka `
         --onefile `
@@ -32,7 +72,12 @@ try {
         --include-module=plugins.keyboard_input_plugin `
         --include-module=plugins.windows_soundcard_volume_plugin `
         --windows-icon-from-ico=FenSoundSwitch.ico `
+        --product-name=FenSoundSwitch `
+        --file-description="FenSoundSwitch $displayVersion" `
+        --file-version=$windowsVersion `
+        --product-version=$windowsVersion `
         --include-data-files=FenSoundSwitch.ico=FenSoundSwitch.ico `
+        --include-data-files=fensoundswitch-version.txt=fensoundswitch-version.txt `
         --include-data-dir=web=web `
         --output-dir=dist `
         --output-filename=FenSoundSwitch.exe `
@@ -47,5 +92,8 @@ try {
     Write-Host "Build complete: dist\\FenSoundSwitch.exe"
 }
 finally {
+    if ($versionFileCreated -and (Test-Path -LiteralPath $versionFile)) {
+        Remove-Item -LiteralPath $versionFile -Force
+    }
     Pop-Location
 }
