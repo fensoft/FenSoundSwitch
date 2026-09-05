@@ -101,6 +101,8 @@ button:disabled { cursor: default; opacity: .55; }
 .setting-row + .setting-row { border-top: 1px solid var(--border); }
 .setting-row p { margin: 3px 0 0; }
 .button-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.configuration-actions { flex: 0 0 auto; flex-wrap: nowrap; align-items: stretch; }
+.configuration-actions > * { flex: 0 0 auto; }
 .split-control { display: inline-flex; position: relative; }
 .split-control > button { border-radius: 5px 0 0 5px; }
 .split-menu { display: flex; }
@@ -163,6 +165,7 @@ dialog footer .spacer { flex: 1; }
   .route-arrow { transform: rotate(90deg); }
   .about-card { align-items: flex-start; flex-direction: column; }
   .field-row, .field-row.is-host-port { grid-template-columns: 1fr; }
+  .configuration-row { align-items: flex-start; flex-direction: column; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; } }
 @media (forced-colors: active) {

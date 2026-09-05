@@ -63,6 +63,7 @@ That audited history contains one parentless commit. The audit clone had no loca
 - Moved the macOS HUD speaker and wave geometry into a packaged SVG asset used by both source and standalone builds.
 - Moved the macOS HUD success and error icons into the same plugin-owned SVG asset directory and made every overlay icon use that source format.
 - Added SVG-backed macOS HUD icons for every configurable route type and propagated explicit route type metadata into overlay status snapshots.
+- Kept the Settings Export, Import, and Restore controls on one horizontal line, including at constrained window widths.
 - Made routed volume overlays follow accepted key repeats and slider targets immediately while slow provider writes remain serialized and coalesced in the background.
 - Replaced automation trigger checkboxes and mutable action selectors with documented add-item chooser dialogs. The trigger list combines app-start, keyboard, tray, and MQTT/Home Assistant triggers; the action chooser includes Wait, while inserted action types remain fixed.
 - Made the automation editor content-sized so empty trigger and action lists no longer stretch the name field or leave a large blank dialog.
