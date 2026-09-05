@@ -1,7 +1,36 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title">
-  <title id="title">FenSoundSwitch Audio Portal icon</title>
-  <rect x="8" y="8" width="240" height="240" rx="58" fill="#0d6b63"/>
-  <path d="M48 105h36l48-40v126l-48-40H48z" fill="#fff"/>
-  <path d="M158 96c17 17 17 47 0 64M181 74c30 30 30 78 0 108" fill="none" stroke="#fff" stroke-width="15" stroke-linecap="round"/>
-  <path d="M32 61V43h48M224 195v18h-48" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">FenSoundSwitch</title>
+  <desc id="desc">A cyan speaker whose audio signal splits toward two yellow endpoints.</desc>
+  <defs>
+    <linearGradient id="background" x1="28" y1="20" x2="228" y2="236" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111d24"/>
+      <stop offset="1" stop-color="#080d11"/>
+    </linearGradient>
+    <linearGradient id="speaker" x1="36" y1="64" x2="116" y2="192" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8deaff"/>
+      <stop offset="0.38" stop-color="#49cef3"/>
+      <stop offset="1" stop-color="#1596cf"/>
+    </linearGradient>
+    <linearGradient id="route" x1="118" y1="128" x2="218" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#dff8ff"/>
+      <stop offset="1" stop-color="#69ddfa"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" fill="url(#background)"/>
+  <rect x="2" y="2" width="252" height="252" fill="none" stroke="#263943" stroke-width="4"/>
+
+  <path d="M36 105H69L115 64V192L69 151H36Z" fill="url(#speaker)"/>
+  <path d="M43 111H74L106 82V96L78 121H43Z" fill="#b2f2ff" opacity="0.55"/>
+
+  <g fill="none" stroke="url(#route)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M120 128H151"/>
+    <path d="M148 128L187 85H211"/>
+    <path d="M148 128L187 171H211"/>
+  </g>
+
+  <circle cx="215" cy="85" r="14" fill="#ffd34d"/>
+  <circle cx="215" cy="171" r="14" fill="#ffd34d"/>
+  <circle cx="211" cy="81" r="4" fill="#fff3ad" opacity="0.8"/>
+  <circle cx="211" cy="167" r="4" fill="#fff3ad" opacity="0.8"/>
 </svg>
