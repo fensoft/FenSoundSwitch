@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import settings
+import windows_platform
 from ddc import (
     DDCError,
     MonitorIdentity,
@@ -16,7 +17,7 @@ from ddc import (
     enumerate_monitors,
     match_selected_monitor,
 )
-from windows_platform import parse_edid_identity
+from windows_platform import WindowsDdcMonitor, WindowsMonitorIdentity, parse_edid_identity
 
 
 class FakeVCP:
@@ -86,6 +87,111 @@ class EDIDTests(unittest.TestCase):
 
 
 class SelectionMatchingTests(unittest.TestCase):
+    def test_native_ddc_inventory_pairs_handle_and_identity_in_one_callback(self) -> None:
+        identity = WindowsMonitorIdentity(r"\\.\DISPLAY3", "path-3")
+
+        def enumerate_displays(_hdc, _clip, callback, _data):
+            return callback(101, None, None, 0)
+
+        def get_physical(_hmonitor, count, physical):
+            self.assertEqual(count, 1)
+            physical[0].handle = 55
+            physical[0].description = "Desk"
+            return True
+
+        with patch.object(windows_platform.user32, "EnumDisplayMonitors", side_effect=enumerate_displays), patch.object(
+            windows_platform, "_identity_slots_for_hmonitor", return_value=[identity]
+        ), patch.object(windows_platform.dxva2, "GetPhysicalMonitorsFromHMONITOR", side_effect=get_physical):
+            records = windows_platform.enumerate_windows_ddc_monitors()
+
+        self.assertEqual(records, [WindowsDdcMonitor(55, "Desk", identity)])
+
+    def test_native_ddc_inventory_ignores_a_null_non_ddc_handle(self) -> None:
+        identity = WindowsMonitorIdentity(r"\\.\DISPLAY3", "path-3")
+
+        def enumerate_displays(_hdc, _clip, callback, _data):
+            return callback(101, None, None, 0) and callback(102, None, None, 0)
+
+        handles = iter((None, 55))
+        def get_physical(_hmonitor, _count, physical):
+            physical[0].handle = next(handles)
+            physical[0].description = "Output"
+            return True
+
+        with patch.object(windows_platform.user32, "EnumDisplayMonitors", side_effect=enumerate_displays), patch.object(
+            windows_platform, "_identity_slots_for_hmonitor", side_effect=[[None], [identity]]
+        ), patch.object(windows_platform.dxva2, "GetPhysicalMonitorsFromHMONITOR", side_effect=get_physical):
+            records = windows_platform.enumerate_windows_ddc_monitors()
+
+        self.assertEqual(records, [WindowsDdcMonitor(55, "Output", identity)])
+
+    def test_discovery_correlates_windows_numbers_without_assuming_list_order(self) -> None:
+        identities = [
+            WindowsMonitorIdentity(r"\\.\DISPLAY1", "path-1", "DEL", 1, "ONE", "Second"),
+            WindowsMonitorIdentity(r"\\.\DISPLAY3", "path-3", "DEL", 3, "THREE", "First"),
+        ]
+        records = [WindowsDdcMonitor(1, "First", identities[1]), WindowsDdcMonitor(2, "Second", identities[0])]
+        with patch("ddc.enumerate_windows_ddc_monitors", return_value=records), patch(
+            "ddc._monitor_from_windows_record", side_effect=[FakeMonitor("First"), FakeMonitor("Second")]
+        ), patch("ddc.enumerate_windows_monitor_identities", side_effect=[identities, list(reversed(identities))]):
+            monitors = enumerate_monitors()
+
+        self.assertEqual([monitor.windows_display_number for monitor in monitors], [1, 3])
+        self.assertEqual([monitor.identity.device_path for monitor in monitors], ["path-1", "path-3"])
+
+    def test_discovery_orders_labels_by_windows_display_number(self) -> None:
+        identities = [
+            WindowsMonitorIdentity(r"\\.\DISPLAY1", "path-1"),
+            WindowsMonitorIdentity(r"\\.\DISPLAY2", "path-2"),
+            WindowsMonitorIdentity(r"\\.\DISPLAY3", "path-3"),
+        ]
+        records = [
+            WindowsDdcMonitor(1, "One", identities[0]),
+            WindowsDdcMonitor(2, "Two", identities[1]),
+            WindowsDdcMonitor(3, "Three", identities[2]),
+        ]
+        monitor_by_handle = {1: FakeMonitor("One"), 2: FakeMonitor("Two"), 3: FakeMonitor("Three")}
+        with patch("ddc.enumerate_windows_ddc_monitors", return_value=records), patch(
+            "ddc._monitor_from_windows_record", side_effect=lambda record: monitor_by_handle[record.handle]
+        ), patch("ddc.enumerate_windows_monitor_identities", side_effect=[identities, identities]):
+            monitors = enumerate_monitors()
+
+        self.assertEqual([monitor.windows_display_number for monitor in monitors], [1, 2, 3])
+        self.assertEqual([monitor.identity.device_path for monitor in monitors], ["path-1", "path-2", "path-3"])
+
+    def test_same_pass_discovery_keeps_duplicate_descriptions_distinct(self) -> None:
+        identities = [
+            WindowsMonitorIdentity(r"\\.\DISPLAY1", "path-1", monitor_description="Same"),
+            WindowsMonitorIdentity(r"\\.\DISPLAY2", "path-2", monitor_description="Same"),
+        ]
+        records = [WindowsDdcMonitor(1, "Same", identities[0]), WindowsDdcMonitor(2, "Same", identities[1])]
+        with patch("ddc.enumerate_windows_ddc_monitors", return_value=records), patch(
+            "ddc._monitor_from_windows_record", side_effect=[FakeMonitor("Same"), FakeMonitor("Same")]
+        ), patch("ddc.enumerate_windows_monitor_identities", side_effect=[identities, identities]):
+            monitors = enumerate_monitors()
+
+        self.assertEqual([monitor.windows_display_number for monitor in monitors], [1, 2])
+        self.assertEqual([monitor.identity.device_path for monitor in monitors], ["path-1", "path-2"])
+
+    def test_monitor_label_uses_windows_settings_display_number(self) -> None:
+        monitor = MonitorRef(
+            index=1,
+            monitor=FakeMonitor("Desk"),
+            description="Desk",
+            description_ordinal=1,
+            identity=MonitorIdentity("path", "DEL", 1, "SERIAL"),
+            display_device_name=r"\\.\DISPLAY3",
+        )
+
+        self.assertEqual(monitor.windows_display_number, 3)
+        self.assertEqual(monitor.display_name, "Display 3: Desk - S/N SERIAL")
+
+    def test_monitor_label_falls_back_to_ddc_order_without_windows_mapping(self) -> None:
+        monitor = MonitorRef(2, FakeMonitor("Desk"), "Desk", 1)
+
+        self.assertIsNone(monitor.windows_display_number)
+        self.assertEqual(monitor.display_name, "DDC 2: Desk - identity unavailable")
+
     def test_unique_serial_follows_monitor_to_a_new_device_path(self) -> None:
         saved = SavedMonitorSelection(
             "Monitor",
@@ -175,10 +281,9 @@ class SelectionMatchingTests(unittest.TestCase):
         fake_monitor = FakeMonitor("Monitor")
         identity_a = object()
         identity_b = object()
-        with patch("ddc.get_monitors", return_value=[fake_monitor]), patch(
-            "ddc.enumerate_windows_monitor_identities",
-            side_effect=[[identity_a], [identity_b]],
-        ):
+        with patch("ddc.enumerate_windows_ddc_monitors", return_value=[WindowsDdcMonitor(1, "Only", identity_a)]), patch(
+            "ddc._monitor_from_windows_record", return_value=fake_monitor
+        ), patch("ddc.enumerate_windows_monitor_identities", side_effect=[[identity_a], [identity_b]]):
             with self.assertRaisesRegex(DDCError, "Display configuration changed"):
                 enumerate_monitors()
 
@@ -264,6 +369,30 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.load_active_volume_provider_id(), "ddc-volume")
         self.assertEqual(settings.load_selected_monitor_key(), selection)
         self.assertEqual(settings.load_change_speed(), "fast")
+
+    def test_route_type_round_trips_and_old_routes_default_to_other(self) -> None:
+        self.assertEqual(
+            tuple(settings.ROUTE_TYPE_LABELS.values()),
+            ("Voice", "Headset", "Headphones", "Earbuds", "Speakers", "Soundbar", "TV", "AVR", "Amplifier", "Microphone", "Line-in", "Line-out", "Mixer", "Monitor", "Other"),
+        )
+        typed = settings.VolumeRoute("route-avr", "Receiver", settings.RouteEndpoint("windows-volume-keys", {}), settings.RouteEndpoint("onkyo-volume", {}), "avr")
+        settings.save_input_routes([typed])
+
+        self.assertEqual(settings.load_input_routes(), (typed,))
+        payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["volume_routes"][0]["route_type"], "avr")
+
+        payload["schema_version"] = 10
+        payload["volume_routes"][0].pop("route_type")
+        self.write_json(payload)
+        self.assertEqual(settings.load_input_routes()[0].route_type, "other")
+
+        payload["volume_routes"][0]["route_type"] = "invalid"
+        self.write_json(payload)
+        self.assertEqual(settings.load_input_routes(), ())
+        payload["volume_routes"][0]["route_type"] = []
+        self.write_json(payload)
+        self.assertEqual(settings.load_input_routes(), ())
 
     def test_action_signals_round_trip_preserves_routes_and_ordered_slots(self) -> None:
         route = settings.VolumeRoute("route-test", "Desk", settings.RouteEndpoint("windows-volume-keys", {}), settings.RouteEndpoint("ddc-volume", {}))

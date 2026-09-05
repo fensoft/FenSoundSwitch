@@ -12,6 +12,9 @@ def make_selection() -> SavedMonitorSelection:
 
 
 class DdcVolumeProviderTests(unittest.TestCase):
+    def test_ddc_does_not_advertise_unreliable_native_mute(self) -> None:
+        self.assertIsNot(getattr(ddc_volume_plugin.DdcVolumePlugin(), "supports_native_mute", False), True)
+
     def test_read_uses_the_currently_matched_monitor_and_normalizes_result(self) -> None:
         plugin = ddc_volume_plugin.DdcVolumePlugin()
         plugin._selection = make_selection()

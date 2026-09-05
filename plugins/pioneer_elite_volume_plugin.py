@@ -116,6 +116,14 @@ def _main_zone_volume(line: bytes) -> int | None:
     return value
 
 
+def _main_zone_mute(line: bytes) -> bool | None:
+    if line == b"MUT0":
+        return True
+    if line == b"MUT1":
+        return False
+    return None
+
+
 def _to_percent(value: int) -> int:
     if not MAIN_ZONE_MINIMUM <= value <= MAIN_ZONE_MAXIMUM:
         raise PioneerEliteError("The receiver returned an unsupported main-zone volume value.")
@@ -133,6 +141,7 @@ class PioneerEliteVolumePlugin:
     description = "Controls a configured Pioneer or Elite receiver main zone using its documented network control protocol."
     provider_name = "Pioneer/Elite main-zone volume"
     supports_fast_volume_write = True
+    supports_native_mute = True
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
@@ -226,6 +235,15 @@ class PioneerEliteVolumePlugin:
         with self._lock:
             self._send_unconfirmed_locked(command)
 
+    def toggle_mute(self) -> bool:
+        with self._lock:
+            muted = self._request_mute_locked(b"?M\r")
+            target = not muted
+            confirmed = self._request_mute_locked(b"MO\r" if target else b"MF\r")
+            if confirmed != target:
+                raise PioneerEliteError("The receiver did not confirm its main-zone mute state.")
+            return confirmed
+
     def shutdown(self, timeout: float) -> bool:
         with self._lock:
             self._close_transport_locked()
@@ -248,6 +266,29 @@ class PioneerEliteVolumePlugin:
                     volume = _main_zone_volume(line)
                     if volume is not None:
                         return volume
+        except (OSError, socket.timeout, PioneerEliteError) as exc:
+            self._close_transport_locked()
+            if isinstance(exc, PioneerEliteError):
+                raise
+            raise PioneerEliteError(f"Could not communicate with the configured Pioneer/Elite receiver: {exc}") from exc
+
+    def _request_mute_locked(self, command: bytes) -> bool:
+        try:
+            connection = self._connection_locked()
+            connection.sendall(command)
+            deadline = time.monotonic() + IO_TIMEOUT_SECONDS
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PioneerEliteError("Timed out waiting for the receiver main-zone mute state.")
+                connection.settimeout(remaining)
+                received = connection.recv(RECEIVE_SIZE)
+                if not received:
+                    raise PioneerEliteError("The receiver closed the network control connection.")
+                for line in self._parser.feed(received):
+                    muted = _main_zone_mute(line)
+                    if muted is not None:
+                        return muted
         except (OSError, socket.timeout, PioneerEliteError) as exc:
             self._close_transport_locked()
             if isinstance(exc, PioneerEliteError):

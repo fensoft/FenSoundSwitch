@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import nullcontext
 from unittest.mock import Mock, patch
 
 import core_audio
@@ -31,8 +32,35 @@ class KeyboardInputPluginTests(unittest.TestCase):
         self.assertTrue(plugin.route_hotkeys(values)["down"].consume)
         self.assertIn("consumed", plugin.route_input_summary(values))
 
+    def test_optional_mute_key_is_distinct_and_round_trips(self) -> None:
+        mute = HotkeySpec(0, ord("M"))
+        values = validate_keyboard({"volume_down": HotkeySpec(0, ord("J")).to_json(), "volume_up": HotkeySpec(0, ord("K")).to_json(), "mute": mute.to_json()})
+        self.assertEqual(KeyboardInputPlugin().route_hotkeys(values)["mute"].hotkey, mute)
+        with self.assertRaises(ValueError):
+            validate_keyboard({"volume_down": mute.to_json(), "volume_up": HotkeySpec(0, ord("K")).to_json(), "mute": mute.to_json()})
+
 
 class WindowsSoundcardVolumePluginTests(unittest.TestCase):
+    def test_core_audio_native_mute_uses_documented_slots_and_confirms(self) -> None:
+        reads = iter((False, True))
+        calls: list[tuple[int, object]] = []
+
+        def method(_pointer, index, _restype, _argtypes):
+            if index == core_audio.IAUDIO_ENDPOINT_VOLUME_GET_MUTE:
+                def get_mute(_volume, output):
+                    core_audio.ctypes.cast(output, core_audio.ctypes.POINTER(core_audio.wintypes.BOOL)).contents.value = next(reads)
+                    calls.append((index, None))
+                    return 0
+                return get_mute
+            if index == core_audio.IAUDIO_ENDPOINT_VOLUME_SET_MUTE:
+                return lambda _volume, target, _context: calls.append((index, bool(target))) or 0
+            raise AssertionError(index)
+
+        with patch("core_audio._Apartment", return_value=nullcontext()), patch("core_audio._device_for_id", return_value=core_audio.ctypes.c_void_p(1)), patch("core_audio._endpoint_volume", return_value=core_audio.ctypes.c_void_p(2)), patch("core_audio._method", side_effect=method), patch("core_audio._release"):
+            self.assertTrue(core_audio.toggle_endpoint_mute("endpoint"))
+
+        self.assertEqual(calls, [(15, None), (14, True), (15, None)])
+
     def test_master_volume_scalar_uses_its_documented_com_slots(self) -> None:
         self.assertEqual(core_audio.IAUDIO_ENDPOINT_VOLUME_GET_MASTER_SCALAR, 9)
         self.assertEqual(core_audio.IAUDIO_ENDPOINT_VOLUME_SET_MASTER_SCALAR, 7)
@@ -81,6 +109,10 @@ class WindowsSoundcardVolumePluginTests(unittest.TestCase):
             self.assertEqual(instance.write_volume(120), 56)
         read.assert_called_once_with("endpoint-1")
         write.assert_called_once_with("endpoint-1", 100)
+
+        with patch("plugins.windows_soundcard_volume_plugin.core_audio.toggle_endpoint_mute", return_value=True) as mute:
+            self.assertTrue(instance.toggle_mute())
+        mute.assert_called_once_with("endpoint-1")
 
     def test_default_and_voice_outputs_resolve_when_used(self) -> None:
         for configured_id, resolved_id, role in (
@@ -135,6 +167,10 @@ class WindowsMicrophoneGainPluginTests(unittest.TestCase):
             self.assertEqual(instance.write_volume(120), 56)
         read.assert_called_once_with("microphone-1")
         write.assert_called_once_with("microphone-1", 100)
+
+        with patch("plugins.windows_microphone_gain_plugin.core_audio.toggle_endpoint_mute", return_value=False) as mute:
+            self.assertFalse(instance.toggle_mute())
+        mute.assert_called_once_with("microphone-1")
 
     def test_default_and_voice_inputs_resolve_when_used(self) -> None:
         for configured_id, resolved_id, role in (

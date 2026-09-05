@@ -10,7 +10,7 @@ const pages = {
   about: ["About", "Application identity and build information.", ""]
 };
 
-const state = { page: "routes", snapshot: null, revision: -1, polling: false, failures: 0, editor: null };
+const state = { page: "routes", snapshot: null, revision: -1, polling: false, failures: 0, editor: null, importMenuOpen: false };
 const content = document.querySelector("#content");
 const notices = document.querySelector("#notice-region");
 const primaryAction = document.querySelector("#primary-action");
@@ -178,7 +178,7 @@ function renderRoutes() {
 }
 
 function openRouteWizard() {
-  state.editor = { kind: "route-wizard", step: 0, values: { name: "", input_id: "", input_parameters: {}, provider_id: "", output_parameters: {} }, documents: {} };
+  state.editor = { kind: "route-wizard", step: 0, values: { name: "", route_type: "other", input_id: "", input_parameters: {}, provider_id: "", output_parameters: {} }, documents: {} };
   renderRouteWizard();
   editorDialog.showModal();
 }
@@ -186,7 +186,7 @@ function openRouteWizard() {
 function routeWizardFields() {
   const routeForm = state.snapshot?.forms?.route || {};
   const fields = safeArray(routeForm.fields);
-  return { name: fields.find(field => field.key === "name"), input: fields.find(field => field.key === "input_id"), output: fields.find(field => field.key === "provider_id") };
+  return { name: fields.find(field => field.key === "name"), type: fields.find(field => field.key === "route_type"), input: fields.find(field => field.key === "input_id"), output: fields.find(field => field.key === "provider_id") };
 }
 
 async function loadRouteWizardDocument(endpoint) {
@@ -200,20 +200,21 @@ async function loadRouteWizardDocument(endpoint) {
 
 function renderRouteWizard() {
   const wizard = state.editor;
-  const labels = ["Route name", "Input plugin", "Input configuration", "Output plugin", "Output configuration"];
+  const labels = ["Route name", "Type", "Input plugin", "Input configuration", "Output plugin", "Output configuration"];
   const fields = routeWizardFields();
-  document.querySelector("#editor-kicker").textContent = `STEP ${wizard.step + 1} OF 5`;
+  document.querySelector("#editor-kicker").textContent = `STEP ${wizard.step + 1} OF 6`;
   document.querySelector("#editor-title").textContent = labels[wizard.step];
   const description = document.querySelector("#editor-description");
   description.textContent = ""; description.hidden = true;
   const container = document.querySelector("#editor-fields"); container.replaceChildren();
   const back = document.querySelector("#editor-back"); back.hidden = wizard.step === 0;
   const save = document.querySelector("#editor-save");
-  save.hidden = wizard.step === 1 || wizard.step === 3;
-  save.textContent = wizard.step === 4 ? "Create route" : "Next";
+  save.hidden = wizard.step === 2 || wizard.step === 4;
+  save.textContent = wizard.step === 5 ? "Create route" : "Next";
   if (wizard.step === 0 && fields.name) container.append(renderField(fields.name, wizard.values.name));
-  if (wizard.step === 1 || wizard.step === 3) {
-    const endpoint = wizard.step === 1 ? "input" : "output";
+  if (wizard.step === 1 && fields.type) container.append(renderField(fields.type, wizard.values.route_type));
+  if (wizard.step === 2 || wizard.step === 4) {
+    const endpoint = wizard.step === 2 ? "input" : "output";
     const options = safeArray(endpoint === "input" ? fields.input?.options : fields.output?.options);
     description.textContent = `Choose the ${endpoint} plugin for this route.`; description.hidden = false;
     for (const option of options) {
@@ -233,8 +234,8 @@ function renderRouteWizard() {
       ]));
     }
   }
-  if (wizard.step === 2 || wizard.step === 4) {
-    const endpoint = wizard.step === 2 ? "input" : "output";
+  if (wizard.step === 3 || wizard.step === 5) {
+    const endpoint = wizard.step === 3 ? "input" : "output";
     const formDocument = wizard.documents[endpoint];
     if (formDocument) {
       description.textContent = safeText(formDocument.description); description.hidden = !description.textContent;
@@ -273,11 +274,12 @@ async function advanceRouteWizard() {
   const wizard = state.editor;
   const values = collectEditorValues();
   if (wizard.step === 0) wizard.values.name = safeText(values.name).trim();
-  if (wizard.step === 1) { wizard.values.input_id = safeText(values.input_id); wizard.values.input_parameters = {}; await loadRouteWizardDocument("input"); }
-  if (wizard.step === 3) { wizard.values.provider_id = safeText(values.provider_id); wizard.values.output_parameters = {}; await loadRouteWizardDocument("output"); }
-  if (wizard.step === 2) wizard.values.input_parameters = values;
-  if (wizard.step === 4) wizard.values.output_parameters = values;
-  if (wizard.step === 4) {
+  if (wizard.step === 1) wizard.values.route_type = safeText(values.route_type, "other");
+  if (wizard.step === 2) { wizard.values.input_id = safeText(values.input_id); wizard.values.input_parameters = {}; await loadRouteWizardDocument("input"); }
+  if (wizard.step === 4) { wizard.values.provider_id = safeText(values.provider_id); wizard.values.output_parameters = {}; await loadRouteWizardDocument("output"); }
+  if (wizard.step === 3) wizard.values.input_parameters = values;
+  if (wizard.step === 5) wizard.values.output_parameters = values;
+  if (wizard.step === 5) {
     await nativeRequest("route.save", { values: wizard.values });
     editorDialog.close(); state.editor = null; state.revision = -1; await pollSnapshot();
     return;
@@ -416,8 +418,11 @@ function renderSettings() {
   const settings = state.snapshot.settings && typeof state.snapshot.settings === "object" ? state.snapshot.settings : {};
   const startup = element("section", { class: "card" }, [element("div", { class: "setting-row" }, [element("div", {}, [element("h3", { text: safeText(settings.startup_label, "Start with Windows") }), element("p", { class: "muted", text: safeText(settings.startup_description, "Launch quietly in the notification area when you sign in.") })]), element("button", { class: settings.start_with_windows ? "primary" : "secondary", type: "button", role: "switch", "aria-checked": String(Boolean(settings.start_with_windows)), text: settings.start_with_windows ? "On" : "Off", onclick: () => execute("settings.save", { start_with_windows: !settings.start_with_windows }) })])]);
   const recent = safeArray(settings.recent_configurations);
-  const recentMenu = element("details", { class: `split-menu${recent.length ? "" : " is-empty"}` }, [element("summary", { class: "secondary", title: recent.length ? "Recent configurations" : "No recent configurations", "aria-label": recent.length ? "Recent configurations" : "No recent configurations", "aria-disabled": recent.length ? "false" : "true", text: "▼" }), element("div", { class: "split-menu-items" }, recent.map(item => element("button", { type: "button", text: safeText(item.name, "Configuration"), onclick: () => confirmAction("Import configuration?", `Import ${safeText(item.name, "this configuration")}? The application will restart.`, "config.import", { path: item.path }) })))]);
-  const importSplit = element("div", { class: "split-control" }, [element("button", { class: "secondary", type: "button", text: "Import", onclick: importConfiguration }), recentMenu]);
+  if (!recent.length) state.importMenuOpen = false;
+  const recentItems = element("div", { class: "split-menu-items", hidden: state.importMenuOpen ? null : "" }, recent.map(item => element("button", { type: "button", text: safeText(item.name, "Configuration"), onclick: () => { state.importMenuOpen = false; confirmAction("Import configuration?", `Import ${safeText(item.name, "this configuration")}? The application will restart.`, "config.import", { path: item.path }); } })));
+  const arrowButton = element("button", { class: "secondary split-arrow", type: "button", title: recent.length ? "Recent configurations" : "No recent configurations", "aria-label": recent.length ? "Recent configurations" : "No recent configurations", "aria-expanded": String(state.importMenuOpen), disabled: recent.length ? null : "", text: "▼", onclick: event => { event.stopPropagation(); state.importMenuOpen = !state.importMenuOpen; recentItems.hidden = !state.importMenuOpen; arrowButton.setAttribute("aria-expanded", String(state.importMenuOpen)); } });
+  const recentMenu = element("div", { class: "split-menu" }, [arrowButton, recentItems]);
+  const importSplit = element("div", { class: "split-control", role: "group", "aria-label": "Import configuration" }, [element("button", { class: "secondary", type: "button", text: "Import", onclick: importConfiguration }), recentMenu]);
   const configuration = element("section", { class: "card" }, [element("div", { class: "setting-row" }, [element("div", {}, [element("h3", { text: "Configuration" }), element("p", { class: "muted", text: "Export a backup, import one, or restore bundled defaults. Protect exports because MQTT credentials are included." })]), element("div", { class: "button-row" }, [element("button", { class: "primary", type: "button", text: "Export", onclick: exportConfiguration }), importSplit, element("button", { class: "secondary", type: "button", text: "Restore default", onclick: () => confirmAction("Restore default configuration?", "Saved routes and plugin settings will be replaced, then the application may restart.", "config.restore-default", {}) })])])]);
   content.replaceChildren(element("div", { class: "stack" }, [startup, configuration]));
 }
@@ -655,7 +660,10 @@ function renderTriggerListField(key, field, current) {
       "Choose a trigger",
       "Select an event that should run this automation.",
       options.map(option => used.has(option.value) ? { ...option, disabled: true, disabled_reason: "Already added" } : option),
-      kind => addTrigger(kind === "mqtt" ? { kind, ha_name: safeText(document.querySelector("#field-name")?.value) } : { kind }),
+      kind => {
+        const automationName = safeText(document.querySelector("#field-name")?.value);
+        addTrigger(kind === "mqtt" ? { kind, ha_name: automationName } : kind === "tray" ? { kind, label: automationName } : { kind });
+      },
     );
   } });
 
@@ -919,6 +927,16 @@ editorDialog.addEventListener("close", () => { state.editor = null; delete edito
 slotDialog.addEventListener("close", () => { state.slotEditor = null; });
 choiceDialog.addEventListener("close", () => { state.choice = null; });
 mqttDialog.addEventListener("close", () => { state.mqttProfileId = null; showMqttProfileList(); });
+document.addEventListener("click", event => {
+  for (const menu of document.querySelectorAll(".split-menu")) {
+    if (menu.contains(event.target)) continue;
+    state.importMenuOpen = false;
+    const items = menu.querySelector(".split-menu-items");
+    const arrow = menu.querySelector(".split-arrow");
+    if (items) items.hidden = true;
+    if (arrow) arrow.setAttribute("aria-expanded", "false");
+  }
+});
 window.addEventListener("pywebviewready", pollSnapshot, { once: true });
 // WebKit can expose the bridge shortly after document load without reliably
 // delivering pywebviewready to inline documents. Retry the initial snapshot

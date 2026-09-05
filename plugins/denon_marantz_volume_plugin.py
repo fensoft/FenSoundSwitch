@@ -130,6 +130,14 @@ def _main_zone_volume(line: bytes) -> int | None:
     return None
 
 
+def _main_zone_mute(line: bytes) -> bool | None:
+    if line == b"MUON":
+        return True
+    if line == b"MUOFF":
+        return False
+    return None
+
+
 def _encode_main_zone_volume(half_steps: int) -> bytes:
     if not GENERAL_MAIN_ZONE_PROFILE.minimum_half_steps <= half_steps <= GENERAL_MAIN_ZONE_PROFILE.maximum_half_steps:
         raise DenonMarantzError("The main-zone volume is outside the supported generic AVR range.")
@@ -143,6 +151,7 @@ class DenonMarantzVolumePlugin:
     description = "Controls a configured generic Denon/Marantz AVR Ethernet main zone using its documented MV protocol."
     provider_name = "Denon/Marantz AVR main-zone volume"
     supports_fast_volume_write = True
+    supports_native_mute = True
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
@@ -236,6 +245,15 @@ class DenonMarantzVolumePlugin:
         with self._lock:
             self._send_unconfirmed_locked(command)
 
+    def toggle_mute(self) -> bool:
+        with self._lock:
+            muted = self._request_mute_locked(b"MU?\r")
+            target = not muted
+            confirmed = self._request_mute_locked(b"MUON\r" if target else b"MUOFF\r")
+            if confirmed != target:
+                raise DenonMarantzError("The AVR did not confirm its main-zone mute state.")
+            return confirmed
+
     def shutdown(self, timeout: float) -> bool:
         with self._lock:
             self._close_transport_locked()
@@ -258,6 +276,29 @@ class DenonMarantzVolumePlugin:
                     volume = _main_zone_volume(line)
                     if volume is not None:
                         return volume
+        except (OSError, socket.timeout, DenonMarantzError) as exc:
+            self._close_transport_locked()
+            if isinstance(exc, DenonMarantzError):
+                raise
+            raise DenonMarantzError(f"Could not communicate with the configured AVR: {exc}") from exc
+
+    def _request_mute_locked(self, command: bytes) -> bool:
+        try:
+            connection = self._connection_locked()
+            connection.sendall(command)
+            deadline = time.monotonic() + IO_TIMEOUT_SECONDS
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DenonMarantzError("Timed out waiting for the AVR main-zone mute state.")
+                connection.settimeout(remaining)
+                received = connection.recv(MAX_LINE_SIZE)
+                if not received:
+                    raise DenonMarantzError("The AVR closed the Ethernet connection.")
+                for line in self._parser.feed(received):
+                    muted = _main_zone_mute(line)
+                    if muted is not None:
+                        return muted
         except (OSError, socket.timeout, DenonMarantzError) as exc:
             self._close_transport_locked()
             if isinstance(exc, DenonMarantzError):

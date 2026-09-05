@@ -37,11 +37,12 @@ def ensure_default_configuration(settings_path: Path) -> Path:
     if destination.is_file() and not _has_broken_keyboard_route(destination):
         return destination
     settings_payload: dict[str, object] = {
-        "schema_version": 10,
+        "schema_version": 11,
         "volume_routes": [
             {
                 "route_id": "output",
                 "name": "Output",
+                "route_type": "speakers",
                 "input": {"plugin_id": "windows-volume-keys", "parameters": {}},
                 "output": {
                     "plugin_id": "windows-soundcard-volume",
@@ -54,6 +55,7 @@ def ensure_default_configuration(settings_path: Path) -> Path:
             {
                 "route_id": "voice",
                 "name": "Voice",
+                "route_type": "voice",
                 "input": {
                     "plugin_id": "keyboard-keys",
                     "parameters": {

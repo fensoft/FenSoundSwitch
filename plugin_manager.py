@@ -505,12 +505,13 @@ class PluginManager:
         get_volume_statuses: Callable[[], tuple[Any, ...]] | None = None,
         on_overlay_renderer_changed: Callable[[], None] | None = None,
         on_overlay_text: Callable[[str], None] | None = None,
-        on_overlay_preview: Callable[[], None] | None = None,
+        on_overlay_preview: Callable[[str], None] | None = None,
         on_volume_routes_changed: Callable[[], None] | None = None,
         on_route_input: Callable[[str, int], None] | None = None,
         on_route_volume: Callable[[str, int], None] | None = None,
         on_route_key: Callable[[str, int, bool], None] | None = None,
         on_action_signals_changed: Callable[[], None] | None = None,
+        on_route_mute: Callable[[str], None] | None = None,
         *,
         hotkey_factory: Callable[..., PluginHotkeyController] = PluginHotkeyController,
         external_directories: Iterable[Path] | None = None,
@@ -526,11 +527,12 @@ class PluginManager:
         self._get_volume_statuses = get_volume_statuses or (lambda: ())
         self._on_overlay_renderer_changed = on_overlay_renderer_changed or (lambda: None)
         self._on_overlay_text = on_overlay_text or (lambda _text: None)
-        self._on_overlay_preview = on_overlay_preview or (lambda: None)
+        self._on_overlay_preview = on_overlay_preview or (lambda _plugin_id: None)
         self._on_volume_routes_changed = on_volume_routes_changed or (lambda: None)
         self._on_route_input = on_route_input or (lambda _route_id, _delta: None)
         self._on_route_volume = on_route_volume or (lambda _route_id, _volume: None)
         self._on_route_key = on_route_key or (lambda _route_id, _delta, _pressed: None)
+        self._on_route_mute = on_route_mute or (lambda _route_id: None)
         self._on_action_signals_changed = on_action_signals_changed or (lambda: None)
         self._hotkey_factory = hotkey_factory
         self._external_directories = external_directories
@@ -555,7 +557,8 @@ class PluginManager:
         self._route_instances: dict[str, VolumeProvider] = {}
         self._route_input_instances: dict[str, object] = {}
         self._signal_trigger_instances: dict[str, object] = {}
-        self._route_hotkeys: dict[str, int] = {}
+        self._route_hotkeys: dict[str, str] = {}
+        self._route_mute_held: set[str] = set()
         self._action_signals: tuple[ActionSignal, ...] = ()
         self._startup_automations_dispatched = False
         self._active_overlay_plugin_id = DEFAULT_OVERLAY_PLUGIN_ID
@@ -947,6 +950,16 @@ class PluginManager:
     def route_name_for_provider(self, provider: VolumeProvider) -> str | None:
         return next((route.name for route, candidate in self._all_route_providers() if candidate is provider), None)
 
+    def route_type_for_provider(self, provider: VolumeProvider) -> str | None:
+        return next(
+            (
+                route.route_type
+                for route, candidate in self._all_route_providers()
+                if candidate is provider
+            ),
+            None,
+        )
+
     def route_name(self, route_id: str) -> str | None:
         return next((route.name for route in self._input_routes if route.route_id == route_id), None)
 
@@ -964,7 +977,19 @@ class PluginManager:
         return self._all_route_providers()
 
     def create_overlay_renderer(self, dark_mode: bool, high_contrast: bool) -> OverlayRenderer | None:
-        record = self._records_by_id.get(self._active_overlay_plugin_id)
+        return self.create_overlay_renderer_for(
+            self._active_overlay_plugin_id,
+            dark_mode,
+            high_contrast,
+        )
+
+    def create_overlay_renderer_for(
+        self,
+        plugin_id: str,
+        dark_mode: bool,
+        high_contrast: bool,
+    ) -> OverlayRenderer | None:
+        record = self._records_by_id.get(plugin_id)
         if record is None or not record.initialized or not record.is_overlay_renderer or record.plugin is None:
             self._notice("Volume overlay unavailable. Routes remain available.")
             return None
@@ -1138,7 +1163,7 @@ class PluginManager:
         elif card_bottom > bottom:
             canvas.yview_moveto(max(0.0, (card_bottom - canvas.winfo_height()) / total_height))
 
-    def add_route(self, input_id: str, provider_id: str, name: str | None = None, input_parameters: dict[str, object] | None = None, output_parameters: dict[str, object] | None = None) -> bool:
+    def add_route(self, input_id: str, provider_id: str, name: str | None = None, input_parameters: dict[str, object] | None = None, output_parameters: dict[str, object] | None = None, route_type: str = "other") -> bool:
         if not any(record.initialized and record.input_id == input_id for record in self._records):
             self._notice("That input plugin is not ready.")
             return False
@@ -1150,10 +1175,15 @@ class PluginManager:
         if route_name is None:
             self._notice("Route name must be non-empty and at most 80 characters.")
             return False
-        routes = self._input_routes + (VolumeRoute(f"route-{uuid.uuid4().hex}", route_name, RouteEndpoint(input_id, input_parameters or {}), RouteEndpoint(provider_id, output_parameters or {})),)
+        try:
+            route = VolumeRoute(f"route-{uuid.uuid4().hex}", route_name, RouteEndpoint(input_id, input_parameters or {}), RouteEndpoint(provider_id, output_parameters or {}), route_type)
+        except ValueError as exc:
+            self._notice(str(exc))
+            return False
+        routes = self._input_routes + (route,)
         return self._save_routes(routes)
 
-    def update_route(self, route_id: str, input_id: str, provider_id: str, name: str, input_parameters: dict[str, object] | None = None, output_parameters: dict[str, object] | None = None) -> bool:
+    def update_route(self, route_id: str, input_id: str, provider_id: str, name: str, input_parameters: dict[str, object] | None = None, output_parameters: dict[str, object] | None = None, route_type: str = "other") -> bool:
         if not any(record.initialized and record.input_id == input_id for record in self._records):
             self._notice("That input plugin is not ready.")
             return False
@@ -1165,7 +1195,11 @@ class PluginManager:
         if route_name is None:
             self._notice("Route name must be non-empty and at most 80 characters.")
             return False
-        routes = tuple(VolumeRoute(route_id, route_name, RouteEndpoint(input_id, input_parameters or {}), RouteEndpoint(provider_id, output_parameters or {})) if route.route_id == route_id else route for route in self._input_routes)
+        try:
+            routes = tuple(VolumeRoute(route_id, route_name, RouteEndpoint(input_id, input_parameters or {}), RouteEndpoint(provider_id, output_parameters or {}), route_type) if route.route_id == route_id else route for route in self._input_routes)
+        except ValueError as exc:
+            self._notice(str(exc))
+            return False
         if routes == self._input_routes:
             return False
         return self._save_routes(routes)
@@ -1232,7 +1266,9 @@ class PluginManager:
             load_legacy_overlay_mode=load_legacy_overlay_mode,
             clear_legacy_overlay_mode=clear_legacy_overlay_mode,
             show_overlay_text=self._show_plugin_overlay_text,
-            show_overlay_preview=lambda: self._post_to_ui(self._on_overlay_preview),
+            show_overlay_preview=lambda plugin_id=record.plugin_id: self._post_to_ui(
+                lambda: self._on_overlay_preview(plugin_id)
+            ),
             dispatch_route_input=self._on_route_input,
             dispatch_route_volume=self._on_route_volume,
         )
@@ -1407,6 +1443,7 @@ class PluginManager:
                 except Exception:
                     pass
         self._route_hotkeys = {}
+        self._route_mute_held.clear()
         previous = self._route_instances
         self._route_instances = {}
         previous_inputs = self._route_input_instances
@@ -1456,11 +1493,16 @@ class PluginManager:
                     start()
                     self._route_input_instances[route.route_id] = route_input
                 for direction, binding in self._route_hotkey_bindings(input_record, route.input.parameters):
+                    if direction == "mute" and not (
+                        getattr(provider, "supports_native_mute", False) is True
+                        and callable(getattr(provider, "toggle_mute", None))
+                    ):
+                        continue
                     binding_id = f"route/{route.route_id}/{direction}"
                     if self._hotkeys is None:
                         raise ValueError("Passive keyboard service is unavailable.")
                     self._set_route_hotkey(binding_id, binding)
-                    self._route_hotkeys[binding_id] = -1 if direction == "down" else 1
+                    self._route_hotkeys[binding_id] = direction
             except Exception as exc:
                 self._route_instances.pop(route.route_id, None)
                 route_input = self._route_input_instances.pop(route.route_id, None)
@@ -1504,6 +1546,12 @@ class PluginManager:
                     continue
                 raise
             for _direction, binding in bindings:
+                if (
+                    binding.hotkey.modifiers == 0
+                    and binding.hotkey.virtual_key == 0xAD
+                    and any(item.input_id == "windows-volume-keys" for item in routes)
+                ):
+                    raise ValueError("The unmodified Mute media key cannot be shared by Windows media keys and a custom keyboard route.")
                 previous = seen.get(binding.hotkey)
                 if previous is not None:
                     raise ValueError(f"{binding.hotkey.label} is already used by keyboard route {previous}; identical keyboard route keys are not broadcast.")
@@ -1527,7 +1575,7 @@ class PluginManager:
             # integrations passive while allowing typed per-route consumption.
             if isinstance(binding, HotkeySpec):
                 binding = RouteHotkeyBinding(binding)
-            if not isinstance(direction, str) or direction not in {"down", "up"} or not isinstance(binding, RouteHotkeyBinding):
+            if not isinstance(direction, str) or direction not in {"down", "up", "mute"} or not isinstance(binding, RouteHotkeyBinding):
                 raise ValueError("Route input returned invalid keyboard bindings.")
             result.append((direction, binding))
         return tuple(result)
@@ -1807,12 +1855,17 @@ class PluginManager:
     def _dispatch_trigger(self, binding_id: str) -> None:
         if self._closing.is_set():
             return
-        delta = self._route_hotkeys.get(binding_id)
-        if delta is not None:
+        direction = self._route_hotkeys.get(binding_id)
+        if direction is not None:
             parts = binding_id.split("/")
             if len(parts) == 3:
-                LOGGER.info("Route shortcut triggered: adjustment=%+d.", delta)
-                self._on_route_input(parts[1], delta)
+                if direction == "mute":
+                    LOGGER.info("Route shortcut triggered: mute toggle.")
+                    self._on_route_mute(parts[1])
+                else:
+                    delta = -1 if direction == "down" else 1
+                    LOGGER.info("Route shortcut triggered: adjustment=%+d.", delta)
+                    self._on_route_input(parts[1], delta)
             return
         if binding_id.startswith("signal/"):
             self.dispatch_action_signal(binding_id.removeprefix("signal/"))
@@ -1900,10 +1953,18 @@ class PluginManager:
     def _dispatch_route_key(self, binding_id: str, pressed: bool) -> None:
         if self._closing.is_set():
             return
-        delta = self._route_hotkeys.get(binding_id)
+        direction = self._route_hotkeys.get(binding_id)
         parts = binding_id.split("/")
-        if delta is not None and len(parts) == 3:
-            self._on_route_key(parts[1], delta, pressed)
+        if direction is not None and len(parts) == 3:
+            route_id = parts[1]
+            if direction == "mute":
+                if pressed and binding_id not in self._route_mute_held:
+                    self._route_mute_held.add(binding_id)
+                    self._on_route_mute(route_id)
+                elif not pressed:
+                    self._route_mute_held.discard(binding_id)
+            else:
+                self._on_route_key(route_id, -1 if direction == "down" else 1, pressed)
 
     def _set_route_hotkey(self, binding_id: str, binding: RouteHotkeyBinding | None) -> None:
         assert self._hotkeys is not None
@@ -2564,7 +2625,7 @@ class PluginManager:
 
         def duplicate() -> None:
             route = selected_route()
-            if route is not None and self.add_route(route.input_id, route.provider_id, copied_route_name(route.name), dict(route.input.parameters), dict(route.output.parameters)):
+            if route is not None and self.add_route(route.input_id, route.provider_id, copied_route_name(route.name), dict(route.input.parameters), dict(route.output.parameters), route.route_type):
                 refresh()
 
         route_actions = ttk.Frame(routes_card, style="Card.TFrame")

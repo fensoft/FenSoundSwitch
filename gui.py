@@ -46,7 +46,7 @@ from config_archive import (
     recent_configurations,
 )
 from plugin_api import OverlayRenderer, VolumeStatus
-from settings import load_selected_monitor_key, save_selected_monitor_key
+from settings import ROUTE_TYPE_LABELS, load_selected_monitor_key, save_selected_monitor_key
 from theme import (
     DARK_BORDER,
     DARK_SURFACE,
@@ -89,32 +89,21 @@ class DisplayTopologyChanged(RuntimeError):
 
 
 class RouteInputRepeatScheduler:
-    """Bounded held-key state; polling emits at most one delta per route."""
-
-    INITIAL_DELAY_SECONDS = 0.35
-    REPEAT_INTERVAL_SECONDS = 0.075
+    """Bounded held-key state driven by native Windows repeat events."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
-        self._clock = clock
-        self._held: dict[str, tuple[int, float]] = {}
+        del clock
+        self._held: dict[str, int] = {}
 
     def key_event(self, route_id: str, delta: int, pressed: bool) -> tuple[tuple[str, int], ...]:
         if not pressed:
             self._held.pop(route_id, None)
             return ()
-        if route_id in self._held:
-            return ()
-        self._held[route_id] = (delta, self._clock() + self.INITIAL_DELAY_SECONDS)
+        self._held[route_id] = delta
         return ((route_id, delta),)
 
     def poll(self) -> tuple[tuple[str, int], ...]:
-        now = self._clock()
-        due: list[tuple[str, int]] = []
-        for route_id, (delta, next_repeat) in tuple(self._held.items()):
-            if now >= next_repeat:
-                self._held[route_id] = (delta, now + self.REPEAT_INTERVAL_SECONDS)
-                due.append((route_id, delta))
-        return tuple(due)
+        return ()
 
     def is_held(self, route_id: str) -> bool:
         return route_id in self._held
@@ -185,9 +174,12 @@ class MonitorVolumeApp:
         self._route_input_queue: queue.Queue[tuple[str, int]] = queue.Queue()
         self._route_volume_queue: queue.Queue[tuple[str, int]] = queue.Queue()
         self._route_key_queue: queue.Queue[tuple[str, int, bool]] = queue.Queue()
+        self._route_mute_queue: queue.Queue[str | None] = queue.Queue()
         self._route_repeat_scheduler = RouteInputRepeatScheduler()
         self._pending_route_deltas: dict[str, int] = {}
+        self._pending_route_volumes: dict[str, int] = {}
         self._route_optimistic_targets: dict[str, int] = {}
+        self._route_presentation_targets: dict[str, int] = {}
         self._route_reconciliation_pending: set[str] = set()
         self._hotkeys_ready = False
         self._hotkeys_enabled = False
@@ -893,6 +885,7 @@ class MonitorVolumeApp:
                 on_route_input=self._queue_route_input_delta,
                 on_route_volume=self._queue_route_input_volume,
                 on_route_key=self._queue_route_input_key,
+                on_route_mute=self._queue_route_mute,
                 on_action_signals_changed=self._sync_tray_menu_state,
             )
             manager.start()
@@ -1005,8 +998,9 @@ class MonitorVolumeApp:
             status = statuses.get(route.route_id)
             input_name = next((v["label"] for v in inputs if v["value"] == route.input_id), route.input_id)
             output_name = next((v["label"] for v in outputs if v["value"] == route.provider_id), route.provider_id)
-            route_fields = [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]
-            route_values: dict[str, object] = {"name": route.name, "input_id": route.input_id, "provider_id": route.provider_id}
+            type_options = [{"value": value, "label": label} for value, label in ROUTE_TYPE_LABELS.items()]
+            route_fields = [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "route_type", "type": "select", "label": "Type", "required": True, "options": type_options}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]
+            route_values: dict[str, object] = {"name": route.name, "route_type": route.route_type, "input_id": route.input_id, "provider_id": route.provider_id}
             for endpoint in ("input", "output"):
                 try: document = manager.get_route_ui(route.route_id, endpoint)
                 except Exception: document = None
@@ -1016,7 +1010,7 @@ class MonitorVolumeApp:
                     key = f"{endpoint}__{field['id']}"; type_map = {"integer": "number", "choice": "select"}
                     route_fields.append({"key": key, "type": type_map.get(str(field["type"]), field["type"]), "label": f"{endpoint.title()}: {field['label']}", "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", [])})
                     if not field.get("write_only"): route_values[key] = field.get("value")
-            routes.append({"id": route.route_id, "name": route.name, "description": "Audio volume route", "input": {"name": input_name, "summary": ""}, "output": {"name": output_name, "summary": ""}, "summary": f"{status.confirmed_volume}%" if status and status.confirmed_volume is not None else (status.reason if status else "Checking"), "enabled": bool(status and status.confirmed_volume is not None), "values": route_values, "form": {"method": "route.save", "fields": route_fields}})
+            routes.append({"id": route.route_id, "name": route.name, "description": ROUTE_TYPE_LABELS[route.route_type], "input": {"name": input_name, "summary": ""}, "output": {"name": output_name, "summary": ""}, "summary": f"{status.confirmed_volume}%" if status and status.confirmed_volume is not None else (status.reason if status else "Checking"), "enabled": bool(status and status.confirmed_volume is not None), "values": route_values, "form": {"method": "route.save", "fields": route_fields}})
         integrations = []
         for record in manager.records:
             if not manager._is_action_plugin(record) or not record.plugin_id or not callable(getattr(record.plugin, "get_plugin_ui", None)):
@@ -1142,7 +1136,7 @@ class MonitorVolumeApp:
             if sys.platform == "darwin"
             else "Launch quietly in the notification area when you sign in."
         )
-        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "integrations": integrations, "mqtt_profiles": mqtt_profiles, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "startup_label": startup_label, "startup_description": startup_description, "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form, "mqtt_profile": mqtt_profile_form}}
+        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "integrations": integrations, "mqtt_profiles": mqtt_profiles, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "startup_label": startup_label, "startup_description": startup_description, "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "route_type", "type": "select", "label": "Type", "required": True, "default": "other", "options": [{"value": value, "label": label} for value, label in ROUTE_TYPE_LABELS.items()]}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form, "mqtt_profile": mqtt_profile_form}}
         return PresentationSnapshot(self._presentation_revision, snapshot)
 
     def _dispatch_web_action(self, action: str, arguments: Mapping[str, Any]) -> Any:
@@ -1176,7 +1170,7 @@ class MonitorVolumeApp:
                     if result.get("status") == "save":
                         if endpoint == "input": input_parameters = dict(result["values"])
                         else: output_parameters = dict(result["values"])
-                ok = manager.update_route(route_id, str(values.get("input_id", "")), str(values.get("provider_id", "")), str(values.get("name", "")), input_parameters, output_parameters)
+                ok = manager.update_route(route_id, str(values.get("input_id", "")), str(values.get("provider_id", "")), str(values.get("name", "")), input_parameters, output_parameters, str(values.get("route_type", "other")))
             else:
                 input_id = str(values.get("input_id", ""))
                 provider_id = str(values.get("provider_id", ""))
@@ -1205,7 +1199,7 @@ class MonitorVolumeApp:
                     raise UserActionError("Route configuration is invalid.")
                 input_parameters = manager.validate_new_route_endpoint(input_id, "input", input_parameters)
                 output_parameters = manager.validate_new_route_endpoint(provider_id, "output", output_parameters)
-                ok = manager.add_route(input_id, provider_id, name or None, input_parameters, output_parameters)
+                ok = manager.add_route(input_id, provider_id, name or None, input_parameters, output_parameters, str(values.get("route_type", "other")))
                 if ok:
                     created_route = next(
                         (route for route in manager.input_routes if route.route_id not in route_ids_before),
@@ -1376,6 +1370,8 @@ class MonitorVolumeApp:
             step=1,
             on_unavailable=self._queue_unavailable_hotkey_notice,
             should_report_unavailable=self._should_report_unavailable_hotkey,
+            on_mute=lambda: self._queue_route_mute(None),
+            should_consume_mute=self._should_consume_mute_key,
         )
         try:
             self._listener.start()
@@ -1603,6 +1599,11 @@ class MonitorVolumeApp:
             )
             self._route_key_queue.put((route_id, delta, pressed))
 
+    def _queue_route_mute(self, route_id: str | None) -> None:
+        if not self._closing and (route_id is None or isinstance(route_id, str)):
+            LOGGER.info("Mute input received: route=%s.", route_id or "Windows media key")
+            self._route_mute_queue.put(route_id)
+
     def _cancel_route_repeats(self, route_ids: set[str] | None = None) -> None:
         scheduler = getattr(self, "_route_repeat_scheduler", None)
         if scheduler is not None:
@@ -1614,6 +1615,13 @@ class MonitorVolumeApp:
             else:
                 for route_id in route_ids:
                     pending.pop(route_id, None)
+        pending_volumes = getattr(self, "_pending_route_volumes", None)
+        if pending_volumes is not None:
+            if route_ids is None:
+                pending_volumes.clear()
+            else:
+                for route_id in route_ids:
+                    pending_volumes.pop(route_id, None)
         optimistic = getattr(self, "_route_optimistic_targets", None)
         if optimistic is not None:
             if route_ids is None:
@@ -1621,6 +1629,13 @@ class MonitorVolumeApp:
             else:
                 for route_id in route_ids:
                     optimistic.pop(route_id, None)
+        presentation = getattr(self, "_route_presentation_targets", None)
+        if presentation is not None:
+            if route_ids is None:
+                presentation.clear()
+            else:
+                for route_id in route_ids:
+                    presentation.pop(route_id, None)
         reconciliations = getattr(self, "_route_reconciliation_pending", None)
         if reconciliations is not None:
             if route_ids is None:
@@ -1651,6 +1666,20 @@ class MonitorVolumeApp:
             and any(ready_route_ids is None or route.route_id in ready_route_ids for route, _provider in routed_providers)
         )
 
+    def _should_consume_mute_key(self) -> bool:
+        manager = getattr(self, "_plugin_manager", None)
+        routed_providers = manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager is not None else ()
+        ready_route_ids = getattr(self, "_ready_route_ids", set())
+        return (
+            self._should_consume_volume_keys()
+            and any(
+                route.route_id in ready_route_ids
+                and getattr(provider, "supports_native_mute", False) is True
+                and callable(getattr(provider, "toggle_mute", None))
+                for route, provider in routed_providers
+            )
+        )
+
     def _post_to_ui(self, callback: Callable[[], None]) -> None:
         if not self._closing:
             self._result_queue.put(callback)
@@ -1673,12 +1702,25 @@ class MonitorVolumeApp:
 
             pending_delta = getattr(self, "_pending_hotkey_delta", 0)
             if self._hotkeys_enabled:
+                received_delta = 0
                 while True:
                     try:
-                        pending_delta += self._hotkey_delta_queue.get_nowait()
+                        received_delta += self._hotkey_delta_queue.get_nowait()
                     except queue.Empty:
                         break
+                pending_delta += received_delta
                 self._pending_hotkey_delta = pending_delta
+                if received_delta:
+                    manager = getattr(self, "_plugin_manager", None)
+                    route_ids = tuple(
+                        route.route_id
+                        for route, _provider in (
+                            manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID)
+                            if manager is not None
+                            else ()
+                        )
+                    )
+                    self._present_route_volume_intent(route_ids, delta=received_delta)
                 if pending_delta and not self._busy:
                     self._pending_hotkey_delta = 0
                     try:
@@ -1686,7 +1728,7 @@ class MonitorVolumeApp:
                         if getattr(self, "_plugin_manager", None) is None:
                             self.adjust_selected_volume(pending_delta)
                         else:
-                            self._route_windows_volume_delta(pending_delta)
+                            self._route_windows_volume_delta(pending_delta, present=False)
                     except Exception as exc:
                         self._report_ui_callback_error(exc)
             elif not self._hotkeys_enabled:
@@ -1711,8 +1753,10 @@ class MonitorVolumeApp:
                         self._route_reconciliation_pending.add(route_id)
                     for repeat_route_id, repeat_delta in scheduler.key_event(route_id, delta, pressed):
                         pending_routes[repeat_route_id] = pending_routes.get(repeat_route_id, 0) + repeat_delta
+                        self._present_route_volume_intent((repeat_route_id,), delta=repeat_delta)
                 for repeat_route_id, repeat_delta in scheduler.poll():
                     pending_routes[repeat_route_id] = pending_routes.get(repeat_route_id, 0) + repeat_delta
+                    self._present_route_volume_intent((repeat_route_id,), delta=repeat_delta)
             route_input_queue = getattr(self, "_route_input_queue", None)
             if route_input_queue is not None and pending_routes is not None:
                 while True:
@@ -1721,21 +1765,42 @@ class MonitorVolumeApp:
                     except queue.Empty:
                         break
                     pending_routes[route_id] = pending_routes.get(route_id, 0) + delta
+                    self._present_route_volume_intent((route_id,), delta=delta)
             route_volume_queue = getattr(self, "_route_volume_queue", None)
-            if route_volume_queue is not None and not self._busy:
+            pending_volumes = getattr(self, "_pending_route_volumes", None)
+            if pending_volumes is None:
+                pending_volumes = {}
+                self._pending_route_volumes = pending_volumes
+            if route_volume_queue is not None:
+                while True:
+                    try:
+                        route_id, volume = route_volume_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    pending_volumes[route_id] = volume
+                    self._present_route_volume_intent((route_id,), absolute_target=volume)
+            route_mute_queue = getattr(self, "_route_mute_queue", None)
+            if route_mute_queue is not None and not self._busy:
                 try:
-                    route_id, volume = route_volume_queue.get_nowait()
+                    mute_route_id = route_mute_queue.get_nowait()
                 except queue.Empty:
                     pass
                 else:
-                    LOGGER.info("Route input applied: route=%s, target volume=%d.", route_id, volume)
-                    self._route_volume_delta((route_id,), 0, absolute_target=volume)
+                    if mute_route_id is None:
+                        self._route_windows_mute()
+                    else:
+                        self._route_toggle_mute((mute_route_id,))
+            if pending_volumes and not self._busy:
+                route_id, volume = next(iter(pending_volumes.items()))
+                del pending_volumes[route_id]
+                LOGGER.info("Route input applied: route=%s, target volume=%d.", route_id, volume)
+                self._route_volume_delta((route_id,), 0, absolute_target=volume, present=False)
             if pending_routes is not None and not self._busy:
                 for route_id, delta in tuple(pending_routes.items()):
                     del pending_routes[route_id]
                     if delta:
                         LOGGER.info("Route input applied: route=%s, adjustment=%+d.", route_id, delta)
-                        self._route_volume_delta((route_id,), delta)
+                        self._route_volume_delta((route_id,), delta, present=False)
                     break
                 else:
                     pending_reconciliations = self._route_reconciliation_pending
@@ -1756,6 +1821,7 @@ class MonitorVolumeApp:
         message = f"Internal UI callback failed: {self._format_error(exc)}"
         try:
             self._topology_valid.clear()
+            self._cancel_route_repeats()
             self._hotkeys_ready = False
             self.current_volume = None
             self.target_volume = None
@@ -1982,17 +2048,22 @@ class MonitorVolumeApp:
             if provider is not None and self._plugin_manager is not None
             else self._active_overlay_provider_id()
         )
-        statuses = self._get_volume_statuses()
+        statuses = self._get_presented_volume_statuses()
         if statuses or volume is None:
-            statuses = self._overlay.select_statuses(statuses, provider_id)
-            self._render_overlay(
-                "show_statuses",
-                statuses,
-                provider_id,
-                preferred_display_device_name=self._selected_display_device_name(),
-            )
+            self._show_volume_statuses(statuses, provider_id)
             return
         self._render_overlay("show", clamp(volume, 0, 100), preferred_display_device_name=self._selected_display_device_name())
+
+    def _show_volume_statuses(self, statuses: tuple[VolumeStatus, ...], provider_id: str | None) -> None:
+        if self._closing or self._overlay is None:
+            return
+        selected = self._overlay.select_statuses(statuses, provider_id)
+        self._render_overlay(
+            "show_statuses",
+            selected,
+            provider_id,
+            preferred_display_device_name=self._selected_display_device_name(),
+        )
 
     def _show_plugin_overlay_text(self, text: str) -> None:
         """Render a plugin notification after PluginManager returns to Tk."""
@@ -2006,15 +2077,63 @@ class MonitorVolumeApp:
                 preferred_display_device_name=self._selected_display_device_name(),
             )
 
-    def _show_overlay_preview(self) -> None:
+    def _show_overlay_preview(self, plugin_id: str | None = None) -> None:
         """Render the real compact volume HUD for Appearance previews."""
-        if self._closing or self._overlay is None:
+        if self._closing:
             return
-        self._render_overlay(
-            "show",
-            58,
-            preferred_display_device_name=self._selected_display_device_name(),
+        if plugin_id is None:
+            if self._overlay is None:
+                return
+            self._show_volume_statuses(
+                (
+                    VolumeStatus("preview-audio-1", "Voice", 30, routed=True, route_type="voice"),
+                    VolumeStatus("preview-audio-2", "Headset", 70, routed=True, route_type="headset"),
+                ),
+                None,
+            )
+            return
+
+        manager = self._plugin_manager
+        if manager is None:
+            return
+        overlay = manager.create_overlay_renderer_for(
+            plugin_id,
+            self.dark_mode,
+            self.high_contrast,
         )
+        if overlay is None:
+            return
+        previous = getattr(self, "_preview_overlay", None)
+        if previous is not None:
+            previous.close()
+        self._preview_overlay = overlay
+        statuses = (
+            VolumeStatus("preview-audio-1", "Voice", 30, routed=True, route_type="voice"),
+            VolumeStatus("preview-audio-2", "Headset", 70, routed=True, route_type="headset"),
+        )
+        try:
+            selected = overlay.select_statuses(statuses, None)
+            overlay.show_statuses(
+                selected,
+                None,
+                preferred_display_device_name=self._selected_display_device_name(),
+            )
+        except Exception as exc:
+            LOGGER.error("Volume overlay preview failed (%s).", exc.__class__.__name__)
+            self._set_status(
+                f"Volume overlay preview failed: {self._format_error(exc)}. Routes remain available."
+            )
+            self._close_overlay_preview(overlay)
+            return
+        self.root.after(3000, lambda: self._close_overlay_preview(overlay))
+
+    def _close_overlay_preview(self, overlay: OverlayRenderer) -> None:
+        if getattr(self, "_preview_overlay", None) is overlay:
+            self._preview_overlay = None
+        try:
+            overlay.close()
+        except Exception:
+            pass
 
     def _replace_overlay_renderer(self) -> None:
         """Replace a renderer only from the Tk-thread manager callback."""
@@ -2031,6 +2150,61 @@ class MonitorVolumeApp:
     def _get_volume_statuses(self) -> tuple[VolumeStatus, ...]:
         return tuple(getattr(self, "_volume_statuses", {}).values())
 
+    def _get_presented_volume_statuses(self) -> tuple[VolumeStatus, ...]:
+        targets = getattr(self, "_route_presentation_targets", {})
+        return tuple(
+            VolumeStatus(
+                provider_id=status.provider_id,
+                display_name=status.display_name,
+                confirmed_volume=targets.get(status.provider_id, status.confirmed_volume),
+                active=status.active,
+                routed=status.routed,
+                reason=None if status.provider_id in targets else status.reason,
+                route_type=status.route_type,
+            )
+            for status in self._get_volume_statuses()
+        )
+
+    def _present_route_volume_intent(
+        self,
+        route_ids: tuple[str, ...],
+        delta: int = 0,
+        absolute_target: int | None = None,
+    ) -> None:
+        """Show requested route volumes without publishing them as confirmed state."""
+        manager = getattr(self, "_plugin_manager", None)
+        if manager is None or self._closing:
+            return
+        available = manager.relevant_volume_providers()
+        if not isinstance(available, tuple):
+            available = manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID)
+        ready_route_ids = getattr(self, "_ready_route_ids", set())
+        targets = getattr(self, "_route_presentation_targets", None)
+        if targets is None:
+            targets = {}
+            self._route_presentation_targets = targets
+        optimistic_targets = getattr(self, "_route_optimistic_targets", {})
+        changed_provider = None
+        for route, provider in available:
+            if route.route_id not in route_ids or route.route_id not in ready_route_ids:
+                continue
+            status = getattr(self, "_volume_statuses", {}).get(route.route_id)
+            baseline = targets.get(route.route_id)
+            if baseline is None:
+                baseline = optimistic_targets.get(route.route_id)
+            if baseline is None and status is not None:
+                baseline = status.confirmed_volume
+            if absolute_target is None and baseline is None:
+                continue
+            targets[route.route_id] = (
+                clamp(absolute_target, 0, 100)
+                if absolute_target is not None
+                else clamp(baseline + delta, 0, 100)
+            )
+            changed_provider = provider
+        if changed_provider is not None:
+            self._show_volume_overlay(provider=changed_provider)
+
     def _publish_volume_status(
         self, provider: Any, confirmed_volume: int | None, reason: str | None = None
     ) -> None:
@@ -2043,6 +2217,9 @@ class MonitorVolumeApp:
         relevant = manager.relevant_volume_provider_ids()
         existing = self._volume_statuses.get(provider_id)
         route_name = manager.route_name_for_provider(provider)
+        route_type = manager.route_type_for_provider(provider)
+        if route_type not in ROUTE_TYPE_LABELS:
+            route_type = "other"
         display_name = route_name if isinstance(route_name, str) and route_name.strip() else str(getattr(provider, "provider_name", provider_id))
         self._volume_statuses[provider_id] = VolumeStatus(
             provider_id=provider_id,
@@ -2051,6 +2228,7 @@ class MonitorVolumeApp:
             active=False,
             routed=manager.is_volume_provider_routed(provider_id),
             reason=reason,
+            route_type=route_type,
         )
         # Retain only configured providers relevant to active control or an input route.
         self._volume_statuses = {
@@ -2208,6 +2386,7 @@ class MonitorVolumeApp:
         routes = manager.relevant_volume_providers() if manager else ()
         if not isinstance(routes, tuple):
             routes = manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ()
+        self._cancel_route_repeats()
         self._ready_route_ids.clear()
         self._hotkeys_ready = False
         self._topology_valid.clear()
@@ -2353,6 +2532,7 @@ class MonitorVolumeApp:
         self._ddc_timeout_after_id = None
         self._ddc_operation_timed_out = True
         self._invalidate_topology_generation()
+        self._cancel_route_repeats()
         self._hotkeys_ready = False
         self.current_volume = None
         self.target_volume = None
@@ -2749,13 +2929,87 @@ class MonitorVolumeApp:
         elif self.selected_key is not None:
             self._start_volume_write(self.selected_key, target_volume)
 
-    def _route_windows_volume_delta(self, delta: int) -> None:
+    def _route_windows_volume_delta(self, delta: int, *, present: bool = True) -> None:
         manager = self._plugin_manager
         route_ids = tuple(route.route_id for route, _provider in (manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ()))
-        self._route_volume_delta(route_ids, delta)
+        self._route_volume_delta(route_ids, delta, present=present)
 
-    def _route_volume_delta(self, route_ids: tuple[str, ...], delta: int, reconcile: bool = False, absolute_target: int | None = None) -> None:
+    def _route_windows_mute(self) -> None:
+        manager = self._plugin_manager
+        route_ids = tuple(route.route_id for route, _provider in (manager.volume_providers_for_input(self.WINDOWS_VOLUME_INPUT_ID) if manager else ()))
+        self._route_toggle_mute(route_ids)
+
+    def _route_toggle_mute(self, route_ids: tuple[str, ...]) -> None:
+        manager = self._plugin_manager
+        available = manager.relevant_volume_providers() if manager else ()
+        routes = tuple(
+            (route, provider) for route, provider in available
+            if route.route_id in route_ids
+            and route.route_id in self._ready_route_ids
+            and getattr(provider, "supports_native_mute", False) is True
+            and callable(getattr(provider, "toggle_mute", None))
+        )
+        if not routes:
+            self._set_status("Native mute is unavailable for this route.")
+            return
+        if self._closing or not self._display_listener_available() or not self._topology_valid.is_set() or self._busy:
+            return
+        generation = self._current_topology_generation()
+        self._volume_write_inflight = True
+        self._set_busy(True, "Toggling routed mute...")
+        operation_id = self._begin_ddc_operation("Routed mute toggle")
+
+        def runner() -> None:
+            results = []
+            for route, provider in routes:
+                try:
+                    ready, reason = provider.is_volume_provider_available()
+                    if not ready:
+                        raise RuntimeError(reason or "Provider is unavailable")
+                    muted = provider.toggle_mute()
+                    if not isinstance(muted, bool):
+                        raise RuntimeError("Provider returned an invalid mute state")
+                    results.append((route.route_id, muted, None))
+                except Exception as exc:
+                    results.append((route.route_id, None, self._format_error(exc)))
+            self._post_to_ui(lambda values=tuple(results), token=generation, operation=operation_id: self._finish_routed_mute(values, token, operation))
+
+        threading.Thread(target=runner, name="routed-mute-toggle", daemon=True).start()
+
+    def _finish_routed_mute(self, results: tuple[tuple[str, bool | None, str | None], ...], generation: int, operation_id: int) -> None:
+        if self._closing or not self._accept_ddc_completion(operation_id):
+            return
+        pending_target = self._pending_target_volume
+        self._pending_target_volume = None
+        self._volume_write_inflight = False
+        self._busy = False
+        if not self._is_topology_generation_current(generation):
+            self._set_status("Display changed while toggling routed mute.")
+            self._apply_control_state()
+            return
+        manager = self._plugin_manager
+        failures = [f"{manager.route_name(route_id) or 'Route'}: {reason}" for route_id, _muted, reason in results if reason]
+        changed = [(manager.route_name(route_id) or "Route", muted) for route_id, muted, reason in results if reason is None and muted is not None]
+        summary = "; ".join(f"{name}: {'Muted' if muted else 'Unmuted'}" for name, muted in changed)
+        self._set_status(summary if not failures else f"Mute toggle completed with {len(failures)} failure(s). {' '.join(failures)}")
+        if summary:
+            self._show_plugin_overlay_text(summary)
+        self._apply_control_state()
+        if pending_target is not None:
+            self._request_volume_target(pending_target)
+
+    def _route_volume_delta(
+        self,
+        route_ids: tuple[str, ...],
+        delta: int,
+        reconcile: bool = False,
+        absolute_target: int | None = None,
+        *,
+        present: bool = True,
+    ) -> None:
         """Apply one host input to every configured output on the sole worker slot."""
+        if present and not reconcile:
+            self._present_route_volume_intent(route_ids, delta=delta, absolute_target=absolute_target)
         manager = self._plugin_manager
         available = manager.relevant_volume_providers() if manager else ()
         if not isinstance(available, tuple):
@@ -2789,9 +3043,16 @@ class MonitorVolumeApp:
         self._volume_write_inflight = True
         self._set_busy(True, "Applying routed volume change...")
         operation_id = self._begin_ddc_operation("Routed volume change")
+        presented_targets = getattr(self, "_route_presentation_targets", {})
+        queued_targets = {
+            route.route_id: presented_targets[route.route_id]
+            for route, _provider, _confirmed_volume in routes
+            if route.route_id in presented_targets
+        }
 
         def runner() -> None:
             results: list[tuple[str, Any, int | None, str | None, int | None]] = []
+            requested_targets = dict(queued_targets)
             for route, provider, confirmed_volume in routes:
                 try:
                     ready, reason = provider.is_volume_provider_available()
@@ -2808,6 +3069,7 @@ class MonitorVolumeApp:
                         else clamp(int(provider.read_volume()), 0, 100)
                     )
                     target = clamp(absolute_target, 0, 100) if absolute_target is not None else clamp(current + delta, 0, 100)
+                    requested_targets[route.route_id] = target
                     # Do not send redundant physical writes at the volume bounds.
                     # Some DDC implementations reject an otherwise harmless set.
                     if target == current:
@@ -2819,11 +3081,22 @@ class MonitorVolumeApp:
                         results.append((route.route_id, provider, clamp(int(provider.write_volume(target)), 0, 100), None, None))
                 except Exception as exc:
                     results.append((route.route_id, provider, None, self._format_error(exc), None))
-            self._post_to_ui(lambda values=tuple(results), token=generation, operation=operation_id: self._finish_routed_volume_change(values, token, operation))
+            self._post_to_ui(
+                lambda values=tuple(results), targets=dict(requested_targets), is_reconciliation=reconcile,
+                token=generation, operation=operation_id:
+                self._finish_routed_volume_change(values, token, operation, targets, is_reconciliation)
+            )
 
         threading.Thread(target=runner, name="routed-volume-change", daemon=True).start()
 
-    def _finish_routed_volume_change(self, results: tuple[tuple[str, Any, int | None, str | None, int | None], ...], generation: int, operation_id: int) -> None:
+    def _finish_routed_volume_change(
+        self,
+        results: tuple[tuple[str, Any, int | None, str | None, int | None], ...],
+        generation: int,
+        operation_id: int,
+        requested_targets: Mapping[str, int] | None = None,
+        reconcile: bool = False,
+    ) -> None:
         if self._closing or not self._accept_ddc_completion(operation_id):
             return
         self._volume_write_inflight = False
@@ -2847,6 +3120,10 @@ class MonitorVolumeApp:
                 )
             else:
                 getattr(self, "_route_optimistic_targets", {}).pop(route_id, None)
+                requested_target = (requested_targets or {}).get(route_id)
+                presentation_targets = getattr(self, "_route_presentation_targets", {})
+                if reconcile or presentation_targets.get(route_id) == requested_target:
+                    presentation_targets.pop(route_id, None)
                 self._publish_volume_status(provider, volume, reason)
                 if volume is not None and reason is None:
                     LOGGER.info(
@@ -3165,6 +3442,10 @@ class MonitorVolumeApp:
         if self._overlay is not None:
             self._overlay.close()
             self._overlay = None
+        preview_overlay = getattr(self, "_preview_overlay", None)
+        if preview_overlay is not None:
+            preview_overlay.close()
+            self._preview_overlay = None
         self.root.destroy()
 
     @staticmethod

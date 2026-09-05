@@ -362,6 +362,7 @@ class VolumeStatus:
     active: bool = False
     routed: bool = False
     reason: str | None = None
+    route_type: str = "other"
 
     def __post_init__(self) -> None:
         if not isinstance(self.provider_id, str) or PLUGIN_ID_PATTERN.fullmatch(self.provider_id) is None:
@@ -376,6 +377,8 @@ class VolumeStatus:
             raise ValueError("Confirmed volume must be an integer from 0 to 100.")
         if self.reason is not None and (not isinstance(self.reason, str) or not self.reason.strip()):
             raise ValueError("Volume status reason must be non-empty when supplied.")
+        if not isinstance(self.route_type, str) or not self.route_type:
+            raise ValueError("Volume status route type must be non-empty.")
 
 
 @runtime_checkable
@@ -519,6 +522,17 @@ class VolumeProvider(Protocol):
         ...
 
     def on_volume_topology_changed(self) -> None:
+        ...
+
+
+@runtime_checkable
+class NativeMuteProvider(Protocol):
+    """Optional provider capability for a confirmed native mute toggle."""
+
+    supports_native_mute: bool
+
+    def toggle_mute(self) -> bool:
+        """Toggle native mute and return the confirmed resulting state."""
         ...
 
 

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 80" role="img" aria-label="Volume">
+  <polygon id="speaker" points="0,26 18,26 40,4 40,76 18,54 0,54" fill="currentColor" />
+  <g fill="none" stroke="currentColor" stroke-linecap="round">
+    <path data-wave="1" d="M 54,27 C 62,34 62,46 54,53" stroke-width="4" />
+    <path data-wave="2" d="M 70,18 C 86,30 86,50 70,62" stroke-width="4" />
+    <path data-wave="3" d="M 86,8 C 112,26 112,54 86,72" stroke-width="4" />
+  </g>
+</svg>

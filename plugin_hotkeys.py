@@ -243,6 +243,8 @@ class PluginHotkeyController:
                         held = self._held_route_keys.get(virtual_key)
                         action_consume = self._held_action_keys.get(virtual_key, False)
                     consume = (held is not None and held[2]) or action_consume
+                    if held is not None and self._active.is_set():
+                        self.on_route_key(held[0], True)
             elif w_param in (WM_KEYUP, WM_SYSKEYUP):
                 if modifier_flag is not None:
                     self._held_modifier_keys.discard(virtual_key)

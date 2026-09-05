@@ -6,10 +6,12 @@ import threading
 from typing import Any
 
 try:
-    from monitorcontrol import get_input_name, get_monitors
+    from monitorcontrol import Monitor, get_input_name
     from monitorcontrol.vcp import VCPError
+    from monitorcontrol.vcp.vcp_windows import WindowsVCP
 except ImportError as exc:
-    get_monitors = None
+    Monitor = None
+    WindowsVCP = None
     get_input_name = lambda value: f"Input 0x{value:02X}"
     VCPError = RuntimeError
     IMPORT_ERROR = exc
@@ -18,7 +20,7 @@ else:
 
 _OPERATION_LOCK = threading.Lock()
 
-from native_platform import WindowsMonitorIdentity, enumerate_windows_monitor_identities
+from native_platform import WindowsDdcMonitor, WindowsMonitorIdentity, enumerate_windows_ddc_monitors, enumerate_windows_monitor_identities
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,17 @@ class MonitorRef:
         return SavedMonitorSelection(description=self.description, identity=self.identity)
 
     @property
+    def windows_display_number(self) -> int | None:
+        display_name = (self.display_device_name or "").upper()
+        prefix = "\\\\.\\DISPLAY"
+        if not display_name.startswith(prefix):
+            return None
+        suffix = display_name[len(prefix):]
+        if not suffix.isdigit() or int(suffix) < 1:
+            return None
+        return int(suffix)
+
+    @property
     def display_name(self) -> str:
         if self.identity is None:
             identity_text = "identity unavailable"
@@ -79,7 +92,9 @@ class MonitorRef:
             identity_text = f"{short_display_name} (no S/N)"
         else:
             identity_text = "no S/N"
-        return f"{self.index}. {self.description} - {identity_text}"
+        number = self.windows_display_number
+        prefix = f"Display {number}" if number is not None else f"DDC {self.index}"
+        return f"{prefix}: {self.description} - {identity_text}"
 
 
 @dataclass(frozen=True)
@@ -179,6 +194,24 @@ def _to_monitor_identity(identity: WindowsMonitorIdentity | None) -> MonitorIden
     )
 
 
+def _identity_snapshot(identities: list[object]) -> tuple[str, ...]:
+    return tuple(sorted(repr(identity) for identity in identities))
+
+
+def _monitor_from_windows_record(record: WindowsDdcMonitor) -> Any:
+    if Monitor is None or WindowsVCP is None:
+        raise DDCError("Windows DDC support is unavailable.")
+    return Monitor(WindowsVCP(record.handle, record.description))
+
+
+def _windows_display_number(identity: WindowsMonitorIdentity | None) -> int | None:
+    raw_display_name = getattr(identity, "display_device_name", "")
+    display_name = raw_display_name.upper() if isinstance(raw_display_name, str) else ""
+    prefix = "\\\\.\\DISPLAY"
+    suffix = display_name[len(prefix):] if display_name.startswith(prefix) else ""
+    return int(suffix) if suffix.isdigit() and int(suffix) > 0 else None
+
+
 def enumerate_monitors() -> list[MonitorRef]:
     if IMPORT_ERROR is not None:
         raise DDCError(
@@ -188,17 +221,23 @@ def enumerate_monitors() -> list[MonitorRef]:
     try:
         identity_slots_before = enumerate_windows_monitor_identities()
         with _OPERATION_LOCK:
-            monitors = list(get_monitors())
+            native_monitors = enumerate_windows_ddc_monitors()
+            native_monitors.sort(key=lambda record: (
+                _windows_display_number(record.identity) is None,
+                _windows_display_number(record.identity) or 0,
+            ))
+            monitors = [_monitor_from_windows_record(record) for record in native_monitors]
         identity_slots_after = enumerate_windows_monitor_identities()
     except (NotImplementedError, VCPError, OSError) as exc:
         raise DDCError(f"Failed to detect DDC/CI monitors: {exc}") from exc
 
-    if identity_slots_before != identity_slots_after or len(monitors) != len(identity_slots_after):
+    if _identity_snapshot(identity_slots_before) != _identity_snapshot(identity_slots_after):
         raise DDCError("Display configuration changed during monitor discovery; try again.")
 
     description_counts: dict[str, int] = {}
     monitor_refs: list[MonitorRef] = []
-    for index, (monitor, windows_identity) in enumerate(zip(monitors, identity_slots_after), start=1):
+    for index, (monitor, native_monitor) in enumerate(zip(monitors, native_monitors), start=1):
+        windows_identity = native_monitor.identity
         description = monitor_name(monitor)
         description_ordinal = description_counts.get(description, 0) + 1
         description_counts[description] = description_ordinal

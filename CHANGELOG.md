@@ -57,6 +57,13 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Changed
 
+- Rebuilt the macOS overlay as a classic translucent rounded volume HUD with a drawn speaker glyph, level-aware sound waves, and a 16-segment meter while retaining routed status, High Contrast, DPI-aware placement, and no-activate behavior.
+- Made each overlay plugin's Test action preview that renderer without changing the active overlay selection.
+- Added supersampled font and icon antialiasing to the macOS volume HUD.
+- Moved the macOS HUD speaker and wave geometry into a packaged SVG asset used by both source and standalone builds.
+- Moved the macOS HUD success and error icons into the same plugin-owned SVG asset directory and made every overlay icon use that source format.
+- Added SVG-backed macOS HUD icons for every configurable route type and propagated explicit route type metadata into overlay status snapshots.
+- Made routed volume overlays follow accepted key repeats and slider targets immediately while slow provider writes remain serialized and coalesced in the background.
 - Replaced automation trigger checkboxes and mutable action selectors with documented add-item chooser dialogs. The trigger list combines app-start, keyboard, tray, and MQTT/Home Assistant triggers; the action chooser includes Wait, while inserted action types remain fixed.
 - Made the automation editor content-sized so empty trigger and action lists no longer stretch the name field or leave a large blank dialog.
 - Stopped converting obsolete Windows and Discord direct shortcut records into automations at startup, preventing deleted legacy automations from returning.
@@ -64,6 +71,19 @@ That audited history contains one parentless commit. The audit clone had no loca
 - Show standard MQTT defaults in new profile forms and group broker host/port and username/password into compact rows.
 - Split Discord integration controls by credential state: setup and Developer Portal actions appear only before configuration, reset appears only afterward, and Configure now includes a numbered OAuth tutorial.
 - Replaced the Appearance sidebar palette with a simpler preview icon that remains clear at navigation size.
+- Renamed the Keyboard volume keys route input to Custom keyboard keys.
+- Added one-shot native Mute handling for Windows media keys and optional custom route keys. Windows playback/capture and supported receiver routes toggle and confirm native mute; DDC and unadvertised providers remain unchanged.
+- Prefill new tray automation triggers with the current automation name.
+- Present configuration import as two connected native buttons: Import opens the file picker and the arrow opens recent backups.
+- Preserve the open recent-backups menu across periodic Settings snapshot rerenders.
+- Show the live Windows Settings display number in DDC monitor labels without persisting that transient number as identity.
+- Acquire DDC handles and Windows display identities in the same Win32 monitor callback, preventing display-number mismatches without relying on list order or monitor descriptions.
+- Ignore null physical-monitor handles reported by non-DDC display targets while retaining topology validation for real DDC monitors.
+- Order DDC monitor choices by ascending Windows display number while retaining same-callback handle and identity pairing.
+- Drive held Custom keyboard keys from native Windows repeated key-down events instead of a slower synthetic Tk timer.
+- Add a presentation-only Type selection to route creation and editing, persisted in settings schema v11 with safe migration to Other.
+- Expand informational route types with Voice, Headphones, Earbuds, Soundbar, TV, Amplifier, Line-out, and Mixer.
+- Make overlay Test use the normal multi-status rendering path with two sample audio routes at 30% and 70%.
 - Suppressed DDC monitor-input status and overlay notifications when the selected input is already active.
 - Assigned the packaged application icon explicitly to the MSI Start Menu shortcut.
 - Replaced the Nuitka one-file release with a standalone build packaged as a native WiX MSI, removing executable self-extraction while retaining normal install, upgrade, Start Menu, and uninstall behavior.

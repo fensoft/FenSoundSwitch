@@ -7,9 +7,11 @@ from unittest.mock import Mock, patch
 
 from ddc import MonitorIdentity, SavedMonitorSelection
 from gui import MonitorVolumeApp, RouteInputRepeatScheduler
+from plugin_api import VolumeStatus
 from windows_platform import (
     GlobalVolumeKeyListener,
     VK_VOLUME_DOWN,
+    VK_VOLUME_MUTE,
     VK_VOLUME_UP,
     WM_KEYDOWN,
     WM_KEYUP,
@@ -157,6 +159,7 @@ class MonitorVolumeAppHotkeyTests(unittest.TestCase):
         app._refresh_requested = False
         app._refresh_requested_automatic = False
         app._volume_write_inflight = False
+        app._pending_target_volume = None
         app.root = Mock()
         app.root.after.return_value = "timeout"
         app._post_to_ui = lambda callback: callback()
@@ -175,6 +178,32 @@ class MonitorVolumeAppHotkeyTests(unittest.TestCase):
             app._route_windows_volume_delta(2)
 
         provider.write_volume.assert_called_once_with(52)
+
+        provider.supports_native_mute = True
+        provider.toggle_mute.return_value = True
+        app._plugin_manager.relevant_volume_providers.return_value = ((route, provider),)
+        app._plugin_manager.route_name.return_value = "Windows route"
+        app._show_plugin_overlay_text = Mock()
+        self.assertTrue(app._should_consume_mute_key())
+        with patch("gui.threading.Thread", ImmediateThread):
+            app._route_windows_mute()
+        provider.toggle_mute.assert_called_once_with()
+        app._show_plugin_overlay_text.assert_called_with("Windows route: Muted")
+
+        app._request_volume_target = Mock()
+        def toggle_with_pending_volume():
+            app._pending_target_volume = 61
+            return False
+        provider.toggle_mute.side_effect = toggle_with_pending_volume
+        with patch("gui.threading.Thread", ImmediateThread):
+            app._route_windows_mute()
+        app._request_volume_target.assert_called_once_with(61)
+
+        provider.toggle_mute.side_effect = None
+        provider.toggle_mute.return_value = 1
+        with patch("gui.threading.Thread", ImmediateThread):
+            app._route_windows_mute()
+        self.assertIn("invalid mute state", app._set_status.call_args.args[0])
 
         provider.read_volume.return_value = 0
         app._volume_statuses = {}
@@ -286,6 +315,39 @@ class MonitorVolumeAppHotkeyTests(unittest.TestCase):
 
         self.assertFalse(app._should_consume_volume_keys())
 
+    def test_busy_windows_volume_key_updates_overlay_without_starting_a_write(self) -> None:
+        route = Mock(route_id="windows-route")
+        provider = Mock()
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._closing = False
+        app._result_queue = queue.Queue()
+        app._hotkey_delta_queue = queue.Queue()
+        app._pending_hotkey_delta = 0
+        app._hotkeys_enabled = True
+        app._busy = True
+        app._ready_route_ids = {"windows-route"}
+        app._volume_statuses = {
+            "windows-route": VolumeStatus("windows-route", "Desk", 50, routed=True),
+        }
+        app._route_optimistic_targets = {}
+        app._route_presentation_targets = {}
+        app._plugin_manager = Mock()
+        app._plugin_manager.volume_providers_for_input.return_value = ((route, provider),)
+        app._plugin_manager.relevant_volume_providers.return_value = ((route, provider),)
+        app.root = Mock()
+        app.root.after.return_value = "poll"
+        app._report_ui_callback_error = Mock()
+        app._route_windows_volume_delta = Mock()
+        app._show_volume_overlay = Mock()
+
+        app._queue_hotkey_delta(2)
+        app._poll_queues()
+
+        self.assertEqual(app._pending_hotkey_delta, 2)
+        self.assertEqual(app._route_presentation_targets, {"windows-route": 52})
+        app._show_volume_overlay.assert_called_once_with(provider=provider)
+        app._route_windows_volume_delta.assert_not_called()
+
     def test_write_failure_marks_volume_unknown_and_releases_hotkeys(self) -> None:
         app = self.make_ready_app(ListenerState(is_active=True))
         app._hotkeys_enabled = True
@@ -322,6 +384,24 @@ class MonitorVolumeAppHotkeyTests(unittest.TestCase):
 
 
 class GlobalVolumeKeyListenerTests(unittest.TestCase):
+    def test_mute_toggles_once_per_consumed_press(self) -> None:
+        listener = GlobalVolumeKeyListener(
+            on_delta=lambda _delta: None,
+            should_consume=lambda: False,
+            on_error=lambda _error: None,
+            step=2,
+            should_consume_mute=lambda: True,
+        )
+
+        self.assertEqual(listener._resolve_mute_key_event(WM_KEYDOWN), (True, True))
+        self.assertEqual(listener._resolve_mute_key_event(WM_KEYDOWN), (True, False))
+        self.assertEqual(listener._resolve_mute_key_event(WM_KEYUP), (True, False))
+        self.assertEqual(listener._resolve_mute_key_event(WM_KEYDOWN), (True, True))
+
+        states = iter((True, False))
+        changing = GlobalVolumeKeyListener(lambda _delta: None, lambda: False, lambda _error: None, 2, should_consume_mute=lambda: next(states))
+        self.assertEqual(changing._resolve_mute_key_event(WM_KEYDOWN), (True, True))
+
     def make_listener(self, enabled: dict[str, bool]) -> GlobalVolumeKeyListener:
         return GlobalVolumeKeyListener(
             on_delta=lambda _delta: None,
@@ -392,18 +472,14 @@ class GlobalVolumeKeyListenerTests(unittest.TestCase):
 
 
 class RouteInputRepeatSchedulerTests(unittest.TestCase):
-    def test_initial_delay_repeats_and_keyup_stop_with_fake_clock(self) -> None:
+    def test_native_repeat_events_dispatch_and_keyup_stops_the_hold(self) -> None:
         clock = FakeClock()
         scheduler = RouteInputRepeatScheduler(clock)
 
         self.assertEqual(scheduler.key_event("route", 1, True), (("route", 1),))
+        self.assertEqual(scheduler.key_event("route", 1, True), (("route", 1),))
         self.assertEqual(scheduler.poll(), ())
-        clock.now = scheduler.INITIAL_DELAY_SECONDS
-        self.assertEqual(scheduler.poll(), (("route", 1),))
-        clock.now += scheduler.REPEAT_INTERVAL_SECONDS
-        self.assertEqual(scheduler.poll(), (("route", 1),))
         self.assertEqual(scheduler.key_event("route", 1, False), ())
-        clock.now += scheduler.REPEAT_INTERVAL_SECONDS
         self.assertEqual(scheduler.poll(), ())
 
     def test_multiple_routes_are_independent_and_each_poll_is_bounded(self) -> None:
@@ -411,10 +487,8 @@ class RouteInputRepeatSchedulerTests(unittest.TestCase):
         scheduler = RouteInputRepeatScheduler(clock)
         scheduler.key_event("down", -1, True)
         scheduler.key_event("up", 1, True)
-        clock.now = 10.0
-
-        self.assertEqual(set(scheduler.poll()), {("down", -1), ("up", 1)})
-        # A delayed UI poll does not replay an unbounded backlog.
+        self.assertEqual(scheduler.key_event("down", -1, True), (("down", -1),))
+        self.assertEqual(scheduler.key_event("up", 1, True), (("up", 1),))
         self.assertEqual(scheduler.poll(), ())
 
     def test_route_removal_unavailable_and_shutdown_cancel_held_keys(self) -> None:
@@ -423,11 +497,10 @@ class RouteInputRepeatSchedulerTests(unittest.TestCase):
         scheduler.key_event("one", 1, True)
         scheduler.key_event("two", -1, True)
         scheduler.cancel({"one"})
-        clock.now = 1.0
-        self.assertEqual(scheduler.poll(), (("two", -1),))
+        self.assertFalse(scheduler.is_held("one"))
+        self.assertTrue(scheduler.is_held("two"))
         scheduler.cancel()  # Used for unavailable topology, hook failure, and shutdown.
-        clock.now += 1.0
-        self.assertEqual(scheduler.poll(), ())
+        self.assertFalse(scheduler.is_held("two"))
 
     def test_gui_busy_state_coalesces_one_pending_delta_per_route(self) -> None:
         clock = FakeClock()
@@ -447,13 +520,128 @@ class RouteInputRepeatSchedulerTests(unittest.TestCase):
         app._route_volume_delta = Mock()
 
         app._queue_route_input_key("route", 1, True)
-        app._poll_queues()
-        clock.now = 1.0
+        app._queue_route_input_key("route", 1, True)
         app._poll_queues()
         self.assertEqual(app._pending_route_deltas, {"route": 2})
         app._busy = False
         app._poll_queues()
-        app._route_volume_delta.assert_called_once_with(("route",), 2)
+        app._route_volume_delta.assert_called_once_with(("route",), 2, present=False)
+
+    def test_busy_route_repeats_update_overlay_before_provider_is_free(self) -> None:
+        clock = FakeClock()
+        route = Mock(route_id="route")
+        provider = Mock()
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._closing = False
+        app._result_queue = queue.Queue()
+        app._hotkey_delta_queue = queue.Queue()
+        app._route_input_queue = queue.Queue()
+        app._route_volume_queue = queue.Queue()
+        app._route_key_queue = queue.Queue()
+        app._route_mute_queue = queue.Queue()
+        app._route_repeat_scheduler = RouteInputRepeatScheduler(clock)
+        app._pending_route_deltas = {}
+        app._pending_route_volumes = {}
+        app._route_optimistic_targets = {}
+        app._route_presentation_targets = {}
+        app._route_reconciliation_pending = set()
+        app._ready_route_ids = {"route"}
+        app._volume_statuses = {
+            "route": VolumeStatus("route", "Desk", 50, routed=True),
+        }
+        app._plugin_manager = Mock()
+        app._plugin_manager.relevant_volume_providers.return_value = ((route, provider),)
+        app._hotkeys_enabled = False
+        app._busy = True
+        app.root = Mock()
+        app.root.after.return_value = "poll"
+        app._report_ui_callback_error = Mock()
+        app._route_volume_delta = Mock()
+        app._show_volume_overlay = Mock()
+
+        app._queue_route_input_key("route", 1, True)
+        app._poll_queues()
+        app._queue_route_input_key("route", 1, True)
+        app._poll_queues()
+
+        self.assertEqual(app._route_presentation_targets, {"route": 52})
+        self.assertEqual(app._volume_statuses["route"].confirmed_volume, 50)
+        self.assertEqual(app._show_volume_overlay.call_count, 2)
+        app._show_volume_overlay.assert_called_with(provider=provider)
+        app._route_volume_delta.assert_not_called()
+
+    def test_busy_absolute_route_inputs_coalesce_to_latest_target(self) -> None:
+        route = Mock(route_id="route")
+        provider = Mock()
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._closing = False
+        app._result_queue = queue.Queue()
+        app._hotkey_delta_queue = queue.Queue()
+        app._route_input_queue = queue.Queue()
+        app._route_volume_queue = queue.Queue()
+        app._route_key_queue = queue.Queue()
+        app._route_mute_queue = queue.Queue()
+        app._route_repeat_scheduler = RouteInputRepeatScheduler()
+        app._pending_route_deltas = {}
+        app._pending_route_volumes = {}
+        app._route_optimistic_targets = {}
+        app._route_presentation_targets = {}
+        app._route_reconciliation_pending = set()
+        app._ready_route_ids = {"route"}
+        app._volume_statuses = {
+            "route": VolumeStatus("route", "Desk", 50, routed=True),
+        }
+        app._plugin_manager = Mock()
+        app._plugin_manager.relevant_volume_providers.return_value = ((route, provider),)
+        app._hotkeys_enabled = False
+        app._busy = True
+        app.root = Mock()
+        app.root.after.return_value = "poll"
+        app._report_ui_callback_error = Mock()
+        app._route_volume_delta = Mock()
+        app._show_volume_overlay = Mock()
+
+        app._queue_route_input_volume("route", 20)
+        app._queue_route_input_volume("route", 70)
+        app._poll_queues()
+
+        self.assertEqual(app._pending_route_volumes, {"route": 70})
+        self.assertEqual(app._route_presentation_targets, {"route": 70})
+        app._route_volume_delta.assert_not_called()
+
+        app._busy = False
+        app._poll_queues()
+        app._route_volume_delta.assert_called_once_with(
+            ("route",), 0, absolute_target=70, present=False
+        )
+
+    def test_older_completion_does_not_replace_newer_presentation_target(self) -> None:
+        provider = Mock(provider_name="Output")
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._closing = False
+        app._busy = True
+        app._volume_write_inflight = True
+        app._route_optimistic_targets = {}
+        app._route_presentation_targets = {"route": 54}
+        app._route_reconciliation_pending = set()
+        app._plugin_manager = Mock()
+        app._plugin_manager.route_name.return_value = "Desk"
+        app._accept_ddc_completion = Mock(return_value=True)
+        app._is_topology_generation_current = Mock(return_value=True)
+        app._publish_volume_status = Mock()
+        app._set_status = Mock()
+        app._show_volume_overlay = Mock()
+        app._apply_control_state = Mock()
+
+        app._finish_routed_volume_change(
+            (("route", provider, 51, None, None),),
+            generation=1,
+            operation_id=2,
+            requested_targets={"route": 51},
+        )
+
+        self.assertEqual(app._route_presentation_targets, {"route": 54})
+        app._publish_volume_status.assert_called_once_with(provider, 51, None)
 
     def test_gui_accepts_configured_multi_step_route_inputs(self) -> None:
         app = MonitorVolumeApp.__new__(MonitorVolumeApp)

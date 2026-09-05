@@ -11,7 +11,7 @@ from ddc import MonitorIdentity, SavedMonitorSelection
 from plugin_api import ActionHotkeyBinding, HotkeySpec
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 DEFAULT_CHANGE_SPEED = "slow"
 CHANGE_SPEEDS = frozenset(("slow", "medium", "fast"))
 USER_DATA_DIRECTORY = Path(os.environ.get("APPDATA") or Path.home()) / "fensoundswitch"
@@ -26,6 +26,24 @@ MAX_ACTION_SIGNALS = 100
 MAX_SIGNAL_SLOTS = 32
 MAX_SIGNAL_TRIGGERS = 8
 MAX_WAIT_MILLISECONDS = 300_000
+DEFAULT_ROUTE_TYPE = "other"
+ROUTE_TYPE_LABELS = {
+    "voice": "Voice",
+    "headset": "Headset",
+    "headphones": "Headphones",
+    "earbuds": "Earbuds",
+    "speakers": "Speakers",
+    "soundbar": "Soundbar",
+    "tv": "TV",
+    "avr": "AVR",
+    "amplifier": "Amplifier",
+    "microphone": "Microphone",
+    "line-in": "Line-in",
+    "line-out": "Line-out",
+    "mixer": "Mixer",
+    "monitor": "Monitor",
+    "other": "Other",
+}
 
 
 @dataclass(frozen=True)
@@ -34,12 +52,15 @@ class VolumeRoute:
     name: str
     input: "RouteEndpoint"
     output: "RouteEndpoint"
+    route_type: str = DEFAULT_ROUTE_TYPE
 
     def __post_init__(self) -> None:
         name = normalize_route_name(self.name)
         if name is None:
             raise ValueError("Route name must be non-empty and at most 80 characters.")
         object.__setattr__(self, "name", name)
+        if not isinstance(self.route_type, str) or self.route_type not in ROUTE_TYPE_LABELS:
+            raise ValueError("Route type is invalid.")
 
     @property
     def input_id(self) -> str:
@@ -375,7 +396,10 @@ def _normalized_volume_routes(value: object) -> tuple[VolumeRoute, ...] | None:
             # v6 and earlier records did not have a route name.
             name = default_route_name(input_endpoint.plugin_id, output_endpoint.plugin_id)
         route_ids.add(route_id)
-        routes.append(VolumeRoute(route_id, name, input_endpoint, output_endpoint))
+        route_type = item.get("route_type", DEFAULT_ROUTE_TYPE)
+        if not isinstance(route_type, str) or route_type not in ROUTE_TYPE_LABELS:
+            return None
+        routes.append(VolumeRoute(route_id, name, input_endpoint, output_endpoint, route_type))
     return tuple(routes)
 
 
@@ -397,7 +421,7 @@ def save_input_routes(routes: tuple[VolumeRoute, ...] | list[VolumeRoute]) -> No
     if not isinstance(routes, (list, tuple)):
         raise ValueError("Volume routes must be an ordered list.")
     raw = [
-        {"route_id": route.route_id, "name": route.name, "input": {"plugin_id": route.input.plugin_id, "parameters": route.input.parameters}, "output": {"plugin_id": route.output.plugin_id, "parameters": route.output.parameters}}
+        {"route_id": route.route_id, "name": route.name, "route_type": route.route_type, "input": {"plugin_id": route.input.plugin_id, "parameters": route.input.parameters}, "output": {"plugin_id": route.output.plugin_id, "parameters": route.output.parameters}}
         if isinstance(route, VolumeRoute) else route
         for route in routes
     ]
@@ -409,7 +433,7 @@ def save_input_routes(routes: tuple[VolumeRoute, ...] | list[VolumeRoute]) -> No
     payload["schema_version"] = SCHEMA_VERSION
     payload.pop("input_routes", None)
     payload["volume_routes"] = [
-        {"route_id": route.route_id, "name": route.name, "input": {"plugin_id": route.input.plugin_id, "parameters": route.input.parameters}, "output": {"plugin_id": route.output.plugin_id, "parameters": route.output.parameters}}
+        {"route_id": route.route_id, "name": route.name, "route_type": route.route_type, "input": {"plugin_id": route.input.plugin_id, "parameters": route.input.parameters}, "output": {"plugin_id": route.output.plugin_id, "parameters": route.output.parameters}}
         for route in normalized
     ]
     _write_settings_object(payload)
@@ -555,7 +579,7 @@ def load_selected_monitor_key() -> SavedMonitorSelection | None:
         return None
 
     schema_version = data.get("schema_version")
-    if schema_version in (2, 3, 4, 5, 6, 7, 8, 9, SCHEMA_VERSION):
+    if schema_version in (2, 3, 4, 5, 6, 7, 8, 9, 10, SCHEMA_VERSION):
         identity_data = selected_monitor.get("identity")
         if not isinstance(identity_data, dict):
             return None

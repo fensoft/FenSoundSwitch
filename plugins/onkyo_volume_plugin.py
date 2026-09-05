@@ -187,6 +187,15 @@ def _main_zone_volume(payload: bytes) -> int | None:
         return None
 
 
+def _main_zone_mute(payload: bytes) -> bool | None:
+    value = payload.rstrip(b"\x1a\r\n")
+    if value == b"!1AMT01":
+        return True
+    if value == b"!1AMT00":
+        return False
+    return None
+
+
 class OnkyoVolumePlugin:
     plugin_id = "onkyo-volume"
     name = "Onkyo eISCP volume"
@@ -196,6 +205,7 @@ class OnkyoVolumePlugin:
     )
     provider_name = "Onkyo eISCP main-zone volume"
     supports_fast_volume_write = True
+    supports_native_mute = True
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
@@ -295,6 +305,10 @@ class OnkyoVolumePlugin:
         with self._lock:
             self._send_unconfirmed_locked(f"!1MVL{raw_value:02X}\r".encode("ascii"))
 
+    def toggle_mute(self) -> bool:
+        with self._lock:
+            return self._request_mute_locked(b"!1AMTTG\r")
+
     def shutdown(self, timeout: float) -> bool:
         with self._lock:
             self._close_transport_locked()
@@ -317,6 +331,29 @@ class OnkyoVolumePlugin:
                     volume = _main_zone_volume(payload)
                     if volume is not None:
                         return volume
+        except (OSError, socket.timeout, OnkyoError) as exc:
+            self._close_transport_locked()
+            if isinstance(exc, OnkyoError):
+                raise
+            raise OnkyoError(f"Could not communicate with the configured Onkyo receiver: {exc}") from exc
+
+    def _request_mute_locked(self, command: bytes) -> bool:
+        try:
+            connection = self._connection_locked()
+            connection.sendall(encode_eiscp(command))
+            deadline = time.monotonic() + IO_TIMEOUT_SECONDS
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise OnkyoError("Timed out waiting for the receiver main-zone mute state.")
+                connection.settimeout(remaining)
+                received = connection.recv(MAX_PACKET_SIZE)
+                if not received:
+                    raise OnkyoError("The receiver closed the eISCP connection.")
+                for payload in self._parser.feed(received):
+                    muted = _main_zone_mute(payload)
+                    if muted is not None:
+                        return muted
         except (OSError, socket.timeout, OnkyoError) as exc:
             self._close_transport_locked()
             if isinstance(exc, OnkyoError):

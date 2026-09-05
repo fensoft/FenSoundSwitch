@@ -28,6 +28,14 @@ class WindowsMonitorIdentity:
     manufacturer_id: str | None = None
     product_code: int | None = None
     serial_number: str | None = None
+    monitor_description: str | None = None
+
+
+@dataclass(frozen=True)
+class WindowsDdcMonitor:
+    handle: int
+    description: str
+    identity: WindowsMonitorIdentity | None
 
 
 @dataclass(frozen=True)
@@ -78,6 +86,10 @@ class TrayMenuState:
 
 def enumerate_windows_monitor_identities() -> list[WindowsMonitorIdentity]:
     """DDC identity correlation has no safe public macOS equivalent yet."""
+    return []
+
+
+def enumerate_windows_ddc_monitors() -> list[WindowsDdcMonitor]:
     return []
 
 

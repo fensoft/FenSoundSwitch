@@ -4,13 +4,13 @@ from plugin_api import PLUGIN_API_VERSION, PluginHostContext
 
 
 class WindowsVolumeInputPlugin:
-    """Logical source for the host-owned Windows Volume Up/Down hook."""
+    """Logical source for the host-owned Windows media-volume hook."""
 
     plugin_id = "windows-volume-input"
     name = "Windows Volume keys"
-    description = "Routes host-owned Windows Volume Up and Down events to a selected volume provider."
+    description = "Routes host-owned Windows decrease, increase, and supported native mute events to selected outputs."
     input_id = "windows-volume-keys"
-    input_name = "Windows Volume Up/Down"
+    input_name = "Windows media keys"
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host

@@ -98,6 +98,12 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertLess(script.index("Nuitka standalone output was not found"), script.index("robocopy"))
         self.assertIn("requires a 64-bit Python interpreter", script)
         self.assertIn("--include-data-files=fensoundswitch-version.txt=fensoundswitch-version.txt", script)
+        self.assertIn(
+            "--include-data-dir=plugins/macos_overlay/assets=plugins/macos_overlay/assets",
+            script,
+        )
+        pyproject = PYPROJECT_PATH.read_text(encoding="utf-8")
+        self.assertIn('plugins = ["macos_overlay/assets/*.svg"]', pyproject)
         self.assertIn("[System.IO.File]::WriteAllText", script)
         self.assertIn("Remove-Item -LiteralPath $versionFile", script)
         self.assertNotIn("refusing to overwrite it", script)

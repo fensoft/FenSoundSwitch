@@ -46,6 +46,17 @@ class AvrProtocolTests(unittest.TestCase):
 
 
 class DenonMarantzVolumePluginTests(unittest.TestCase):
+    def test_native_mute_queries_inverts_and_confirms(self) -> None:
+        self.assertTrue(avr._main_zone_mute(b"MUON"))
+        self.assertFalse(avr._main_zone_mute(b"MUOFF"))
+        plugin = avr.DenonMarantzVolumePlugin()
+        plugin._config = avr.ReceiverConfig("receiver")
+        with patch.object(plugin, "_request_mute_locked", side_effect=[False, True]) as request:
+            self.assertTrue(plugin.toggle_mute())
+        self.assertEqual([call.args[0] for call in request.call_args_list], [b"MU?\r", b"MUON\r"])
+        with patch.object(plugin, "_request_mute_locked", side_effect=[False, False]), self.assertRaises(avr.DenonMarantzError):
+            plugin.toggle_mute()
+
     def test_config_rejects_invalid_values_and_persists_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plugin.json"

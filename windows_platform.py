@@ -38,6 +38,7 @@ WM_DISPLAY_LISTENER_EXIT = WM_APP + 5
 HWND_BROADCAST = 0xFFFF
 VK_VOLUME_DOWN = 0xAE
 VK_VOLUME_UP = 0xAF
+VK_VOLUME_MUTE = 0xAD
 IDI_APPLICATION = 32512
 IMAGE_ICON = 1
 NIF_MESSAGE = 0x0001
@@ -191,6 +192,13 @@ class MONITORINFOEXW(ctypes.Structure):
     ]
 
 
+class PHYSICAL_MONITOR(ctypes.Structure):
+    _fields_ = [
+        ("handle", wintypes.HANDLE),
+        ("description", wintypes.WCHAR * 128),
+    ]
+
+
 class HIGHCONTRASTW(ctypes.Structure):
     _fields_ = [
         ("cbSize", wintypes.UINT),
@@ -234,6 +242,14 @@ class WindowsMonitorIdentity:
     manufacturer_id: str | None = None
     product_code: int | None = None
     serial_number: str | None = None
+    monitor_description: str | None = None
+
+
+@dataclass(frozen=True)
+class WindowsDdcMonitor:
+    handle: int
+    description: str
+    identity: WindowsMonitorIdentity | None
 
 
 @dataclass(frozen=True)
@@ -432,6 +448,14 @@ dxva2.GetNumberOfPhysicalMonitorsFromHMONITOR.argtypes = [
     ctypes.POINTER(wintypes.DWORD),
 ]
 dxva2.GetNumberOfPhysicalMonitorsFromHMONITOR.restype = wintypes.BOOL
+dxva2.GetPhysicalMonitorsFromHMONITOR.argtypes = [
+    wintypes.HANDLE,
+    wintypes.DWORD,
+    ctypes.POINTER(PHYSICAL_MONITOR),
+]
+dxva2.GetPhysicalMonitorsFromHMONITOR.restype = wintypes.BOOL
+dxva2.DestroyPhysicalMonitor.argtypes = [wintypes.HANDLE]
+dxva2.DestroyPhysicalMonitor.restype = wintypes.BOOL
 setupapi.SetupDiCreateDeviceInfoList.argtypes = [ctypes.POINTER(GUID), wintypes.HWND]
 setupapi.SetupDiCreateDeviceInfoList.restype = wintypes.HANDLE
 setupapi.SetupDiOpenDeviceInterfaceW.argtypes = [
@@ -682,6 +706,7 @@ def _display_device_identity(
         manufacturer_id=manufacturer_id,
         product_code=product_code,
         serial_number=serial_number,
+        monitor_description=display_device.DeviceString.strip() or None,
     )
 
 
@@ -748,6 +773,38 @@ def enumerate_windows_monitor_identities() -> list[WindowsMonitorIdentity | None
     if callback_error is not None:
         raise callback_error
     return identity_slots
+
+
+def enumerate_windows_ddc_monitors() -> list[WindowsDdcMonitor]:
+    """Acquire each DDC handle with identity from the same HMONITOR callback."""
+    records: list[WindowsDdcMonitor] = []
+    callback_error: Exception | None = None
+
+    def callback(hmonitor, _hdc, _rect, _data) -> bool:
+        nonlocal callback_error
+        try:
+            identities = _identity_slots_for_hmonitor(hmonitor)
+            count = len(identities)
+            physical_monitors = (PHYSICAL_MONITOR * count)()
+            if count and not dxva2.GetPhysicalMonitorsFromHMONITOR(hmonitor, count, physical_monitors):
+                raise win_error("GetPhysicalMonitorsFromHMONITOR failed")
+            for physical, identity in zip(physical_monitors, identities):
+                if physical.handle:
+                    records.append(WindowsDdcMonitor(int(physical.handle), physical.description, identity))
+        except Exception as exc:
+            callback_error = exc
+            return False
+        return True
+
+    monitor_callback = MONITORENUMPROC(callback)
+    if not user32.EnumDisplayMonitors(None, None, monitor_callback, 0):
+        if callback_error is None:
+            callback_error = win_error("EnumDisplayMonitors failed")
+    if callback_error is not None:
+        for record in records:
+            dxva2.DestroyPhysicalMonitor(record.handle)
+        raise callback_error
+    return records
 
 
 def set_window_dark_mode(hwnd: int, enabled: bool) -> bool:
@@ -1617,6 +1674,8 @@ class GlobalVolumeKeyListener:
         step: int,
         on_unavailable: Callable[[], None] | None = None,
         should_report_unavailable: Callable[[], bool] | None = None,
+        on_mute: Callable[[], None] | None = None,
+        should_consume_mute: Callable[[], bool] | None = None,
     ) -> None:
         self.on_delta = on_delta
         self.should_consume = should_consume
@@ -1626,6 +1685,8 @@ class GlobalVolumeKeyListener:
         self.set_step(step)
         self.on_unavailable = on_unavailable
         self.should_report_unavailable = should_report_unavailable or (lambda: False)
+        self.on_mute = on_mute or (lambda: None)
+        self.should_consume_mute = should_consume_mute or (lambda: False)
         self._hook_ready = threading.Event()
         self._hook_active = threading.Event()
         self._stop_event = threading.Event()
@@ -1733,6 +1794,17 @@ class GlobalVolumeKeyListener:
 
         return False, None
 
+    def _resolve_mute_key_event(self, message: int) -> tuple[bool, bool]:
+        if message in (WM_KEYDOWN, WM_SYSKEYDOWN):
+            first_press = VK_VOLUME_MUTE not in self._volume_key_consumption
+            if first_press:
+                self._volume_key_consumption[VK_VOLUME_MUTE] = self.should_consume_mute()
+            consume = self._volume_key_consumption[VK_VOLUME_MUTE]
+            return consume, first_press and consume
+        if message in (WM_KEYUP, WM_SYSKEYUP):
+            return self._volume_key_consumption.pop(VK_VOLUME_MUTE, False), False
+        return False, False
+
     def _report_unavailable_key_event(self, message: int, consume: bool) -> None:
         if (
             not consume
@@ -1749,14 +1821,19 @@ class GlobalVolumeKeyListener:
             return user32.CallNextHookEx(self._hook_handle, n_code, w_param, l_param)
 
         key_info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-        if key_info.vkCode not in (VK_VOLUME_DOWN, VK_VOLUME_UP):
+        if key_info.vkCode not in (VK_VOLUME_MUTE, VK_VOLUME_DOWN, VK_VOLUME_UP):
             return user32.CallNextHookEx(self._hook_handle, n_code, w_param, l_param)
 
-        consume, delta = self._resolve_volume_key_event(key_info.vkCode, w_param)
-        if delta is not None:
-            self.on_delta(delta)
-        elif delta is None:
-            self._report_unavailable_key_event(w_param, consume)
+        if key_info.vkCode == VK_VOLUME_MUTE:
+            consume, toggle = self._resolve_mute_key_event(w_param)
+            if toggle:
+                self.on_mute()
+        else:
+            consume, delta = self._resolve_volume_key_event(key_info.vkCode, w_param)
+            if delta is not None:
+                self.on_delta(delta)
+            elif delta is None:
+                self._report_unavailable_key_event(w_param, consume)
 
         if consume:
             return 1

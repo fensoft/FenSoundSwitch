@@ -20,6 +20,7 @@ class WindowsSoundcardVolumePlugin:
     name = "Windows soundcard volume"
     description = "Controls the master volume of one selected Windows render soundcard endpoint."
     provider_name = "Windows soundcard volume"
+    supports_native_mute = True
 
     def __init__(self, parameters: dict[str, object] | None = None) -> None:
         self._host: PluginHostContext | None = None
@@ -77,6 +78,11 @@ class WindowsSoundcardVolumePlugin:
         values = validate_parameters(self._parameters)
         endpoint_id = core_audio.resolve_route_endpoint_id(str(values["endpoint_id"]), core_audio.E_RENDER)
         return core_audio.write_endpoint_volume(endpoint_id, max(0, min(100, int(target_volume))))
+
+    def toggle_mute(self) -> bool:
+        values = validate_parameters(self._parameters)
+        endpoint_id = core_audio.resolve_route_endpoint_id(str(values["endpoint_id"]), core_audio.E_RENDER)
+        return core_audio.toggle_endpoint_mute(endpoint_id)
 
     def activate_volume_provider(self) -> None:
         return None

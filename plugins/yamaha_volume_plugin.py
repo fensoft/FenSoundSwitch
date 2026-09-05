@@ -155,12 +155,21 @@ def _parse_volume_line(line: bytes) -> float | None:
     return float(match.group(1)) if match is not None else None
 
 
+def _parse_mute_line(line: bytes) -> bool | None:
+    if line == b"@MAIN:MUTE=On":
+        return True
+    if line == b"@MAIN:MUTE=Off":
+        return False
+    return None
+
+
 class YamahaVolumePlugin:
     plugin_id = "yamaha-volume"
     name = "Yamaha YNCA volume"
     description = "Controls a configured Yamaha network receiver main zone through its YNCA TCP interface."
     provider_name = "Yamaha YNCA main-zone volume"
     supports_fast_volume_write = True
+    supports_native_mute = True
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
@@ -252,6 +261,17 @@ class YamahaVolumePlugin:
         value_db = YNCA_MAIN_ZONE_PROFILE.from_percent(target_volume)
         self._send_unconfirmed(_volume_command(value_db))
 
+    def toggle_mute(self) -> bool:
+        with self._lock:
+            muted = self._request_mute_locked((b"@MAIN:MUTE=?\r\n",))
+            target = not muted
+            command = b"@MAIN:MUTE=On\r\n" if target else b"@MAIN:MUTE=Off\r\n"
+            self._send_unconfirmed(command)
+            confirmed = self._request_mute_locked((b"@MAIN:MUTE=?\r\n",))
+            if confirmed != target:
+                raise YamahaError("The receiver did not confirm its main-zone mute state.")
+            return confirmed
+
     def shutdown(self, timeout: float) -> bool:
         return True
 
@@ -279,6 +299,41 @@ class YamahaVolumePlugin:
                     volume = _parse_volume_line(line)
                     if volume is not None:
                         return volume
+        except (OSError, socket.timeout, YamahaError) as exc:
+            if isinstance(exc, YamahaError):
+                raise
+            raise YamahaError(f"Could not communicate with the configured Yamaha receiver: {exc}") from exc
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+
+    def _request_mute_locked(self, commands: tuple[bytes, ...]) -> bool:
+        config = self._config
+        if config is None:
+            raise YamahaError("Configure a Yamaha YNCA receiver in Routes.")
+        connection: socket.socket | None = None
+        try:
+            connection = socket.create_connection((config.host, config.port), timeout=CONNECT_TIMEOUT_SECONDS)
+            connection.settimeout(IO_TIMEOUT_SECONDS)
+            for command in commands:
+                connection.sendall(command)
+            parser = YncaLineParser()
+            deadline = time.monotonic() + IO_TIMEOUT_SECONDS
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise YamahaError("Timed out waiting for the receiver main-zone mute state.")
+                connection.settimeout(remaining)
+                received = connection.recv(RECEIVE_SIZE)
+                if not received:
+                    raise YamahaError("The receiver closed the YNCA connection.")
+                for line in parser.feed(received):
+                    muted = _parse_mute_line(line)
+                    if muted is not None:
+                        return muted
         except (OSError, socket.timeout, YamahaError) as exc:
             if isinstance(exc, YamahaError):
                 raise

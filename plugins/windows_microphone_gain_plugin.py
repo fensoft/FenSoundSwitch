@@ -20,6 +20,7 @@ class WindowsMicrophoneGainPlugin:
     name = "Windows capture gain"
     description = "Controls the gain of one selected Windows capture endpoint, such as a microphone or Line In."
     provider_name = "Windows capture gain"
+    supports_native_mute = True
 
     def __init__(self, parameters: dict[str, object] | None = None) -> None:
         self._host: PluginHostContext | None = None
@@ -73,6 +74,11 @@ class WindowsMicrophoneGainPlugin:
         values = validate_parameters(self._parameters)
         endpoint_id = core_audio.resolve_route_endpoint_id(str(values["endpoint_id"]), core_audio.E_CAPTURE)
         return core_audio.write_endpoint_volume(endpoint_id, max(0, min(100, int(target_volume))))
+
+    def toggle_mute(self) -> bool:
+        values = validate_parameters(self._parameters)
+        endpoint_id = core_audio.resolve_route_endpoint_id(str(values["endpoint_id"]), core_audio.E_CAPTURE)
+        return core_audio.toggle_endpoint_mute(endpoint_id)
 
     def activate_volume_provider(self) -> None:
         return None

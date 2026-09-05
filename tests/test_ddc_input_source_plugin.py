@@ -161,7 +161,7 @@ class DdcInputSourcePluginTests(unittest.TestCase):
         plugin._discovered = {
             ddc_input_source_plugin._selection_key(encoded): (
                 encoded,
-                "1. Test monitor - S/N serial",
+                "Display 1: Test monitor - S/N serial",
                 (MonitorInput(0x0F, "DP1"), MonitorInput(0x11, "HDMI1")),
             )
         }

@@ -45,6 +45,17 @@ class PioneerProtocolTests(unittest.TestCase):
 
 
 class PioneerEliteVolumePluginTests(unittest.TestCase):
+    def test_native_mute_queries_inverts_and_confirms(self) -> None:
+        self.assertTrue(pioneer._main_zone_mute(b"MUT0"))
+        self.assertFalse(pioneer._main_zone_mute(b"MUT1"))
+        plugin = pioneer.PioneerEliteVolumePlugin()
+        plugin._config = pioneer.ReceiverConfig("receiver")
+        with patch.object(plugin, "_request_mute_locked", side_effect=[True, False]) as request:
+            self.assertFalse(plugin.toggle_mute())
+        self.assertEqual([call.args[0] for call in request.call_args_list], [b"?M\r", b"MF\r"])
+        with patch.object(plugin, "_request_mute_locked", side_effect=[True, True]), self.assertRaises(pioneer.PioneerEliteError):
+            plugin.toggle_mute()
+
     def test_config_rejects_invalid_values_and_persists_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plugin.json"

@@ -44,6 +44,17 @@ class YamahaProtocolTests(unittest.TestCase):
 
 
 class YamahaVolumePluginTests(unittest.TestCase):
+    def test_native_mute_queries_inverts_and_confirms(self) -> None:
+        self.assertTrue(yamaha._parse_mute_line(b"@MAIN:MUTE=On"))
+        self.assertFalse(yamaha._parse_mute_line(b"@MAIN:MUTE=Off"))
+        plugin = yamaha.YamahaVolumePlugin()
+        plugin._config = yamaha.ReceiverConfig("receiver")
+        with patch.object(plugin, "_request_mute_locked", side_effect=[False, True]) as request, patch.object(plugin, "_send_unconfirmed") as send:
+            self.assertTrue(plugin.toggle_mute())
+        send.assert_called_once_with(b"@MAIN:MUTE=On\r\n")
+        self.assertEqual(request.call_args_list[0].args[0], (b"@MAIN:MUTE=?\r\n",))
+        self.assertEqual(request.call_args_list[1].args[0], (b"@MAIN:MUTE=?\r\n",))
+
     def test_config_is_strict_and_persists_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plugin.json"

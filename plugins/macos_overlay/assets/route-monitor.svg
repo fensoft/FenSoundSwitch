@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 80" role="img" aria-label="Monitor">
+  <polyline points="8,6 104,6 104,59 8,59 8,6" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round" />
+  <line x1="56" y1="59" x2="56" y2="72" stroke="currentColor" stroke-width="5" />
+  <line x1="36" y1="73" x2="76" y2="73" stroke="currentColor" stroke-width="5" stroke-linecap="round" />
+  <line x1="17" y1="50" x2="95" y2="50" stroke="currentColor" stroke-width="3" />
+</svg>

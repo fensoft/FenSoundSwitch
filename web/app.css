@@ -103,11 +103,11 @@ button:disabled { cursor: default; opacity: .55; }
 .button-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .split-control { display: inline-flex; position: relative; }
 .split-control > button { border-radius: 5px 0 0 5px; }
-.split-menu > summary { display: grid; min-width: 34px; height: 100%; padding-inline: 9px; place-items: center; border-left-width: 0; border-radius: 0 5px 5px 0; cursor: pointer; list-style: none; }
-.split-menu > summary { font-size: 9px; }
-.split-menu.is-empty > summary { color: var(--muted); cursor: default; opacity: .5; pointer-events: none; }
-.split-menu > summary::-webkit-details-marker { display: none; }
+.split-menu { display: flex; }
+.split-menu > .split-arrow { display: grid; min-width: 34px; height: 100%; padding-inline: 9px; place-items: center; border-left-width: 0; border-radius: 0 5px 5px 0; font-size: 9px; }
+.split-menu > .split-arrow:disabled { color: var(--muted); opacity: .5; }
 .split-menu-items { position: absolute; z-index: 5; top: calc(100% + 6px); right: 0; display: grid; min-width: 220px; padding: 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-solid); box-shadow: var(--shadow); }
+.split-menu-items[hidden] { display: none; }
 .split-menu-items button { padding: 8px 10px; border: 0; border-radius: 4px; background: transparent; text-align: left; }
 .split-menu-items button:hover { background: var(--surface-hover); }
 .split-menu-items span { padding: 8px 10px; }

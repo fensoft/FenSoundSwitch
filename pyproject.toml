@@ -9,6 +9,7 @@ description = "FenSoundSwitch route-based monitor and network receiver volume co
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "Pillow==10.1.0",
     "paho-mqtt==2.1.0",
     "pywebview==6.1",
     "monitorcontrol==4.2.0; sys_platform == 'win32'",
@@ -46,6 +47,7 @@ py-modules = [
 ]
 
 [tool.setuptools.package-data]
+plugins = ["macos_overlay/assets/*.svg"]
 web = ["*.html", "*.css", "*.js"]
 
 [tool.setuptools.packages.find]

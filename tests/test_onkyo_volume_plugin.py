@@ -46,6 +46,15 @@ class EiscpProtocolTests(unittest.TestCase):
 
 
 class OnkyoVolumePluginTests(unittest.TestCase):
+    def test_native_mute_uses_atomic_receiver_toggle(self) -> None:
+        self.assertTrue(onkyo._main_zone_mute(b"!1AMT01\x1a\r"))
+        self.assertFalse(onkyo._main_zone_mute(b"!1AMT00\r"))
+        plugin = onkyo.OnkyoVolumePlugin()
+        plugin._config = onkyo.ReceiverConfig("receiver")
+        with patch.object(plugin, "_request_mute_locked", return_value=True) as request:
+            self.assertTrue(plugin.toggle_mute())
+        request.assert_called_once_with(b"!1AMTTG\r")
+
     def test_config_rejects_invalid_values_and_persists_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plugin.json"

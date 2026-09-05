@@ -39,6 +39,13 @@ def volume_response(request_id: int, volume: str = "-31", minimum: str = "-80", 
 
 
 class SonyVolumePluginTests(unittest.TestCase):
+    def test_native_mute_queries_inverts_and_confirms(self) -> None:
+        plugin = sony.SonyVolumePlugin()
+        plugin._config = sony.ReceiverConfig("receiver")
+        with patch.object(plugin, "_read_mute_locked", side_effect=[False, True]), patch.object(plugin, "_request_locked", return_value=[]) as request:
+            self.assertTrue(plugin.toggle_mute())
+        request.assert_called_once_with("setAudioMute", [{"output": sony.MAIN_ZONE_OUTPUT, "mute": "on"}])
+
     def test_config_is_strict_and_saved_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plugin.json"

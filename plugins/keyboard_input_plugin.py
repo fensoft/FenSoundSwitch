@@ -16,18 +16,24 @@ def _hotkey(value: object, label: str) -> HotkeySpec:
 
 
 def validate_parameters(parameters: object) -> dict[str, object]:
-    if not isinstance(parameters, dict) or set(parameters) not in ({"volume_down", "volume_up"}, {"volume_down", "volume_up", "forward_keys"}):
-        raise ValueError("Keyboard input requires exactly volume_down, volume_up, and forward_keys values.")
+    if not isinstance(parameters, dict) or not {"volume_down", "volume_up"} <= set(parameters) or set(parameters) - {"volume_down", "volume_up", "mute", "forward_keys"}:
+        raise ValueError("Keyboard input requires decrease and increase keys with an optional mute key.")
     down = _hotkey(parameters["volume_down"], "volume down")
     up = _hotkey(parameters["volume_up"], "volume up")
-    if down == up:
-        raise ValueError("Keyboard volume down and volume up keys must differ.")
+    mute_value = parameters.get("mute")
+    mute = _hotkey(mute_value, "mute") if mute_value is not None else None
+    keys = [down, up] + ([mute] if mute is not None else [])
+    if len(set(keys)) != len(keys):
+        raise ValueError("Keyboard decrease, increase, and mute keys must differ.")
     # Pre-option routes were intentionally passive. Retain that behavior when
     # their parameters are loaded, then persist the explicit value on next save.
     forward_keys = parameters.get("forward_keys", True)
     if not isinstance(forward_keys, bool):
         raise ValueError("Keyboard forward_keys must be true or false.")
-    return {"volume_down": down.to_json(), "volume_up": up.to_json(), "forward_keys": forward_keys}
+    result = {"volume_down": down.to_json(), "volume_up": up.to_json(), "forward_keys": forward_keys}
+    if mute is not None:
+        result["mute"] = mute.to_json()
+    return result
 
 
 class KeyboardInputPlugin:
@@ -35,7 +41,7 @@ class KeyboardInputPlugin:
     name = "Keyboard input"
     description = "Configurable keyboard keys for one route. Keys can remain forwarded or be consumed for that route."
     input_id = "keyboard-keys"
-    input_name = "Keyboard volume keys"
+    input_name = "Custom keyboard keys"
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
@@ -47,25 +53,30 @@ class KeyboardInputPlugin:
         values = validate_parameters(parameters)
         forward_keys = values["forward_keys"]
         assert isinstance(forward_keys, bool)
-        return {
+        result = {
             "down": RouteHotkeyBinding(_hotkey(values["volume_down"], "volume down"), consume=not forward_keys),
             "up": RouteHotkeyBinding(_hotkey(values["volume_up"], "volume up"), consume=not forward_keys),
         }
+        if values.get("mute") is not None:
+            result["mute"] = RouteHotkeyBinding(_hotkey(values["mute"], "mute"), consume=not forward_keys)
+        return result
 
     def route_input_summary(self, parameters: dict[str, object]) -> str:
         try:
             keys = self.route_hotkeys(parameters)
         except ValueError:
-            return "Choose distinct keyboard volume down and volume up keys."
+            return "Choose distinct decrease and increase keys."
         policy = "Keys remain forwarded to other apps." if not keys["down"].consume else "Configured keys are consumed while this route is active."
-        return f"Down: {keys['down'].hotkey.label}; Up: {keys['up'].hotkey.label}. {policy}"
+        mute = f"; Mute: {keys['mute'].hotkey.label}" if "mute" in keys else ""
+        return f"Decrease: {keys['down'].hotkey.label}; Increase: {keys['up'].hotkey.label}{mute}. {policy}"
 
     def get_route_input_ui(self, parameters: Mapping[str, object]) -> dict[str, object]:
         return plugin_ui_document("Configure keyboard route", [
-            {"id": "volume_down", "type": "hotkey", "label": "Volume down", "value": parameters.get("volume_down"), "required": True},
-            {"id": "volume_up", "type": "hotkey", "label": "Volume up", "value": parameters.get("volume_up"), "required": True},
+            {"id": "volume_down", "type": "hotkey", "label": "Decrease", "value": parameters.get("volume_down"), "required": True},
+            {"id": "volume_up", "type": "hotkey", "label": "Increase", "value": parameters.get("volume_up"), "required": True},
+            {"id": "mute", "type": "hotkey", "label": "Mute (optional)", "value": parameters.get("mute")},
             {"id": "forward_keys", "type": "boolean", "label": "Forward keys to other applications", "value": parameters.get("forward_keys", True)},
-        ], [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Capture two distinct keys and choose whether this route forwards them to the foreground application.")
+        ], [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Capture distinct decrease and increase keys, optionally add mute, and choose whether this route forwards them to the foreground application.")
 
     def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
         if action_id != "save":

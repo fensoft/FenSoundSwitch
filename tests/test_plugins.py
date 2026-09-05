@@ -321,6 +321,26 @@ class PluginManagerTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             plugin.host.get_volume_statuses()[0].confirmed_volume = 50  # type: ignore[misc]
 
+    def test_overlay_preview_callback_is_bound_to_its_plugin(self) -> None:
+        plugin = _FakePlugin()
+        plugin.plugin_id = "preview-overlay"
+        previews: list[str] = []
+        manager = PluginManager(
+            Mock(),
+            post_to_ui=lambda callback: callback(),
+            on_notice=lambda _message: None,
+            on_overlay_preview=previews.append,
+            hotkey_factory=_FakeHotkeys,
+        )
+        record = _record(plugin)
+        record.is_overlay_renderer = True
+        with patch("plugin_manager.discover_plugins", return_value=[record]):
+            manager.start()
+
+        plugin.host.show_overlay_preview()
+
+        self.assertEqual(previews, ["preview-overlay"])
+
     def test_bundled_overlay_plugin_hands_its_renderer_to_the_manager(self) -> None:
         from plugins.windows11_overlay_plugin import OverlayPlugin
 
@@ -456,8 +476,12 @@ class PluginManagerTests(unittest.TestCase):
         self.assertTrue(manager.records[1].is_volume_provider)
         self.assertEqual(manager.records[0].input_id, "input-fake-source")
         with patch.object(plugin_manager, "save_input_routes"):
-            self.assertTrue(manager.add_route("input-fake-source", "volume-fake"))
+            self.assertTrue(manager.add_route("input-fake-source", "volume-fake", route_type="avr"))
         self.assertEqual(manager.input_routes[0].output.plugin_id, "volume-fake")
+        self.assertEqual(manager.input_routes[0].route_type, "avr")
+        route_provider = manager.volume_providers_for_input("input-fake-source")[0][1]
+        self.assertEqual(manager.route_type_for_provider(route_provider), "avr")
+        self.assertFalse(manager.add_route("input-fake-source", "volume-fake", route_type="invalid"))
         self.assertTrue(manager.add_route("input-fake-source", "volume-fake"))
         self.assertFalse(manager.add_route("input-fake-source", "missing"))
         self.assertEqual(manager.volume_providers_for_input("missing"), ())
@@ -466,17 +490,29 @@ class PluginManagerTests(unittest.TestCase):
         from plugins.keyboard_input_plugin import KeyboardInputPlugin
         keyboard = KeyboardInputPlugin()
         provider = _FakeVolumePlugin()
+        provider.supports_native_mute = True
+        provider.toggle_mute = lambda: True
         records = [_record(keyboard), _record(provider)]
         records[1].key = "plugin-volume-fake"
         manager, notices = self.make_manager(keyboard)
         with patch("plugin_manager.discover_plugins", return_value=records), patch("plugin_manager.load_input_routes", return_value=()):
             manager.start()
-        keys = {"volume_down": HotkeySpec(0, ord("J")).to_json(), "volume_up": HotkeySpec(0, ord("K")).to_json()}
+        keys = {"volume_down": HotkeySpec(0, ord("J")).to_json(), "volume_up": HotkeySpec(0, ord("K")).to_json(), "mute": HotkeySpec(0, ord("M")).to_json()}
         self.assertTrue(manager.add_route("keyboard-keys", "volume-fake", input_parameters=keys))
         dispatched: list[tuple[str, int]] = []
         manager._on_route_input = lambda route_id, delta: dispatched.append((route_id, delta))
         manager._dispatch_trigger(f"route/{manager.input_routes[0].route_id}/down")
         self.assertEqual(dispatched, [(manager.input_routes[0].route_id, -1)])
+        muted: list[str] = []
+        manager._on_route_mute = muted.append
+        manager._dispatch_trigger(f"route/{manager.input_routes[0].route_id}/mute")
+        self.assertEqual(muted, [manager.input_routes[0].route_id])
+        binding_id = f"route/{manager.input_routes[0].route_id}/mute"
+        manager._dispatch_route_key(binding_id, True)
+        manager._dispatch_route_key(binding_id, True)
+        manager._dispatch_route_key(binding_id, False)
+        manager._dispatch_route_key(binding_id, True)
+        self.assertEqual(muted, [manager.input_routes[0].route_id] * 3)
         self.assertFalse(manager.add_route("keyboard-keys", "volume-fake", input_parameters=keys))
         self.assertTrue(any("not broadcast" in message for message in notices))
 
@@ -1327,7 +1363,7 @@ class PassiveHotkeyTests(unittest.TestCase):
             self._key_event(controller, WM_KEYDOWN, ord("K"))
             self._key_event(controller, WM_KEYUP, 0x11)
 
-        self.assertEqual(events, [("route/one/up", True), ("route/one/up", False)])
+        self.assertEqual(events, [("route/one/up", True), ("route/one/up", True), ("route/one/up", False)])
 
     def test_forwarding_route_forwards_down_repeats_and_matching_up(self) -> None:
         events: list[tuple[str, bool]] = []
@@ -1340,7 +1376,7 @@ class PassiveHotkeyTests(unittest.TestCase):
             self.assertEqual(self._key_event(controller, WM_KEYDOWN, ord("J")), 47)
             self.assertEqual(self._key_event(controller, WM_KEYUP, ord("J")), 47)
 
-        self.assertEqual(events, [("route/one/down", True), ("route/one/down", False)])
+        self.assertEqual(events, [("route/one/down", True), ("route/one/down", True), ("route/one/down", False)])
         self.assertEqual(next_hook.call_count, 3)
 
     def test_consuming_route_consumes_only_its_held_configured_key_pair(self) -> None:
@@ -1358,7 +1394,7 @@ class PassiveHotkeyTests(unittest.TestCase):
             self.assertEqual(self._key_event(controller, WM_KEYUP, ord("J")), 1)
             self.assertEqual(self._key_event(controller, WM_KEYUP, 0x11), 47)
 
-        self.assertEqual(events, [("route/one/down", True), ("route/one/down", False)])
+        self.assertEqual(events, [("route/one/down", True), ("route/one/down", True), ("route/one/down", False)])
         self.assertEqual(next_hook.call_count, 4)
 
     def test_removing_consuming_route_releases_repeat_before_keyup_is_forwarded(self) -> None:

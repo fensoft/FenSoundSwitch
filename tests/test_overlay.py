@@ -12,8 +12,21 @@ from plugins.windows11_overlay_plugin import (
     format_volume_status,
     format_volume_status_rows,
 )
-from plugins.macos_overlay_plugin import MacOSVolumeOverlay
+from plugins.macos_overlay_plugin import (
+    MAC_ERROR_SVG,
+    MAC_HUD_SEGMENTS,
+    MAC_ROUTE_ICON_PATHS,
+    MAC_SUCCESS_SVG,
+    MacOSVolumeOverlay,
+    calculate_filled_segments,
+    downsample_raster,
+    load_speaker_svg,
+    load_icon_svg,
+    rounded_rectangle_points,
+    speaker_wave_count,
+)
 from plugin_api import VolumeStatus
+from settings import ROUTE_TYPE_LABELS
 from windows_platform import (
     DisplayArea,
     GWL_EXSTYLE,
@@ -296,6 +309,55 @@ class NoActivateWindowTests(unittest.TestCase):
 
 
 class OverlayGUITests(unittest.TestCase):
+    def test_appearance_preview_uses_real_multi_status_path(self) -> None:
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._closing = False
+        app._overlay = Mock()
+        app._overlay.select_statuses.side_effect = lambda statuses, _provider_id: statuses
+        app._render_overlay = Mock()
+        app._selected_display_device_name = Mock(return_value=r"\\.\DISPLAY2")
+
+        app._show_overlay_preview()
+
+        statuses = app._overlay.select_statuses.call_args.args[0]
+        self.assertEqual(
+            [
+                (status.display_name, status.confirmed_volume, status.route_type)
+                for status in statuses
+            ],
+            [("Voice", 30, "voice"), ("Headset", 70, "headset")],
+        )
+        app._render_overlay.assert_called_once_with(
+            "show_statuses",
+            statuses,
+            None,
+            preferred_display_device_name=r"\\.\DISPLAY2",
+        )
+
+    def test_plugin_test_preview_uses_that_plugins_renderer(self) -> None:
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._closing = False
+        app.dark_mode = True
+        app.high_contrast = False
+        app._overlay = Mock()
+        app._preview_overlay = None
+        app._plugin_manager = Mock()
+        app.root = Mock()
+        app._selected_display_device_name = Mock(return_value=r"\\.\DISPLAY2")
+        preview = Mock(spec=VolumeOverlay)
+        preview.select_statuses.side_effect = lambda statuses, _provider_id: statuses
+        app._plugin_manager.create_overlay_renderer_for.return_value = preview
+
+        app._show_overlay_preview("macos-overlay")
+
+        app._plugin_manager.create_overlay_renderer_for.assert_called_once_with(
+            "macos-overlay", True, False
+        )
+        preview.show_statuses.assert_called_once()
+        app._overlay.show_statuses.assert_not_called()
+        self.assertIs(app._preview_overlay, preview)
+        app.root.after.assert_called_once()
+
     def test_current_status_shows_centered_volume_header_route_value_and_ttk_bar(self) -> None:
         overlay = VolumeOverlay.__new__(VolumeOverlay)
         overlay._palette = Mock(text="text")
@@ -401,12 +463,153 @@ class OverlayGUITests(unittest.TestCase):
             preferred_display_device_name=None,
         )
 
-    def test_macos_renderer_uses_a_distinct_hud_palette_and_all_routes(self) -> None:
+    def test_requested_route_volume_is_presented_without_becoming_confirmed(self) -> None:
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        confirmed = VolumeStatus(
+            "route-one",
+            "Desk monitor",
+            42,
+            routed=True,
+            route_type="headset",
+        )
+        app._volume_statuses = {"route-one": confirmed}
+        app._route_presentation_targets = {"route-one": 47}
+
+        presented = app._get_presented_volume_statuses()
+
+        self.assertEqual(presented[0].confirmed_volume, 47)
+        self.assertEqual(app._volume_statuses["route-one"].confirmed_volume, 42)
+        self.assertIsNot(presented[0], confirmed)
+        self.assertEqual(presented[0].route_type, "headset")
+
+    def test_macos_renderer_uses_a_distinct_hud_palette_and_changed_route(self) -> None:
         palette = MacOSVolumeOverlay._get_palette(dark_mode=True, high_contrast=False)
         windows_palette = VolumeOverlay._get_palette(dark_mode=True, high_contrast=False)
-        statuses = (VolumeStatus("route-one", "Desk", 42, routed=True),)
+        statuses = (
+            VolumeStatus("route-one", "Desk", 42, routed=True),
+            VolumeStatus("route-two", "TV", 70, routed=True),
+        )
         self.assertNotEqual(palette.accent, windows_palette.accent)
-        self.assertEqual(MacOSVolumeOverlay.__dict__["select_statuses"](Mock(), statuses, "route-one"), statuses)
+        self.assertEqual(
+            MacOSVolumeOverlay.__dict__["select_statuses"](Mock(), statuses, "route-two"),
+            statuses[1:],
+        )
+
+    def test_macos_hud_maps_volume_to_sixteen_discrete_segments(self) -> None:
+        self.assertEqual(calculate_filled_segments(-1), 0)
+        self.assertEqual(calculate_filled_segments(0), 0)
+        self.assertEqual(calculate_filled_segments(50), MAC_HUD_SEGMENTS // 2)
+        self.assertEqual(calculate_filled_segments(100), MAC_HUD_SEGMENTS)
+        self.assertEqual(calculate_filled_segments(101), MAC_HUD_SEGMENTS)
+        self.assertEqual(calculate_filled_segments(50, 0), 0)
+
+    def test_macos_hud_rounded_card_points_stay_inside_bounds(self) -> None:
+        points = rounded_rectangle_points(2, 2, 222, 222, 26)
+        xs = points[0::2]
+        ys = points[1::2]
+        self.assertEqual((min(xs), max(xs)), (2, 222))
+        self.assertEqual((min(ys), max(ys)), (2, 222))
+
+    def test_macos_speaker_waves_follow_the_volume_level(self) -> None:
+        self.assertEqual(speaker_wave_count(0), 0)
+        self.assertEqual(speaker_wave_count(33), 1)
+        self.assertEqual(speaker_wave_count(66), 2)
+        self.assertEqual(speaker_wave_count(100), 3)
+
+    def test_macos_speaker_geometry_is_loaded_from_the_packaged_svg(self) -> None:
+        geometry = load_speaker_svg()
+
+        self.assertEqual((geometry.width, geometry.height), (112, 80))
+        self.assertEqual(len(geometry.waves), 3)
+        self.assertEqual(len(geometry.waves[0]), 25)
+        self.assertEqual(geometry.body[1], (18, 26))
+        self.assertEqual(geometry.body[2], (40, 4))
+
+    def test_macos_status_icons_are_loaded_from_plugin_owned_svgs(self) -> None:
+        error = load_icon_svg(MAC_ERROR_SVG)
+        success = load_icon_svg(MAC_SUCCESS_SVG)
+
+        self.assertEqual((error.width, error.height), (52, 52))
+        self.assertEqual((success.width, success.height), (52, 52))
+        self.assertEqual((len(error.circles), len(error.lines)), (2, 1))
+        self.assertEqual((len(success.circles), len(success.lines)), (1, 1))
+
+    def test_every_route_type_has_valid_plugin_owned_icon_geometry(self) -> None:
+        self.assertEqual(set(MAC_ROUTE_ICON_PATHS), set(ROUTE_TYPE_LABELS))
+        for route_type, path in MAC_ROUTE_ICON_PATHS.items():
+            with self.subTest(route_type=route_type):
+                self.assertTrue(path.is_file())
+                if route_type == "speakers":
+                    self.assertTrue(load_speaker_svg(path).body)
+                else:
+                    geometry = load_icon_svg(path)
+                    self.assertTrue(geometry.circles or geometry.lines)
+
+    def test_macos_volume_hud_selects_icon_from_explicit_route_type(self) -> None:
+        overlay = MacOSVolumeOverlay.__new__(MacOSVolumeOverlay)
+        overlay._palette = MacOSVolumeOverlay._get_palette(True, False)
+        overlay._prepare_canvas = Mock()
+        overlay._show_raster = Mock()
+        overlay._draw_speaker = Mock()
+        overlay._draw_svg_icon = Mock()
+
+        overlay._draw_volume_hud(70, "headset")
+        headset_path = overlay._draw_svg_icon.call_args.args[1]
+        overlay._draw_volume_hud(70, "speakers")
+
+        self.assertEqual(headset_path, MAC_ROUTE_ICON_PATHS["headset"])
+        overlay._draw_speaker.assert_called_once()
+
+    def test_macos_message_hud_renders_its_svg_icon_and_antialiased_text(self) -> None:
+        overlay = MacOSVolumeOverlay.__new__(MacOSVolumeOverlay)
+        overlay._palette = MacOSVolumeOverlay._get_palette(True, False)
+        overlay._prepare_canvas = Mock()
+        overlay._show_raster = Mock()
+
+        overlay._draw_message_hud("Complete", error=False)
+        rendered = downsample_raster(overlay._show_raster.call_args.args[0])
+
+        alpha_values = set(rendered.getchannel("A").getdata())
+        self.assertTrue(any(0 < value < 255 for value in alpha_values))
+
+    def test_macos_volume_hud_is_only_a_speaker_and_sixteen_block_meter(self) -> None:
+        overlay = MacOSVolumeOverlay.__new__(MacOSVolumeOverlay)
+        overlay.canvas = Mock()
+        overlay._palette = Mock(text="white", accent="white", track="gray")
+        overlay._prepare_canvas = Mock()
+        overlay._show_raster = Mock()
+
+        overlay._draw_volume_hud(70)
+
+        overlay._prepare_canvas.assert_called_once_with(200, 200)
+        raster = overlay._show_raster.call_args.args[0]
+        self.assertEqual(raster.size, (800, 800))
+
+    def test_macos_supersampling_produces_antialiased_icon_edges(self) -> None:
+        overlay = MacOSVolumeOverlay.__new__(MacOSVolumeOverlay)
+        overlay._palette = MacOSVolumeOverlay._get_palette(True, False)
+        overlay._prepare_canvas = Mock()
+        overlay._show_raster = Mock()
+
+        overlay._draw_volume_hud(70)
+        rendered = downsample_raster(overlay._show_raster.call_args.args[0])
+
+        alpha_values = set(rendered.getchannel("A").getdata())
+        self.assertTrue(any(0 < value < 255 for value in alpha_values))
+
+    def test_macos_speaker_silhouette_is_visually_centered(self) -> None:
+        overlay = MacOSVolumeOverlay.__new__(MacOSVolumeOverlay)
+        overlay._palette = MacOSVolumeOverlay._get_palette(True, False)
+        overlay._prepare_canvas = Mock()
+        overlay._show_raster = Mock()
+
+        overlay._draw_volume_hud(100)
+        rendered = downsample_raster(overlay._show_raster.call_args.args[0])
+        icon_bounds = rendered.getchannel("A").crop((0, 0, 200, 150)).getbbox()
+
+        self.assertIsNotNone(icon_bounds)
+        left, _top, right, _bottom = icon_bounds
+        self.assertLessEqual(abs(((left + right) / 2) - 100), 2)
 
     def test_renderer_callback_failure_updates_status_without_affecting_routes(self) -> None:
         app = MonitorVolumeApp.__new__(MonitorVolumeApp)

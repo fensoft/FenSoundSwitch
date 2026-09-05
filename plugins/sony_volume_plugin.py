@@ -144,6 +144,7 @@ class SonyVolumePlugin:
     # A held repeat reuses the range confirmed by its initial normal write and
     # performs only the bounded JSON-RPC set request, never an extra readback.
     supports_fast_volume_write = True
+    supports_native_mute = True
 
     def __init__(self) -> None:
         self._host: PluginHostContext | None = None
@@ -247,6 +248,18 @@ class SonyVolumePlugin:
             if not isinstance(result, list):
                 raise SonyError("The receiver returned an invalid set-volume response.")
 
+    def toggle_mute(self) -> bool:
+        with self._lock:
+            muted = self._read_mute_locked()
+            target = not muted
+            result = self._request_locked("setAudioMute", [{"output": MAIN_ZONE_OUTPUT, "mute": "on" if target else "off"}])
+            if not isinstance(result, list):
+                raise SonyError("The receiver returned an invalid set-mute response.")
+            confirmed = self._read_mute_locked()
+            if confirmed != target:
+                raise SonyError("The receiver did not confirm its main-zone mute state.")
+            return confirmed
+
     def shutdown(self, timeout: float) -> bool:
         return True
 
@@ -264,6 +277,19 @@ class SonyVolumePlugin:
             self._volume_range = volume_range
             return _decimal(item.get("volume"), "volume"), volume_range
         raise SonyError("The receiver did not return main-zone volume information.")
+
+    def _read_mute_locked(self) -> bool:
+        result = self._request_locked("getVolumeInformation", [])
+        if not isinstance(result, list):
+            raise SonyError("The receiver returned an invalid volume-information response.")
+        for item in result:
+            if not isinstance(item, dict) or item.get("output") != MAIN_ZONE_OUTPUT:
+                continue
+            muted = item.get("mute")
+            if not isinstance(muted, str) or muted not in {"on", "off"}:
+                raise SonyError("The receiver returned an invalid main-zone mute state.")
+            return muted == "on"
+        raise SonyError("The receiver did not return main-zone mute information.")
 
     def _request_locked(self, method: str, params: list[object], *, path: str = "/sony/audio") -> object:
         config = self._config

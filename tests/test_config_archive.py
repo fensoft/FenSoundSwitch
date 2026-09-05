@@ -106,6 +106,7 @@ class ConfigurationArchiveTests(unittest.TestCase):
         payload = json.loads(imported_settings.read_text(encoding="utf-8"))
         routes = payload["volume_routes"]
         self.assertEqual([route["name"] for route in routes], ["Output", "Voice"])
+        self.assertEqual([route["route_type"] for route in routes], ["speakers", "voice"])
         self.assertEqual(routes[1]["input"]["plugin_id"], "keyboard-keys")
         signals = payload["action_signals"]
         self.assertEqual([signal["signal_id"] for signal in signals], ["cycle-playback", "cycle-input"])

@@ -57,6 +57,8 @@ VOICE_ENDPOINT_ID = "fensoundswitch:voice-endpoint"
 VT_LPWSTR = 31
 IAUDIO_ENDPOINT_VOLUME_GET_MASTER_SCALAR = 9
 IAUDIO_ENDPOINT_VOLUME_SET_MASTER_SCALAR = 7
+IAUDIO_ENDPOINT_VOLUME_SET_MUTE = 14
+IAUDIO_ENDPOINT_VOLUME_GET_MUTE = 15
 IPOLICY_CONFIG_SET_DEFAULT_ENDPOINT = 13
 IAUDIO_CLIENT_INITIALIZE = 3
 IAUDIO_CLIENT_GET_BUFFER_SIZE = 4
@@ -324,6 +326,26 @@ def write_endpoint_volume(endpoint_id: str, target_volume: int) -> int:
             volume = _endpoint_volume(device)
             _check(int(_method(volume, IAUDIO_ENDPOINT_VOLUME_SET_MASTER_SCALAR, ctypes.c_long, [ctypes.c_float, ctypes.c_void_p])(volume, target / 100.0, None)), "IAudioEndpointVolume.SetMasterVolumeLevelScalar")
             return read_endpoint_volume(endpoint_id)
+        finally:
+            _release(volume); _release(device)
+
+
+def toggle_endpoint_mute(endpoint_id: str) -> bool:
+    with _Apartment():
+        device = _device_for_id(endpoint_id)
+        volume = None
+        try:
+            volume = _endpoint_volume(device)
+            muted = wintypes.BOOL()
+            get_mute = _method(volume, IAUDIO_ENDPOINT_VOLUME_GET_MUTE, ctypes.c_long, [ctypes.POINTER(wintypes.BOOL)])
+            _check(int(get_mute(volume, ctypes.byref(muted))), "IAudioEndpointVolume.GetMute")
+            target = not bool(muted.value)
+            _check(int(_method(volume, IAUDIO_ENDPOINT_VOLUME_SET_MUTE, ctypes.c_long, [wintypes.BOOL, ctypes.c_void_p])(volume, target, None)), "IAudioEndpointVolume.SetMute")
+            confirmed = wintypes.BOOL()
+            _check(int(get_mute(volume, ctypes.byref(confirmed))), "IAudioEndpointVolume.GetMute")
+            if bool(confirmed.value) != target:
+                raise CoreAudioError("The endpoint did not confirm its mute state.")
+            return target
         finally:
             _release(volume); _release(device)
 
