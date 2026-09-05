@@ -63,6 +63,7 @@ That audited history contains one parentless commit. The audit clone had no loca
 - Automatically generate new MQTT automation Home Assistant IDs from their names until the ID is edited manually.
 - Show standard MQTT defaults in new profile forms and group broker host/port and username/password into compact rows.
 - Split Discord integration controls by credential state: setup and Developer Portal actions appear only before configuration, reset appears only afterward, and Configure now includes a numbered OAuth tutorial.
+- Replaced the Appearance sidebar palette with a simpler preview icon that remains clear at navigation size.
 - Suppressed DDC monitor-input status and overlay notifications when the selected input is already active.
 - Assigned the packaged application icon explicitly to the MSI Start Menu shortcut.
 - Replaced the Nuitka one-file release with a standalone build packaged as a native WiX MSI, removing executable self-extraction while retaining normal install, upgrade, Start Menu, and uninstall behavior.

@@ -64,8 +64,8 @@
       <path d="m13 2-8 12h7l-1 8 8-12h-7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
     </symbol>
     <symbol id="nav-appearance" viewBox="0 0 24 24">
-      <path d="M12 3a9 9 0 1 0 0 18 4 4 0 0 0 0-8h-1a2 2 0 0 1 0-4h6.5A8.9 8.9 0 0 0 12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-      <circle cx="7.5" cy="10" r="1" fill="currentColor"/><circle cx="9.5" cy="6.5" r="1" fill="currentColor"/><circle cx="14" cy="6.5" r="1" fill="currentColor"/>
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="12" cy="12" r="2.75" fill="none" stroke="currentColor" stroke-width="1.8"/>
     </symbol>
     <symbol id="nav-settings" viewBox="0 0 24 24">
       <path d="M9.8 3h4.4l.7 2.2 2 .9 2.1-1 2 3.8-1.8 1.5v2.3l1.8 1.5-2 3.8-2.1-1-2 .9-.7 2.1H9.8l-.7-2.1-2-.9-2.1 1-2-3.8 1.8-1.5v-2.3L3 8.9 5 5.1l2.1 1 2-.9z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
