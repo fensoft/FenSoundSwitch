@@ -17,12 +17,7 @@ from types import ModuleType
 from typing import Any, Callable, Iterable, Mapping
 
 from plugins import (
-    ddc_input_source_plugin,
-    ddc_volume_plugin,
     denon_marantz_volume_plugin,
-    discord_output_plugin,
-    audio_keepalive_plugin,
-    windows_default_device_plugin,
     onkyo_volume_plugin,
     macos_overlay_plugin,
     windows11_overlay_plugin,
@@ -30,11 +25,20 @@ from plugins import (
     sony_volume_plugin,
     keyboard_input_plugin,
     mqtt_input_plugin,
-    windows_volume_input_plugin,
-    windows_microphone_gain_plugin,
-    windows_soundcard_volume_plugin,
     yamaha_volume_plugin,
 )
+
+if sys.platform == "win32":
+    from plugins import (
+        ddc_input_source_plugin,
+        ddc_volume_plugin,
+        discord_output_plugin,
+        audio_keepalive_plugin,
+        windows_default_device_plugin,
+        windows_volume_input_plugin,
+        windows_microphone_gain_plugin,
+        windows_soundcard_volume_plugin,
+    )
 from diagnostics import get_logger
 from plugin_api import (
     PLUGIN_API_VERSION,
@@ -75,7 +79,10 @@ from settings import (
     MAX_SIGNAL_SLOTS,
     MAX_WAIT_MILLISECONDS,
 )
-from plugin_hotkeys import PluginHotkeyController
+if sys.platform == "win32":
+    from plugin_hotkeys import PluginHotkeyController
+else:
+    from macos_plugin_hotkeys import PluginHotkeyController
 from theme import (
     DARK_BG,
     DARK_SURFACE,
@@ -97,7 +104,7 @@ OVERLAY_SETTINGS_FILE_NAME = "active-overlay.json"
 OVERLAY_SETTINGS_VERSION = 1
 ACTION_PLUGIN_STATE_FILE_NAME = "action-plugin-state.json"
 ACTION_PLUGIN_STATE_VERSION = 1
-DEFAULT_OVERLAY_PLUGIN_ID = "windows11-overlay"
+DEFAULT_OVERLAY_PLUGIN_ID = "windows11-overlay" if sys.platform == "win32" else "macos-overlay"
 
 
 @dataclass
@@ -398,25 +405,29 @@ def discover_plugins(
     seen_ids: set[str] = set()
     sequence = 0
 
-    for module, source in (
-        (windows11_overlay_plugin, "Bundled Windows 11 overlay plugin"),
+    bundled: list[tuple[ModuleType, str]] = [
+        (windows11_overlay_plugin, "Bundled Windows 11-style overlay plugin"),
         (macos_overlay_plugin, "Bundled macOS-style overlay plugin"),
-        (discord_output_plugin, "Bundled Discord output plugin"),
-        (audio_keepalive_plugin, "Bundled audio output keep-alive plugin"),
-        (windows_default_device_plugin, "Bundled Windows default device plugin"),
-        (ddc_input_source_plugin, "Bundled DDC monitor input plugin"),
-        (ddc_volume_plugin, "Bundled DDC volume plugin"),
         (onkyo_volume_plugin, "Bundled Onkyo volume plugin"),
         (denon_marantz_volume_plugin, "Bundled Denon/Marantz volume plugin"),
         (yamaha_volume_plugin, "Bundled Yamaha volume plugin"),
         (pioneer_elite_volume_plugin, "Bundled Pioneer/Elite volume plugin"),
         (sony_volume_plugin, "Bundled Sony volume plugin"),
-        (windows_volume_input_plugin, "Bundled Windows Volume input plugin"),
         (keyboard_input_plugin, "Bundled keyboard input plugin"),
         (mqtt_input_plugin, "Bundled MQTT input plugin"),
-        (windows_soundcard_volume_plugin, "Bundled Windows soundcard volume plugin"),
-        (windows_microphone_gain_plugin, "Bundled Windows capture gain plugin"),
-    ):
+    ]
+    if sys.platform == "win32":
+        bundled[0:0] = [
+            (discord_output_plugin, "Bundled Discord output plugin"),
+            (audio_keepalive_plugin, "Bundled audio output keep-alive plugin"),
+            (windows_default_device_plugin, "Bundled Windows default device plugin"),
+            (ddc_input_source_plugin, "Bundled DDC monitor input plugin"),
+            (ddc_volume_plugin, "Bundled DDC volume plugin"),
+            (windows_volume_input_plugin, "Bundled Windows Volume input plugin"),
+            (windows_soundcard_volume_plugin, "Bundled Windows soundcard volume plugin"),
+            (windows_microphone_gain_plugin, "Bundled Windows capture gain plugin"),
+        ]
+    for module, source in bundled:
         try:
             if module.PLUGIN_API_VERSION != PLUGIN_API_VERSION:
                 raise ValueError(f"{source} has an unsupported API version.")
@@ -494,6 +505,7 @@ class PluginManager:
         get_volume_statuses: Callable[[], tuple[Any, ...]] | None = None,
         on_overlay_renderer_changed: Callable[[], None] | None = None,
         on_overlay_text: Callable[[str], None] | None = None,
+        on_overlay_preview: Callable[[], None] | None = None,
         on_volume_routes_changed: Callable[[], None] | None = None,
         on_route_input: Callable[[str, int], None] | None = None,
         on_route_volume: Callable[[str, int], None] | None = None,
@@ -514,6 +526,7 @@ class PluginManager:
         self._get_volume_statuses = get_volume_statuses or (lambda: ())
         self._on_overlay_renderer_changed = on_overlay_renderer_changed or (lambda: None)
         self._on_overlay_text = on_overlay_text or (lambda _text: None)
+        self._on_overlay_preview = on_overlay_preview or (lambda: None)
         self._on_volume_routes_changed = on_volume_routes_changed or (lambda: None)
         self._on_route_input = on_route_input or (lambda _route_id, _delta: None)
         self._on_route_volume = on_route_volume or (lambda _route_id, _volume: None)
@@ -853,6 +866,56 @@ class PluginManager:
         getter = getattr(record.plugin, f"get_route_{endpoint}_ui", None) if record is not None else None
         return validate_plugin_ui_document(getter(route_endpoint.parameters)) if callable(getter) else None
 
+    def get_new_route_endpoint_ui(
+        self,
+        plugin_id: str,
+        endpoint: str,
+        parameters: Mapping[str, object] | None = None,
+    ) -> dict[str, object] | None:
+        """Return an endpoint form before a route exists for the web wizard."""
+        if endpoint not in {"input", "output"}:
+            raise ValueError("Route endpoint is invalid.")
+        record = next(
+            (
+                item for item in self._records
+                if item.initialized
+                and ((item.input_id if endpoint == "input" else item.plugin_id) == plugin_id)
+            ),
+            None,
+        )
+        getter = getattr(record.plugin, f"get_route_{endpoint}_ui", None) if record is not None else None
+        return validate_plugin_ui_document(getter(dict(parameters or {}))) if callable(getter) else None
+
+    def validate_new_route_endpoint(
+        self,
+        plugin_id: str,
+        endpoint: str,
+        parameters: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Validate a wizard endpoint using the plugin's existing UI action."""
+        document = self.get_new_route_endpoint_ui(plugin_id, endpoint, parameters)
+        if document is None:
+            return dict(parameters)
+        submit = next(
+            (item for item in document["actions"] if isinstance(item, dict) and item.get("kind") == "submit"),
+            None,
+        )
+        if submit is None:
+            return dict(parameters)
+        record = next(
+            (
+                item for item in self._records
+                if item.initialized
+                and ((item.input_id if endpoint == "input" else item.plugin_id) == plugin_id)
+            ),
+            None,
+        )
+        invoke = getattr(record.plugin, "invoke_ui_action", None) if record is not None else None
+        if not callable(invoke):
+            raise ValueError("That route endpoint cannot be configured.")
+        result = validate_plugin_ui_result(invoke(str(submit["id"]), parameters))
+        return dict(result["values"]) if result.get("status") == "save" else dict(parameters)
+
     def invoke_route_ui_action(self, route_id: str, endpoint: str, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
         route = next((item for item in self._input_routes if item.route_id == route_id), None)
         if route is None: raise ValueError("The route no longer exists.")
@@ -1169,6 +1232,7 @@ class PluginManager:
             load_legacy_overlay_mode=load_legacy_overlay_mode,
             clear_legacy_overlay_mode=clear_legacy_overlay_mode,
             show_overlay_text=self._show_plugin_overlay_text,
+            show_overlay_preview=lambda: self._post_to_ui(self._on_overlay_preview),
             dispatch_route_input=self._on_route_input,
             dispatch_route_volume=self._on_route_volume,
         )
@@ -1426,7 +1490,20 @@ class PluginManager:
         seen: dict[HotkeySpec, str] = {}
         for route in routes:
             record = next((item for item in self._records if item.initialized and item.input_id == route.input_id), None)
-            for _direction, binding in self._route_hotkey_bindings(record, route.input.parameters):
+            try:
+                bindings = self._route_hotkey_bindings(record, route.input.parameters)
+            except ValueError:
+                if (
+                    sys.platform == "darwin"
+                    and record is not None
+                    and record.plugin_id == "keyboard-input"
+                    and not route.input.parameters
+                ):
+                    # Save an incomplete new route so the web-only macOS flow
+                    # can immediately open its keyboard configuration form.
+                    continue
+                raise
+            for _direction, binding in bindings:
                 previous = seen.get(binding.hotkey)
                 if previous is not None:
                     raise ValueError(f"{binding.hotkey.label} is already used by keyboard route {previous}; identical keyboard route keys are not broadcast.")

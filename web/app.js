@@ -159,11 +159,11 @@ function emptyState(icon, title, message, action, handler) {
 
 function renderRoutes() {
   const routes = safeArray(state.snapshot.routes);
-  if (!routes.length) { content.replaceChildren(emptyState("⇄", "No routes yet", "Create a route to connect an input with an output.", "Create route", () => openEntityEditor("route", null))); return; }
+  if (!routes.length) { content.replaceChildren(emptyState("⇄", "No routes yet", "Create a route to connect an input with an output.", "Create route", openRouteWizard)); return; }
   const grid = element("div", { class: "card-grid" });
   for (const route of routes) {
     const id = safeText(route.id);
-    const edit = element("button", { class: "text-button", type: "button", text: "Edit", "aria-label": `Edit ${safeText(route.name, "route")}`, onclick: () => openEntityEditor("route", route) });
+    const edit = element("button", { class: "text-button", type: "button", text: "Configure", "aria-label": `Configure ${safeText(route.name, "route")}`, onclick: () => openEntityEditor("route", route) });
     const remove = element("button", { class: "text-button", type: "button", text: "Remove", "aria-label": `Remove ${safeText(route.name, "route")}`, onclick: () => confirmAction("Remove route?", `Remove ${safeText(route.name, "this route")}? Volume keys assigned to it will stop working.`, "route.delete", { id }) });
     const flow = element("div", { class: "route-flow" }, [
       endpoint("Input", route.input), element("span", { class: "route-arrow", "aria-hidden": "true", text: "↓" }), endpoint("Output", route.output)
@@ -175,6 +175,114 @@ function renderRoutes() {
     grid.append(card);
   }
   content.replaceChildren(grid);
+}
+
+function openRouteWizard() {
+  state.editor = { kind: "route-wizard", step: 0, values: { name: "", input_id: "", input_parameters: {}, provider_id: "", output_parameters: {} }, documents: {} };
+  renderRouteWizard();
+  editorDialog.showModal();
+}
+
+function routeWizardFields() {
+  const routeForm = state.snapshot?.forms?.route || {};
+  const fields = safeArray(routeForm.fields);
+  return { name: fields.find(field => field.key === "name"), input: fields.find(field => field.key === "input_id"), output: fields.find(field => field.key === "provider_id") };
+}
+
+async function loadRouteWizardDocument(endpoint) {
+  const wizard = state.editor;
+  const pluginId = endpoint === "input" ? wizard.values.input_id : wizard.values.provider_id;
+  if (!pluginId) return null;
+  const result = await nativeRequest("route.endpoint-form", { endpoint, plugin_id: pluginId, parameters: wizard.values[`${endpoint}_parameters`] || {} });
+  wizard.documents[endpoint] = result?.document || null;
+  return wizard.documents[endpoint];
+}
+
+function renderRouteWizard() {
+  const wizard = state.editor;
+  const labels = ["Route name", "Input plugin", "Input configuration", "Output plugin", "Output configuration"];
+  const fields = routeWizardFields();
+  document.querySelector("#editor-kicker").textContent = `STEP ${wizard.step + 1} OF 5`;
+  document.querySelector("#editor-title").textContent = labels[wizard.step];
+  const description = document.querySelector("#editor-description");
+  description.textContent = ""; description.hidden = true;
+  const container = document.querySelector("#editor-fields"); container.replaceChildren();
+  const back = document.querySelector("#editor-back"); back.hidden = wizard.step === 0;
+  const save = document.querySelector("#editor-save");
+  save.hidden = wizard.step === 1 || wizard.step === 3;
+  save.textContent = wizard.step === 4 ? "Create route" : "Next";
+  if (wizard.step === 0 && fields.name) container.append(renderField(fields.name, wizard.values.name));
+  if (wizard.step === 1 || wizard.step === 3) {
+    const endpoint = wizard.step === 1 ? "input" : "output";
+    const options = safeArray(endpoint === "input" ? fields.input?.options : fields.output?.options);
+    description.textContent = `Choose the ${endpoint} plugin for this route.`; description.hidden = false;
+    for (const option of options) {
+      container.append(element("button", { class: "choice-card", type: "button", onclick: async () => {
+        try {
+          wizard.values[endpoint === "input" ? "input_id" : "provider_id"] = safeText(option.value);
+          wizard.values[`${endpoint}_parameters`] = {};
+          await loadRouteWizardDocument(endpoint);
+          wizard.step += 1; renderRouteWizard();
+        } catch (error) {
+          const target = document.querySelector("#editor-error");
+          target.textContent = safeText(error.message, "Plugin configuration is unavailable."); target.hidden = false; target.focus();
+        }
+      } }, [
+        element("strong", { text: safeText(option.label, String(option.value ?? "")) }),
+        element("span", { text: safeText(option.description, "No additional configuration is required.") }),
+      ]));
+    }
+  }
+  if (wizard.step === 2 || wizard.step === 4) {
+    const endpoint = wizard.step === 2 ? "input" : "output";
+    const formDocument = wizard.documents[endpoint];
+    if (formDocument) {
+      description.textContent = safeText(formDocument.description); description.hidden = !description.textContent;
+      for (const field of safeArray(formDocument.fields)) {
+        const typeMap = { integer: "number", choice: "select" };
+        const current = wizard.values[`${endpoint}_parameters`]?.[field.id] ?? field.value;
+        container.append(renderField({ ...field, key: field.id, type: typeMap[field.type] || field.type }, current));
+      }
+      if (endpoint === "input" && wizard.values.input_id === "mqtt") {
+        const name = container.querySelector('[name="ha_name"]');
+        const identifier = container.querySelector('[name="ha_id"]');
+        const maximum = container.querySelector('[name="max_value"]');
+        if (maximum && !maximum.value) maximum.value = "100";
+        if (name && identifier) {
+          identifier.dataset.autogenerated = identifier.value ? "false" : "true";
+          if (!identifier.value) identifier.value = homeAssistantId(name.value);
+          name.addEventListener("input", () => {
+            if (identifier.dataset.autogenerated === "true") identifier.value = homeAssistantId(name.value);
+          });
+          identifier.addEventListener("input", () => { identifier.dataset.autogenerated = "false"; });
+        }
+      }
+    } else container.append(element("p", { class: "muted", text: "This plugin has no additional configuration." }));
+  }
+  document.querySelector("#editor-error").hidden = true;
+  window.setTimeout(() => container.querySelector("input, select, textarea")?.focus(), 0);
+}
+
+function collectEditorValues() {
+  const values = {};
+  for (const input of editorForm.querySelectorAll("[name]")) values[input.getAttribute("name")] = typeof input._sequenceValue === "function" ? input._sequenceValue() : typeof input._triggerValue === "function" ? input._triggerValue() : input.dataset.hotkey !== undefined ? JSON.parse(input.dataset.hotkey) : input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.selectedOptions?.[0]?.dataset.json === "true" ? JSON.parse(input.value) : input.value;
+  return values;
+}
+
+async function advanceRouteWizard() {
+  const wizard = state.editor;
+  const values = collectEditorValues();
+  if (wizard.step === 0) wizard.values.name = safeText(values.name).trim();
+  if (wizard.step === 1) { wizard.values.input_id = safeText(values.input_id); wizard.values.input_parameters = {}; await loadRouteWizardDocument("input"); }
+  if (wizard.step === 3) { wizard.values.provider_id = safeText(values.provider_id); wizard.values.output_parameters = {}; await loadRouteWizardDocument("output"); }
+  if (wizard.step === 2) wizard.values.input_parameters = values;
+  if (wizard.step === 4) wizard.values.output_parameters = values;
+  if (wizard.step === 4) {
+    await nativeRequest("route.save", { values: wizard.values });
+    editorDialog.close(); state.editor = null; state.revision = -1; await pollSnapshot();
+    return;
+  }
+  wizard.step += 1; renderRouteWizard();
 }
 
 function endpoint(label, data) {
@@ -294,10 +402,11 @@ function renderAppearance() {
   const card = element("section", { class: "card" });
   const rows = renderers.map(renderer => element("div", { class: "setting-row" }, [
     element("div", {}, [element("h3", { text: safeText(renderer.name, "Overlay") }), element("p", { class: "muted", text: safeText(renderer.description, "Volume change presentation") })]),
-    element("div", { class: "button-row" }, [
-      renderer.form ? element("button", { class: "secondary", type: "button", text: "Configure", onclick: () => openEntityEditor("action", renderer) }) : null,
-      element("button", { class: renderer.selected ? "primary" : "secondary", type: "button", text: renderer.selected ? "Selected" : "Use this", disabled: renderer.selected ? "" : null, onclick: () => execute("appearance.save", { renderer_id: renderer.id }) })
-    ].filter(Boolean))
+     element("div", { class: "button-row" }, [
+       renderer.form ? element("button", { class: "secondary", type: "button", text: "Configure", onclick: () => openEntityEditor("action", renderer) }) : null,
+       ...safeArray(renderer.ui_actions).filter(item => item.kind === "action").map(action => element("button", { class: "secondary", type: "button", text: safeText(action.label, "Run"), onclick: () => action.confirm ? confirmAction(safeText(action.label, "Confirm"), action.confirm, "plugin.action", { id: renderer.id, action_id: action.id, values: renderer.values || {} }) : execute("plugin.action", { id: renderer.id, action_id: action.id, values: renderer.values || {} }) })),
+       element("button", { class: renderer.selected ? "primary" : "secondary", type: "button", text: renderer.selected ? "Selected" : "Use this", disabled: renderer.selected ? "" : null, onclick: () => execute("appearance.save", { renderer_id: renderer.id }) })
+     ].filter(Boolean))
   ]));
   if (rows.length) card.append(...rows); else card.append(element("div", { class: "setting-row" }, [element("p", { class: "muted", text: "No appearance renderers are available." })]));
   content.replaceChildren(card);
@@ -305,7 +414,7 @@ function renderAppearance() {
 
 function renderSettings() {
   const settings = state.snapshot.settings && typeof state.snapshot.settings === "object" ? state.snapshot.settings : {};
-  const startup = element("section", { class: "card" }, [element("div", { class: "setting-row" }, [element("div", {}, [element("h3", { text: "Start with Windows" }), element("p", { class: "muted", text: "Launch quietly in the notification area when you sign in." })]), element("button", { class: settings.start_with_windows ? "primary" : "secondary", type: "button", role: "switch", "aria-checked": String(Boolean(settings.start_with_windows)), text: settings.start_with_windows ? "On" : "Off", onclick: () => execute("settings.save", { start_with_windows: !settings.start_with_windows }) })])]);
+  const startup = element("section", { class: "card" }, [element("div", { class: "setting-row" }, [element("div", {}, [element("h3", { text: safeText(settings.startup_label, "Start with Windows") }), element("p", { class: "muted", text: safeText(settings.startup_description, "Launch quietly in the notification area when you sign in.") })]), element("button", { class: settings.start_with_windows ? "primary" : "secondary", type: "button", role: "switch", "aria-checked": String(Boolean(settings.start_with_windows)), text: settings.start_with_windows ? "On" : "Off", onclick: () => execute("settings.save", { start_with_windows: !settings.start_with_windows }) })])]);
   const recent = safeArray(settings.recent_configurations);
   const recentMenu = element("details", { class: `split-menu${recent.length ? "" : " is-empty"}` }, [element("summary", { class: "secondary", title: recent.length ? "Recent configurations" : "No recent configurations", "aria-label": recent.length ? "Recent configurations" : "No recent configurations", "aria-disabled": recent.length ? "false" : "true", text: "▼" }), element("div", { class: "split-menu-items" }, recent.map(item => element("button", { type: "button", text: safeText(item.name, "Configuration"), onclick: () => confirmAction("Import configuration?", `Import ${safeText(item.name, "this configuration")}? The application will restart.`, "config.import", { path: item.path }) })))]);
   const importSplit = element("div", { class: "split-control" }, [element("button", { class: "secondary", type: "button", text: "Import", onclick: importConfiguration }), recentMenu]);
@@ -362,6 +471,9 @@ function openEntityEditor(kind, entity) {
   editorDescription.textContent = safeText(schema?.description);
   editorDescription.hidden = !editorDescription.textContent;
   document.querySelector("#editor-error").hidden = true;
+  document.querySelector("#editor-back").hidden = true;
+  document.querySelector("#editor-save").hidden = false;
+  document.querySelector("#editor-save").textContent = kind === "route" && !entity ? "Save & Configure" : "Save changes";
   const container = document.querySelector("#editor-fields");
   container.replaceChildren();
   const values = entity?.values && typeof entity.values === "object" ? entity.values : {};
@@ -696,8 +808,15 @@ async function saveEditor(event) {
   if (!state.editor || !editorForm.reportValidity()) return;
   const save = document.querySelector("#editor-save");
   save.disabled = true; save.textContent = "Saving…";
-  const values = {};
-  for (const input of editorForm.querySelectorAll("[name]")) values[input.getAttribute("name")] = typeof input._sequenceValue === "function" ? input._sequenceValue() : typeof input._triggerValue === "function" ? input._triggerValue() : input.dataset.hotkey !== undefined ? JSON.parse(input.dataset.hotkey) : input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.selectedOptions?.[0]?.dataset.json === "true" ? JSON.parse(input.value) : input.value;
+  if (state.editor.kind === "route-wizard") {
+    try { await advanceRouteWizard(); }
+    catch (error) {
+      const target = document.querySelector("#editor-error");
+      target.textContent = safeText(error.message, "Route configuration could not be saved."); target.hidden = false; target.focus();
+    } finally { save.disabled = false; }
+    return;
+  }
+  const values = collectEditorValues();
   if (state.editor.kind === "signal" && !safeArray(values.triggers).length) {
     const target = document.querySelector("#editor-error");
     target.textContent = "Add at least one trigger."; target.hidden = false; target.focus();
@@ -732,8 +851,13 @@ async function saveEditor(event) {
     return;
   }
   try {
-    await nativeRequest(state.editor.method, { id: state.editor.id, values });
+    const result = await nativeRequest(state.editor.method, { id: state.editor.id, values });
+    const createdRouteId = state.editor.kind === "route" && !state.editor.id && typeof result?.route_id === "string" ? result.route_id : null;
     editorDialog.close(); state.revision = -1; await pollSnapshot();
+    if (createdRouteId) {
+      const createdRoute = safeArray(state.snapshot?.routes).find(route => route.id === createdRouteId);
+      if (createdRoute) openEntityEditor("route", createdRoute);
+    }
   } catch (error) {
     const target = document.querySelector("#editor-error"); target.textContent = safeText(error.message, "Changes could not be saved."); target.hidden = false; target.focus();
   } finally { save.disabled = false; save.textContent = "Save changes"; }
@@ -773,7 +897,7 @@ async function importConfiguration() {
 
 document.querySelector("#navigation").addEventListener("click", event => { const button = event.target.closest("[data-page]"); if (button) switchPage(button.dataset.page); });
 document.querySelector(".diagnostics-link").addEventListener("click", () => switchPage("diagnostics"));
-primaryAction.addEventListener("click", () => { if (state.page === "routes") openEntityEditor("route", null); else if (state.page === "actions") openEntityEditor("signal", null); });
+primaryAction.addEventListener("click", () => { if (state.page === "routes") openRouteWizard(); else if (state.page === "actions") openEntityEditor("signal", null); });
 editorForm.addEventListener("submit", saveEditor);
 slotForm.addEventListener("submit", saveSlotEditor);
 mqttProfileForm.addEventListener("submit", saveMqttProfile);
@@ -783,6 +907,11 @@ document.querySelector("#mqtt-profile-cancel").addEventListener("click", showMqt
 document.querySelector("#mqtt-close").addEventListener("click", () => mqttDialog.close());
 document.querySelector("#slot-refresh").addEventListener("click", refreshSlotEditor);
 for (const button of document.querySelectorAll("#editor-close, #editor-cancel")) button.addEventListener("click", () => { editorDialog.close("cancel"); state.editor = null; });
+document.querySelector("#editor-back").addEventListener("click", () => {
+  if (state.editor?.kind !== "route-wizard" || state.editor.step === 0) return;
+  state.editor.step -= 1;
+  renderRouteWizard();
+});
 for (const button of document.querySelectorAll("#slot-close, #slot-cancel")) button.addEventListener("click", () => { slotDialog.close("cancel"); state.slotEditor = null; });
 for (const button of document.querySelectorAll("#choice-close, #choice-cancel")) button.addEventListener("click", () => { choiceDialog.close("cancel"); state.choice = null; });
 confirmDialog.addEventListener("close", () => { if (confirmDialog.returnValue === "confirm") execute(confirmDialog.dataset.method, JSON.parse(confirmDialog.dataset.params || "{}")); });
@@ -791,3 +920,9 @@ slotDialog.addEventListener("close", () => { state.slotEditor = null; });
 choiceDialog.addEventListener("close", () => { state.choice = null; });
 mqttDialog.addEventListener("close", () => { state.mqttProfileId = null; showMqttProfileList(); });
 window.addEventListener("pywebviewready", pollSnapshot, { once: true });
+// WebKit can expose the bridge shortly after document load without reliably
+// delivering pywebviewready to inline documents. Retry the initial snapshot
+// until the native API is attached.
+window.setTimeout(() => {
+  if (!state.snapshot) pollSnapshot();
+}, 300);

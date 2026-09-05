@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
+from typing import Mapping
 
-from plugin_api import PLUGIN_API_VERSION, OverlayRenderer, PluginHostContext, VolumeStatus
+from plugin_api import (
+    PLUGIN_API_VERSION,
+    OverlayRenderer,
+    PluginHostContext,
+    VolumeStatus,
+    plugin_ui_document,
+    plugin_ui_result,
+)
 from plugins.windows11_overlay_plugin import (
     AUTO_HIDE_MS,
     ERROR_AUTO_HIDE_MS,
@@ -49,6 +57,8 @@ class MacOSVolumeOverlay(VolumeOverlay):
     def show(self, volume: int, preferred_display_device_name: str | None = None) -> None:
         super().show(volume, preferred_display_device_name)
         self.title_var.set("VOLUME")
+        self.value_label.pack_configure(anchor="center")
+        self.progress.pack_configure(pady=(4, 0))
 
     def show_error(self, message: str, preferred_display_device_name: str | None = None) -> None:
         super().show_error(message, preferred_display_device_name)
@@ -77,6 +87,22 @@ class MacOSOverlayPlugin:
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
+
+    def get_plugin_ui(self) -> dict[str, object]:
+        return plugin_ui_document(
+            "macOS-style overlay settings",
+            [],
+            [{"id": "test", "label": "Test", "kind": "action", "async": False}],
+            "Preview the active overlay presentation.",
+        )
+
+    def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        if action_id != "test":
+            raise ValueError(f"Unknown macOS overlay UI action {action_id!r}.")
+        if self._host is None:
+            raise RuntimeError("Overlay plugin has not been initialized.")
+        self._host.show_overlay_preview()
+        return plugin_ui_result("complete", message="Overlay test displayed.")
 
     def create_overlay_renderer(self, dark_mode: bool, high_contrast: bool) -> OverlayRenderer:
         if self._host is None:

@@ -65,7 +65,12 @@ def parse_bootstrap(
         raise BootstrapError("Expected exactly --pipe NAME.")
     pipe = argv[1]
     encoded_key = (environment or os.environ).get(AUTHKEY_ENVIRONMENT_VARIABLE, "")
-    if PIPE_PATTERN.fullmatch(pipe) is None:
+    if PIPE_PATTERN.fullmatch(pipe) is not None:
+        valid_pipe = True
+    else:
+        candidate = Path(pipe)
+        valid_pipe = candidate.is_absolute() and candidate.parent.name in {"fensoundswitch", "fss"}
+    if not valid_pipe:
         raise BootstrapError("Pipe name is invalid.")
     if re.fullmatch(r"[A-Za-z0-9_-]{22,86}", encoded_key) is None:
         raise BootstrapError("Authentication key encoding is invalid.")
@@ -88,7 +93,7 @@ def resolve_asset(name: str) -> Path:
     return path
 
 
-def render_document() -> str:
+def render_document(*, allow_native_bridge: bool = False) -> str:
     """Inline trusted local assets so pywebview never starts its HTTP server."""
     html = resolve_asset("index.html").read_text(encoding="utf-8")
     css = resolve_asset("app.css").read_text(encoding="utf-8")
@@ -102,6 +107,10 @@ def render_document() -> str:
     html = html.replace('  <link rel="stylesheet" href="app.css">', f"  <style>{css}</style>")
     html = html.replace('  <script src="app.js" defer></script>', "")
     html = html.replace("</body>", f"  <script>{script}</script>\n</body>")
+    if allow_native_bridge:
+        # WebKit injects pywebview's local message bridge at runtime. Its script
+        # is not hash-addressable, unlike the bundled application script.
+        html = html.replace("script-src ", "script-src 'unsafe-inline' 'unsafe-eval' ")
     return html
 
 
@@ -436,7 +445,11 @@ def run(bootstrap: Bootstrap) -> int:
     except ImportError:
         return 2
     try:
-        connection = Client(bootstrap.pipe, family="AF_PIPE", authkey=bootstrap.authkey)
+        connection = Client(
+            bootstrap.pipe,
+            family="AF_PIPE" if sys.platform == "win32" else "AF_UNIX",
+            authkey=bootstrap.authkey,
+        )
     except (OSError, ValueError):
         return 3
 
@@ -456,7 +469,7 @@ def run(bootstrap: Bootstrap) -> int:
     webview.settings["REMOTE_DEBUGGING_PORT"] = None
     window = webview.create_window(
         "FenSoundSwitch Command Center",
-        html=render_document(),
+        html=render_document(allow_native_bridge=sys.platform != "win32"),
         js_api=api,
         width=1456,
         height=760,
@@ -492,8 +505,9 @@ def run(bootstrap: Bootstrap) -> int:
         native_navigation_handlers.append(reject_navigation)
         core.NavigationStarting += reject_navigation
 
-    window.events.initialized += require_webview2
-    window.events.before_load += install_navigation_guard
+    if sys.platform == "win32":
+        window.events.initialized += require_webview2
+        window.events.before_load += install_navigation_guard
 
     def notify_parent(method: str) -> None:
         try:
@@ -505,7 +519,12 @@ def run(bootstrap: Bootstrap) -> int:
     window.events.closing += lambda: notify_parent("close")
     bridge.start()
     try:
-        webview.start(gui="edgechromium", debug=False, http_server=False, private_mode=True)
+        webview.start(
+            gui="edgechromium" if sys.platform == "win32" else "cocoa",
+            debug=False,
+            http_server=False,
+            private_mode=True,
+        )
     finally:
         bridge.close()
     return 0

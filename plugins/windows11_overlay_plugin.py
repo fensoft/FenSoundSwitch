@@ -7,7 +7,7 @@ from typing import Mapping
 
 from diagnostics import get_logger
 from plugin_api import PLUGIN_API_VERSION, OverlayRenderer, PluginHostContext, VolumeStatus, plugin_ui_document, plugin_ui_result
-from windows_platform import (
+from native_platform import (
     DisplayArea,
     configure_no_activate_window,
     get_overlay_display_area,
@@ -553,9 +553,14 @@ class OverlayPlugin:
     def get_plugin_ui(self) -> dict[str, object]:
         return plugin_ui_document("Windows 11 overlay settings", [
             {"id": "mode", "type": "choice", "label": "Show", "value": self._mode, "options": [{"label": "Every route", "value": "all"}, {"label": "Only the route that changed", "value": "current"}]},
-        ], [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Choose which routed volume statuses appear in the overlay.")
+        ], [{"id": "test", "label": "Test", "kind": "action", "async": False}, {"id": "save", "label": "Save", "kind": "submit", "async": False}], "Choose which routed volume statuses appear in the overlay.")
 
     def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        if action_id == "test":
+            if self._host is None:
+                raise RuntimeError("Overlay plugin has not been initialized.")
+            self._host.show_overlay_preview()
+            return plugin_ui_result("complete", message="Overlay test displayed.")
         if action_id != "save":
             raise ValueError(f"Unknown Windows 11 overlay UI action {action_id!r}.")
         mode = values.get("mode")

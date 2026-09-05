@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
+import plistlib
 from pathlib import Path
 
 try:
@@ -15,6 +17,7 @@ RUN_VALUE_NAME = "FenSoundSwitch"
 LEGACY_RUN_VALUE_NAME = "windows-ddc"
 MAX_RUN_COMMAND_LENGTH = 260
 SOURCE_ENTRYPOINT = Path(__file__).resolve().with_name("app.py")
+MACOS_LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.fensoundswitch.app.plist"
 
 
 class AutostartUnavailableError(RuntimeError):
@@ -66,6 +69,8 @@ def _require_winreg():
 
 
 def is_start_with_windows_enabled() -> bool:
+    if sys.platform == "darwin" and winreg is None:
+        return MACOS_LAUNCH_AGENT.is_file()
     registry = _require_winreg()
     try:
         with registry.OpenKey(
@@ -86,6 +91,9 @@ def is_start_with_windows_enabled() -> bool:
 
 
 def set_start_with_windows(enabled: bool) -> None:
+    if sys.platform == "darwin" and winreg is None:
+        _set_start_with_macos(enabled)
+        return
     registry = _require_winreg()
     if enabled:
         with registry.CreateKeyEx(
@@ -124,3 +132,21 @@ def set_start_with_windows(enabled: bool) -> None:
                 pass
     except FileNotFoundError:
         pass
+
+
+def _set_start_with_macos(enabled: bool) -> None:
+    """Persist a current-user launchd agent without loading it in this process."""
+    if not enabled:
+        try:
+            MACOS_LAUNCH_AGENT.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    target = Path(sys.argv[0]).resolve()
+    arguments = [str(target)] if target.suffix.casefold() == ".app" else [str(Path(sys.executable).resolve()), str(SOURCE_ENTRYPOINT)]
+    destination = MACOS_LAUNCH_AGENT
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".tmp")
+    with temporary.open("wb") as stream:
+        plistlib.dump({"Label": "com.fensoundswitch.app", "ProgramArguments": arguments, "RunAtLoad": True}, stream)
+    os.replace(temporary, destination)

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Mapping
 
 
-PIPE_FAMILY = "AF_PIPE"
+PIPE_FAMILY = "AF_PIPE" if sys.platform == "win32" else "AF_UNIX"
 CHILD_MODE_ARGUMENT = "--fensoundswitch-presentation-child"
 PIPE_ARGUMENT = "--pipe"
 AUTHKEY_ENVIRONMENT_VARIABLE = "FENSOUNDSWITCH_PRESENTATION_AUTHKEY"
@@ -100,8 +100,13 @@ def build_presentation_child_command(
     packaged: bool | None = None,
 ) -> ChildCommand:
     """Build a child command without exposing the authentication key in argv."""
-    if not pipe_name.startswith("\\\\.\\pipe\\") or not pipe_name.strip():
-        raise ValueError("A Windows named-pipe address is required.")
+    if pipe_name.startswith("\\\\.\\pipe\\"):
+        valid_address = True
+    else:
+        candidate = Path(pipe_name)
+        valid_address = candidate.is_absolute() and candidate.parent.name in {"fensoundswitch", "fss"}
+    if not valid_address or not pipe_name.strip():
+        raise ValueError("A private presentation IPC address is required.")
     if not isinstance(authkey, bytes) or len(authkey) < 16:
         raise ValueError("The presentation authkey must contain at least 16 bytes.")
 
@@ -262,7 +267,17 @@ class WebPresentationController:
             self._intentional_exit = False
             self._failure_reported = False
             self._stop_event = threading.Event()
-            self._pipe_name = rf"\\.\pipe\fensoundswitch-presentation-{os.getpid()}-{secrets.token_hex(16)}"
+            if sys.platform == "win32":
+                self._pipe_name = rf"\\.\pipe\fensoundswitch-presentation-{os.getpid()}-{secrets.token_hex(16)}"
+            else:
+                # macOS limits AF_UNIX paths to roughly 104 bytes. Its per-user
+                # temporary directory can exceed that limit, so keep this owned
+                # endpoint under a deliberately short runtime root.
+                runtime_directory = Path("/tmp/fss")
+                runtime_directory.mkdir(mode=0o700, exist_ok=True)
+                runtime_directory.chmod(0o700)
+                self._pipe_name = str(runtime_directory / f"p-{os.getpid()}-{secrets.token_hex(8)}.sock")
+                Path(self._pipe_name).unlink(missing_ok=True)
             authkey = secrets.token_bytes(32)
 
         listener = None
@@ -342,6 +357,7 @@ class WebPresentationController:
             self._listener = None
             self._process = None
             self._state = PresentationState.EXITED
+        self._unlink_unix_socket()
         self._logger.info("Presentation child stopped.")
 
     def _reader_loop(self) -> None:
@@ -416,6 +432,11 @@ class WebPresentationController:
             return self._error_response(request_id, "ui_timeout", "UI dispatch timed out.")
         except UserActionError as exc:
             return self._error_response(request_id, "action_invalid", str(exc))
+        except ValueError as exc:
+            # Route/plugin validators use bounded, user-facing ValueErrors.
+            # Preserve the explanation instead of reducing it to a generic
+            # transport failure in the WebKit command center.
+            return self._error_response(request_id, "action_invalid", str(exc)[:1000])
         except Exception as exc:
             self._logger.warning("Presentation request failed (%s).", exc.__class__.__name__)
             return self._error_response(request_id, "request_failed", "Request failed.")
@@ -547,6 +568,14 @@ class WebPresentationController:
     @staticmethod
     def _error_response(request_id: Any, code: str, message: str) -> dict[str, Any]:
         return {"id": request_id, "ok": False, "error": {"code": code, "message": message}}
+
+    def _unlink_unix_socket(self) -> None:
+        if PIPE_FAMILY != "AF_UNIX" or not self._pipe_name:
+            return
+        try:
+            Path(self._pipe_name).unlink(missing_ok=True)
+        except OSError:
+            pass
 
     @staticmethod
     def _safe_close(resource: Any) -> None:

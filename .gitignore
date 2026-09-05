@@ -5,3 +5,5 @@ nuitka-crash-report*.xml
 fensoundswitch-version.txt
 old/
 .kilo/
+.venv
+.venv-win/

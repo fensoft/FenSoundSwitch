@@ -137,30 +137,34 @@ class PROPVARIANT(ctypes.Structure):
     ]
 
 
-ole32 = ctypes.WinDLL("ole32", use_last_error=True)
-shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+if sys.platform == "win32":
+    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 
-ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
-ole32.CoInitializeEx.restype = ctypes.c_long
-ole32.CoUninitialize.argtypes = []
-ole32.CoUninitialize.restype = None
-ole32.CoCreateInstance.argtypes = [
-    ctypes.POINTER(GUID),
-    ctypes.c_void_p,
-    wintypes.DWORD,
-    ctypes.POINTER(GUID),
-    ctypes.POINTER(ctypes.c_void_p),
-]
-ole32.CoCreateInstance.restype = ctypes.c_long
-shell32.ShellExecuteW.argtypes = [
-    wintypes.HWND,
-    wintypes.LPCWSTR,
-    wintypes.LPCWSTR,
-    wintypes.LPCWSTR,
-    wintypes.LPCWSTR,
-    ctypes.c_int,
-]
-shell32.ShellExecuteW.restype = wintypes.HINSTANCE
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    ole32.CoUninitialize.argtypes = []
+    ole32.CoUninitialize.restype = None
+    ole32.CoCreateInstance.argtypes = [
+        ctypes.POINTER(GUID),
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(GUID),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    ole32.CoCreateInstance.restype = ctypes.c_long
+    shell32.ShellExecuteW.argtypes = [
+        wintypes.HWND,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+    ]
+    shell32.ShellExecuteW.restype = wintypes.HINSTANCE
+else:
+    ole32 = None
+    shell32 = None
 
 CLSID_POLICY_CONFIG_CLIENT = GUID.from_string("870af99c-171d-4f9e-af0d-e63df40c2bc9")
 IID_POLICY_CONFIG = GUID.from_string("f8679f50-850a-41cf-9c72-430f290290c8")

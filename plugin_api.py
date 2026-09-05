@@ -427,6 +427,7 @@ class PluginHostContext:
     dispatch_route_input: Callable[[str, int], None] = lambda _route_id, _delta: None
     dispatch_route_volume: Callable[[str, int], None] = lambda _route_id, _volume: None
     show_overlay_text: Callable[[str], None] = lambda _text: None
+    show_overlay_preview: Callable[[], None] = lambda: None
 
 
 @runtime_checkable

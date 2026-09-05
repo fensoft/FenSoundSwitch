@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import ttk
@@ -10,7 +11,7 @@ try:
 except ImportError:
     winreg = None
 
-from windows_platform import (
+from native_platform import (
     get_toplevel_window_handle,
     get_window_dpi,
     is_high_contrast_enabled,
@@ -37,11 +38,18 @@ DARK_ACCENT_PRESSED = "#4B91E8"
 DARK_ACCENT_SURFACE = "#183C66"
 DARK_SUCCESS = "#55D6A1"
 DARK_STATUS_BG = "#0E1115"
-LIGHT_BG = "SystemButtonFace"
-LIGHT_TEXT = "SystemWindowText"
-LIGHT_LIST_BG = "SystemWindow"
-LIGHT_SELECTION_BG = "SystemHighlight"
-LIGHT_SELECTION_TEXT = "SystemHighlightText"
+if sys.platform == "win32":
+    LIGHT_BG = "SystemButtonFace"
+    LIGHT_TEXT = "SystemWindowText"
+    LIGHT_LIST_BG = "SystemWindow"
+    LIGHT_SELECTION_BG = "SystemHighlight"
+    LIGHT_SELECTION_TEXT = "SystemHighlightText"
+else:
+    LIGHT_BG = "#ECECEC"
+    LIGHT_TEXT = "#1F1F1F"
+    LIGHT_LIST_BG = "#FFFFFF"
+    LIGHT_SELECTION_BG = "#0A84FF"
+    LIGHT_SELECTION_TEXT = "#FFFFFF"
 LIGHT_SURFACE = "#FFFFFF"
 LIGHT_SURFACE_ALT = "#F4F6F8"
 LIGHT_SIDEBAR = "#F0F3F7"

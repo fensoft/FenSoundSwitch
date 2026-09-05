@@ -2,7 +2,7 @@
 
 ## One set of volume keys. The sound you actually want.
 
-`FenSoundSwitch` turns the Windows Volume Up and Volume Down keys into a simple remote for your monitor, AV receiver, or both.
+`FenSoundSwitch` turns configured controls into a simple remote for your monitor, AV receiver, or both.
 
 Build named routes for the rooms and devices you use. Choose a monitor or receiver for each route, then adjust them together from your keyboard. A tray-first WebView2 interface, configurable overlays, and optional Windows or Discord device switching keep control close without adding clutter. The interface is packaged locally and does not run a web server or load remote UI assets.
 
@@ -23,6 +23,12 @@ Build named routes for the rooms and devices you use. Choose a monitor or receiv
 - Export and restore configuration archives; protect exports because MQTT credentials are included.
 - Check the exact release tag, or `dev` for source/local builds, on the About page.
 
+## Platform Support
+
+Windows 10 and Windows 11 support the complete current feature set, including DDC/CI monitor control, global Volume Up/Down interception, tray operation, Windows endpoint automation, and Start with Windows.
+
+macOS uses the local pywebview Cocoa/WebKit command center as its primary UI, with the existing Tk renderer kept hidden solely for the volume overlay. It supports the route editor, network receiver outputs, MQTT/Home Assistant routes, and configuration archives. Global shortcuts, monitor DDC control, menu-bar operation, Discord output switching, Windows endpoint automation, and Windows audio plugins are intentionally unavailable. The Start with Windows toggle writes a current-user launchd agent.
+
 ## Get Started
 
 1. Download `FenSoundSwitch.msi` from [GitHub Releases](https://github.com/fensoft/windows-ddc/releases) and install it.
@@ -32,7 +38,16 @@ Build named routes for the rooms and devices you use. Choose a monitor or receiv
 
 Pass `--foreground` when launching the executable, or run `python app.py --foreground` from source, to open the command center immediately instead of starting in the notification area.
 
-The app is made for Windows 10 and Windows 11 and requires the [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section), which is included with current Windows installations. Compatible monitor control requires DDC/CI enabled in the monitor menu. Receiver control requires a supported receiver on your home network.
+Windows requires the [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section), which is included with current Windows installations. On macOS, install a Python distribution that includes Tk and pywebview's Cocoa/WebKit dependencies, then run `python app.py --foreground`. Compatible monitor control requires DDC/CI enabled in the monitor menu and is currently Windows-only. Receiver control requires a supported receiver on your home network.
+
+For Homebrew Python 3.12, install its separate Tk binding before creating the virtual environment:
+
+```zsh
+brew install python@3.12 python-tk@3.12
+/opt/homebrew/opt/python@3.12/bin/python3.12 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/python app.py --foreground
+```
 
 ## Default Configuration
 

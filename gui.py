@@ -62,7 +62,7 @@ from theme import (
     get_tk_window_dpi,
     read_windows_theme_state,
 )
-from windows_platform import (
+from native_platform import (
     DisplayChangeListener,
     GlobalVolumeKeyListener,
     TrayIconController,
@@ -141,6 +141,9 @@ class MonitorVolumeApp:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        # macOS presents only the pywebview command center. Tk remains alive
+        # solely as the scheduler and host for the existing overlay renderer.
+        self._web_only = sys.platform == "darwin"
         self.root.title("FenSoundSwitch")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -228,21 +231,22 @@ class MonitorVolumeApp:
         self.start_with_windows_var = tk.BooleanVar(value=self.start_with_windows)
         self.status_var = tk.StringVar(value="Searching for monitors...")
 
-        self.app_icon_path = apply_app_icon(self.root)
-        self._build_widgets()
-        apply_color_scheme(
-            self.root,
-            self.status_bar,
-            self.dark_mode,
-            self.high_contrast,
-        )
-        log_text = getattr(self, "_log_text", None)
-        if log_text is not None:
-            self._style_log_text(log_text)
-        self._lock_window_size()
-        apply_window_chrome(self.root, self.dark_mode)
-        self._bind_keyboard_shortcuts()
-        self.root.bind("<Configure>", self._on_root_configure, add="+")
+        if not self._web_only:
+            self.app_icon_path = apply_app_icon(self.root)
+            self._build_widgets()
+            apply_color_scheme(
+                self.root,
+                self.status_bar,
+                self.dark_mode,
+                self.high_contrast,
+            )
+            log_text = getattr(self, "_log_text", None)
+            if log_text is not None:
+                self._style_log_text(log_text)
+            self._lock_window_size()
+            apply_window_chrome(self.root, self.dark_mode)
+            self._bind_keyboard_shortcuts()
+            self.root.bind("<Configure>", self._on_root_configure, add="+")
         self._apply_control_state()
         self._start_plugins()
         self._start_display_listener()
@@ -884,6 +888,7 @@ class MonitorVolumeApp:
                 get_volume_statuses=self._get_volume_statuses,
                 on_overlay_renderer_changed=self._replace_overlay_renderer,
                 on_overlay_text=self._show_plugin_overlay_text,
+                on_overlay_preview=self._show_overlay_preview,
                 on_volume_routes_changed=self._routes_changed,
                 on_route_input=self._queue_route_input_delta,
                 on_route_volume=self._queue_route_input_volume,
@@ -897,13 +902,15 @@ class MonitorVolumeApp:
                 self.dark_mode,
                 self.high_contrast,
             )
-            manager.build_routes_panel(self.routes_panel)
-            manager.build_action_plugins_panel(self.integrations_panel)
-            manager.build_appearance_panel(self.appearance_panel)
+            if not self._web_only:
+                manager.build_routes_panel(self.routes_panel)
+                manager.build_action_plugins_panel(self.integrations_panel)
+                manager.build_appearance_panel(self.appearance_panel)
             manager.dispatch_startup_automations()
             # Panels are added after the initial window-size lock. Measure them
             # now so a tray-first window never opens at the pre-plugin height.
-            self._resize_for_content(force=True)
+            if not self._web_only:
+                self._resize_for_content(force=True)
         except Exception as exc:
             LOGGER.error("Plugin system startup failed (%s).", exc.__class__.__name__)
             self._plugin_manager = None
@@ -917,17 +924,19 @@ class MonitorVolumeApp:
                 "Volume routes are unavailable. Restart the app after correcting the Routes or plugin configuration."
             )
             self._set_status(message)
-            ttk.Label(
-                self.routes_panel,
-                text=message,
-                justify="left",
-                wraplength=self._scaled_px(560),
-            ).grid(sticky="ew", padx=self._scaled_px(12), pady=self._scaled_px(12))
+            if not self._web_only:
+                ttk.Label(
+                    self.routes_panel,
+                    text=message,
+                    justify="left",
+                    wraplength=self._scaled_px(560),
+                ).grid(sticky="ew", padx=self._scaled_px(12), pady=self._scaled_px(12))
 
     def _on_volume_provider_changed(self, provider: Any | None, _plugin_id: str | None) -> None:
         if self._closing or provider is None:
             return
-        self.provider_var.set(f"Volume provider: {provider.provider_name}")
+        if hasattr(self, "provider_var"):
+            self.provider_var.set(f"Volume provider: {provider.provider_name}")
         self._publish_volume_status(provider, None, "Not yet read")
         self._post_to_ui(self.refresh_volume_provider)
 
@@ -968,7 +977,7 @@ class MonitorVolumeApp:
             post_to_ui=self._post_to_ui,
             get_snapshot=self._web_snapshot,
             dispatch_action=self._dispatch_web_action,
-            allowed_actions={"route.save", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
+            allowed_actions={"route.save", "route.endpoint-form", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
             on_exit=self.on_close,
             on_minimize=self._on_web_minimize,
             on_visibility=self._on_web_visibility,
@@ -977,6 +986,11 @@ class MonitorVolumeApp:
         )
         if self._tray_icon is None:
             if not self._presentation.launch():
+                if sys.platform == "darwin":
+                    # The command center is the only macOS primary UI. Do not
+                    # expose the legacy Tk shell when its WebKit child fails.
+                    self.root.after_idle(self.on_close)
+                    return
                 self.root.deiconify()
                 self.root.state("normal")
 
@@ -984,8 +998,8 @@ class MonitorVolumeApp:
         self._presentation_revision += 1
         manager = self._plugin_manager
         statuses = {item.provider_id: item for item in self._get_volume_statuses()}
-        inputs = [{"label": r.input_name, "value": r.input_id} for r in manager.records if r.initialized and r.input_id]
-        outputs = [{"label": r.name, "value": r.plugin_id} for r in manager.records if r.initialized and r.is_volume_provider and r.plugin_id]
+        inputs = [{"label": r.input_name, "value": r.input_id, "description": r.description} for r in manager.records if r.initialized and r.input_id]
+        outputs = [{"label": r.name, "value": r.plugin_id, "description": r.description} for r in manager.records if r.initialized and r.is_volume_provider and r.plugin_id]
         routes = []
         for route in manager.input_routes:
             status = statuses.get(route.route_id)
@@ -1086,7 +1100,10 @@ class MonitorVolumeApp:
         renderers = []
         for record in manager.records:
             if not record.initialized or not record.is_overlay_renderer or not record.plugin_id: continue
-            document = manager.get_plugin_ui(record.plugin_id)
+            try:
+                document = manager.get_plugin_ui(record.plugin_id)
+            except ValueError:
+                document = None
             fields = []; values = {}
             if document:
                 type_map = {"integer": "number", "choice": "select"}
@@ -1094,7 +1111,7 @@ class MonitorVolumeApp:
                     if not isinstance(field, dict): continue
                     fields.append({"key": field["id"], "type": type_map.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "options": field.get("options", [])})
                     if not field.get("write_only"): values[str(field["id"])] = field.get("value")
-            renderers.append({"id": record.plugin_id, "name": record.name, "description": record.display_status, "selected": record.plugin_id == manager._active_overlay_plugin_id, "values": values, "form": {"method": "action.save", "fields": fields} if fields else None})
+            renderers.append({"id": record.plugin_id, "name": record.name, "description": record.display_status, "selected": record.plugin_id == manager._active_overlay_plugin_id, "values": values, "ui_actions": document["actions"] if document else [], "form": {"method": "action.save", "fields": fields} if fields else None})
         diagnostic_text = read_log_contents()
         if len(diagnostic_text) > 12000: diagnostic_text = diagnostic_text[-12000:]
         recent_archives = [{"name": path.stem, "path": str(path)} for path in recent_configurations()]
@@ -1119,11 +1136,25 @@ class MonitorVolumeApp:
                 mqtt_profiles.append({"id": profile_id, "name": str(profile.get("name", profile_id)), "description": f"{profile.get('host', '')}:{profile.get('port', '')}", **entity})
         except ValueError:
             pass
-        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "integrations": integrations, "mqtt_profiles": mqtt_profiles, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form, "mqtt_profile": mqtt_profile_form}}
+        startup_label = "Start at Login" if sys.platform == "darwin" else "Start with Windows"
+        startup_description = (
+            "Launch FenSoundSwitch when you sign in."
+            if sys.platform == "darwin"
+            else "Launch quietly in the notification area when you sign in."
+        )
+        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "integrations": integrations, "mqtt_profiles": mqtt_profiles, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "startup_label": startup_label, "startup_description": startup_description, "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form, "mqtt_profile": mqtt_profile_form}}
         return PresentationSnapshot(self._presentation_revision, snapshot)
 
     def _dispatch_web_action(self, action: str, arguments: Mapping[str, Any]) -> Any:
         manager = self._plugin_manager
+        response: dict[str, object] | None = None
+        if action == "route.endpoint-form":
+            endpoint = arguments.get("endpoint")
+            plugin_id = arguments.get("plugin_id")
+            parameters = arguments.get("parameters", {})
+            if endpoint not in {"input", "output"} or not isinstance(plugin_id, str) or not isinstance(parameters, dict):
+                raise UserActionError("Route endpoint configuration is invalid.")
+            return {"document": manager.get_new_route_endpoint_ui(plugin_id, endpoint, parameters)}
         if action == "route.save":
             values = arguments.get("values", {})
             if not isinstance(values, dict): raise ValueError("Route values are invalid.")
@@ -1147,8 +1178,43 @@ class MonitorVolumeApp:
                         else: output_parameters = dict(result["values"])
                 ok = manager.update_route(route_id, str(values.get("input_id", "")), str(values.get("provider_id", "")), str(values.get("name", "")), input_parameters, output_parameters)
             else:
-                ok = manager.add_route(str(values.get("input_id", "")), str(values.get("provider_id", "")), str(values.get("name", "")))
-            if not ok: raise ValueError("The route could not be saved.")
+                input_id = str(values.get("input_id", ""))
+                provider_id = str(values.get("provider_id", ""))
+                input_record = next(
+                    (record for record in manager.records if record.input_id == input_id),
+                    None,
+                )
+                if input_record is None or not input_record.initialized:
+                    raise UserActionError("The selected route input is unavailable.")
+                provider_record = next(
+                    (record for record in manager.records if record.plugin_id == provider_id),
+                    None,
+                )
+                if (
+                    provider_record is None
+                    or not provider_record.initialized
+                    or not provider_record.is_volume_provider
+                ):
+                    raise UserActionError("The selected volume output is unavailable.")
+                raw_name = values.get("name", "")
+                name = raw_name.strip() if isinstance(raw_name, str) else ""
+                route_ids_before = {route.route_id for route in manager.input_routes}
+                input_parameters = values.get("input_parameters", {})
+                output_parameters = values.get("output_parameters", {})
+                if not isinstance(input_parameters, dict) or not isinstance(output_parameters, dict):
+                    raise UserActionError("Route configuration is invalid.")
+                input_parameters = manager.validate_new_route_endpoint(input_id, "input", input_parameters)
+                output_parameters = manager.validate_new_route_endpoint(provider_id, "output", output_parameters)
+                ok = manager.add_route(input_id, provider_id, name or None, input_parameters, output_parameters)
+                if ok:
+                    created_route = next(
+                        (route for route in manager.input_routes if route.route_id not in route_ids_before),
+                        None,
+                    )
+                    if created_route is not None:
+                        response = {"route_id": created_route.route_id}
+            if not ok:
+                raise UserActionError("The route could not be saved. Check the route name and configuration directory.")
         elif action == "route.delete":
             if not manager.remove_route(str(arguments.get("id", ""))): raise ValueError("The route could not be removed.")
         elif action == "signal.save":
@@ -1281,7 +1347,7 @@ class MonitorVolumeApp:
         elif action == "config.restore-default":
             import_configuration(configuration_directory() / DEFAULT_ARCHIVE_NAME); self.restart_requested = True; self.root.after_idle(self.on_close)
         elif action != "diagnostics.refresh": raise ValueError("Unknown command-center action.")
-        return {"accepted": True}
+        return response or {"accepted": True}
 
     def _on_web_visibility(self, visible: bool) -> None:
         if visible:
@@ -1296,6 +1362,9 @@ class MonitorVolumeApp:
     def _recover_web_tray(self) -> None:
         if self._tray_icon is not None:
             self._tray_icon.show(); self._in_tray = True
+        elif sys.platform == "darwin":
+            # A child crash must not reveal the Tk-only legacy UI on macOS.
+            self.root.after_idle(self.on_close)
         else:
             self.root.deiconify(); self.root.state("normal")
 
@@ -1936,6 +2005,16 @@ class MonitorVolumeApp:
                 text,
                 preferred_display_device_name=self._selected_display_device_name(),
             )
+
+    def _show_overlay_preview(self) -> None:
+        """Render the real compact volume HUD for Appearance previews."""
+        if self._closing or self._overlay is None:
+            return
+        self._render_overlay(
+            "show",
+            58,
+            preferred_display_device_name=self._selected_display_device_name(),
+        )
 
     def _replace_overlay_renderer(self) -> None:
         """Replace a renderer only from the Tk-thread manager callback."""
@@ -2994,6 +3073,9 @@ class MonitorVolumeApp:
         self._presentation_requested_visible = True
         presentation = getattr(self, "_presentation", None)
         if presentation is None:
+            if sys.platform == "darwin":
+                self.root.after_idle(self.on_close)
+                return
             self.root.deiconify()
             self.root.state("normal")
             apply_window_chrome(self.root, self.dark_mode)

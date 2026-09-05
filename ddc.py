@@ -10,6 +10,7 @@ try:
     from monitorcontrol.vcp import VCPError
 except ImportError as exc:
     get_monitors = None
+    get_input_name = lambda value: f"Input 0x{value:02X}"
     VCPError = RuntimeError
     IMPORT_ERROR = exc
 else:
@@ -17,7 +18,7 @@ else:
 
 _OPERATION_LOCK = threading.Lock()
 
-from windows_platform import WindowsMonitorIdentity, enumerate_windows_monitor_identities
+from native_platform import WindowsMonitorIdentity, enumerate_windows_monitor_identities
 
 
 @dataclass(frozen=True)
