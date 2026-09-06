@@ -76,6 +76,7 @@ class PluginDiscoveryTests(unittest.TestCase):
                 "windows-volume-input",
                 "keyboard-input",
                 "mqtt-input",
+                "windows-bluetooth-volume",
                 "windows-soundcard-volume",
                 "windows-microphone-gain",
                 "alpha",
@@ -277,6 +278,31 @@ class PluginManagerTests(unittest.TestCase):
         discover_patch.start()
         self.addCleanup(discover_patch.stop)
         return manager, notices
+
+    def test_new_route_endpoint_action_returns_validated_replacement_document(self) -> None:
+        document = {
+            "schema_version": 1,
+            "title": "Bluetooth output",
+            "fields": [],
+            "actions": [],
+        }
+        plugin = Mock()
+        plugin.invoke_ui_action.return_value = {"status": "update", "document": document}
+        manager = PluginManager.__new__(PluginManager)
+        manager._records = [PluginRecord(
+            key="bluetooth",
+            source="test",
+            plugin_id="windows-bluetooth-volume",
+            plugin=plugin,
+            initialized=True,
+        )]
+
+        result = manager.invoke_new_route_endpoint_ui_action(
+            "windows-bluetooth-volume", "output", "discover", {}
+        )
+
+        self.assertEqual(result, {"status": "update", "document": document})
+        plugin.invoke_ui_action.assert_called_once_with("discover", {})
 
     def test_prepared_window_centers_over_its_parent(self) -> None:
         parent = Mock()
@@ -909,6 +935,7 @@ class PluginManagerTests(unittest.TestCase):
         from plugins.pioneer_elite_volume_plugin import PioneerEliteVolumePlugin
         from plugins.sony_volume_plugin import SonyVolumePlugin
         from plugins.windows11_overlay_plugin import OverlayPlugin
+        from plugins.windows_bluetooth_volume_plugin import WindowsBluetoothVolumePlugin
         from plugins.windows_soundcard_volume_plugin import WindowsSoundcardVolumePlugin
         from plugins.windows_microphone_gain_plugin import WindowsMicrophoneGainPlugin
         from plugins.windows_volume_input_plugin import WindowsVolumeInputPlugin
@@ -931,6 +958,7 @@ class PluginManagerTests(unittest.TestCase):
             ("yamaha-volume", {"host": "yamaha.local", "port": 50000}),
             ("pioneer-elite-volume", {"host": "pioneer.local", "port": 8102}),
             ("sony-volume", {"host": "sony.local", "port": 10000}),
+            ("windows-bluetooth-volume", {"bluetooth_instance_id": "BTHENUM\\DEV_ECHO", "bluetooth_name": "Echo Show 5"}),
             ("windows-soundcard-volume", {"endpoint_id": "endpoint-1", "display_name": "Desk speakers"}),
             ("windows-microphone-gain", {"endpoint_id": "microphone-1", "display_name": "USB microphone"}),
         )
@@ -946,7 +974,7 @@ class PluginManagerTests(unittest.TestCase):
             record(OverlayPlugin(), overlay=True), record(MacOSOverlayPlugin(), overlay=True),
             record(WindowsVolumeInputPlugin(), input_id="windows-volume-keys"), record(KeyboardInputPlugin(), input_id="keyboard-keys"),
             record(DdcVolumePlugin()), record(OnkyoVolumePlugin()), record(DenonMarantzVolumePlugin()), record(YamahaVolumePlugin()),
-            record(PioneerEliteVolumePlugin()), record(SonyVolumePlugin()), record(WindowsSoundcardVolumePlugin()), record(WindowsMicrophoneGainPlugin()),
+            record(PioneerEliteVolumePlugin()), record(SonyVolumePlugin()), record(WindowsBluetoothVolumePlugin()), record(WindowsSoundcardVolumePlugin()), record(WindowsMicrophoneGainPlugin()),
         ]
         manager = PluginManager(Mock(), post_to_ui=lambda callback: callback(), on_notice=lambda _message: None, hotkey_factory=_FakeHotkeys)
         with patch("plugin_manager.discover_plugins", return_value=records):
@@ -1069,6 +1097,27 @@ class FluentPanelStateTests(unittest.TestCase):
 
 
 class PluginGuiIntegrationTests(unittest.TestCase):
+    def test_new_route_endpoint_action_dispatches_to_plugin_manager(self) -> None:
+        from gui import MonitorVolumeApp
+
+        expected = {"status": "update", "document": {"schema_version": 1, "title": "Bluetooth", "fields": [], "actions": []}}
+        manager = Mock()
+        manager.invoke_new_route_endpoint_ui_action.return_value = expected
+        app = MonitorVolumeApp.__new__(MonitorVolumeApp)
+        app._plugin_manager = manager
+
+        result = app._dispatch_web_action("route.endpoint-action", {
+            "endpoint": "output",
+            "plugin_id": "windows-bluetooth-volume",
+            "action_id": "discover",
+            "values": {},
+        })
+
+        self.assertEqual(result, expected)
+        manager.invoke_new_route_endpoint_ui_action.assert_called_once_with(
+            "windows-bluetooth-volume", "output", "discover", {}
+        )
+
     def test_mqtt_automation_trigger_uses_a_shared_profile_and_ha_identity(self) -> None:
         from gui import MonitorVolumeApp
 

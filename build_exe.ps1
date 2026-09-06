@@ -78,6 +78,7 @@ try {
         --include-module=plugins.windows11_overlay_plugin `
         --include-module=plugins.macos_overlay_plugin `
         --include-module=plugins.keyboard_input_plugin `
+        --include-module=plugins.windows_bluetooth_volume_plugin `
         --include-module=plugins.windows_soundcard_volume_plugin `
         --include-data-dir=plugins/macos_overlay/assets=plugins/macos_overlay/assets `
         --windows-icon-from-ico=FenSoundSwitch.ico `

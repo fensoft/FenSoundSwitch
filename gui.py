@@ -895,14 +895,14 @@ class MonitorVolumeApp:
                 self.dark_mode,
                 self.high_contrast,
             )
-            if not self._web_only:
+            if not getattr(self, "_web_only", False):
                 manager.build_routes_panel(self.routes_panel)
                 manager.build_action_plugins_panel(self.integrations_panel)
                 manager.build_appearance_panel(self.appearance_panel)
             manager.dispatch_startup_automations()
             # Panels are added after the initial window-size lock. Measure them
             # now so a tray-first window never opens at the pre-plugin height.
-            if not self._web_only:
+            if not getattr(self, "_web_only", False):
                 self._resize_for_content(force=True)
         except Exception as exc:
             LOGGER.error("Plugin system startup failed (%s).", exc.__class__.__name__)
@@ -917,7 +917,7 @@ class MonitorVolumeApp:
                 "Volume routes are unavailable. Restart the app after correcting the Routes or plugin configuration."
             )
             self._set_status(message)
-            if not self._web_only:
+            if not getattr(self, "_web_only", False):
                 ttk.Label(
                     self.routes_panel,
                     text=message,
@@ -970,7 +970,7 @@ class MonitorVolumeApp:
             post_to_ui=self._post_to_ui,
             get_snapshot=self._web_snapshot,
             dispatch_action=self._dispatch_web_action,
-            allowed_actions={"route.save", "route.endpoint-form", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
+            allowed_actions={"route.save", "route.endpoint-form", "route.endpoint-action", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
             on_exit=self.on_close,
             on_minimize=self._on_web_minimize,
             on_visibility=self._on_web_visibility,
@@ -1149,6 +1149,14 @@ class MonitorVolumeApp:
             if endpoint not in {"input", "output"} or not isinstance(plugin_id, str) or not isinstance(parameters, dict):
                 raise UserActionError("Route endpoint configuration is invalid.")
             return {"document": manager.get_new_route_endpoint_ui(plugin_id, endpoint, parameters)}
+        if action == "route.endpoint-action":
+            endpoint = arguments.get("endpoint")
+            plugin_id = arguments.get("plugin_id")
+            action_id = arguments.get("action_id")
+            values = arguments.get("values", {})
+            if endpoint not in {"input", "output"} or not isinstance(plugin_id, str) or not isinstance(action_id, str) or not isinstance(values, dict):
+                raise UserActionError("Route endpoint action is invalid.")
+            return manager.invoke_new_route_endpoint_ui_action(plugin_id, endpoint, action_id, values)
         if action == "route.save":
             values = arguments.get("values", {})
             if not isinstance(values, dict): raise ValueError("Route values are invalid.")

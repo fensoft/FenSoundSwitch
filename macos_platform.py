@@ -5,7 +5,6 @@ and endpoint policy are Windows-specific and are intentionally unavailable.
 """
 from __future__ import annotations
 
-import fcntl
 import os
 import threading
 from dataclasses import dataclass
@@ -97,6 +96,8 @@ class SingleInstanceGuard:
     """Current-user advisory lock that prevents duplicate macOS processes."""
 
     def __init__(self) -> None:
+        import fcntl
+
         directory = Path.home() / "Library" / "Application Support" / "FenSoundSwitch"
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._stream = (directory / "instance.lock").open("a+")
@@ -109,6 +110,8 @@ class SingleInstanceGuard:
         self._stream.flush()
 
     def close(self) -> None:
+        import fcntl
+
         stream = getattr(self, "_stream", None)
         if stream is not None:
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)

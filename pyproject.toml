@@ -26,6 +26,7 @@ py-modules = [
     "app",
     "app_version",
     "audio_outputs",
+    "bluetooth_audio",
     "core_audio",
     "config_archive",
     "default",

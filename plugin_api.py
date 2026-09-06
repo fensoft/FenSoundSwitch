@@ -97,7 +97,7 @@ def validate_plugin_ui_document(value: object) -> PluginUiDocument:
             raise ValueError("Only choice and select fields may declare options.")
     action_ids: set[str] = set()
     for action in actions:
-        if not isinstance(action, dict) or set(action) - {"id", "label", "kind", "async", "confirm"}:
+        if not isinstance(action, dict) or set(action) - {"id", "label", "kind", "async", "auto", "confirm"}:
             raise ValueError("Plugin UI actions contain an invalid property.")
         action_id = _ui_id(action.get("id"), "Plugin UI action ID")
         if action_id in action_ids:
@@ -107,6 +107,8 @@ def validate_plugin_ui_document(value: object) -> PluginUiDocument:
             raise ValueError("Plugin UI action label must be non-empty text.")
         if action.get("kind") not in _UI_ACTION_KINDS or not isinstance(action.get("async"), bool):
             raise ValueError("Plugin UI action kind or async declaration is invalid.")
+        if "auto" in action and (action.get("kind") != "action" or not isinstance(action["auto"], bool)):
+            raise ValueError("Plugin UI action auto declaration is invalid.")
         if "confirm" in action and (not isinstance(action["confirm"], str) or not action["confirm"].strip()):
             raise ValueError("Plugin UI action confirmation must be non-empty text.")
     return document

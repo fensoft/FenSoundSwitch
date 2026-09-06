@@ -37,6 +37,7 @@ if sys.platform == "win32":
         windows_default_device_plugin,
         windows_volume_input_plugin,
         windows_microphone_gain_plugin,
+        windows_bluetooth_volume_plugin,
         windows_soundcard_volume_plugin,
     )
 from diagnostics import get_logger
@@ -408,25 +409,36 @@ def discover_plugins(
     bundled: list[tuple[ModuleType, str]] = [
         (windows11_overlay_plugin, "Bundled Windows 11-style overlay plugin"),
         (macos_overlay_plugin, "Bundled macOS-style overlay plugin"),
-        (onkyo_volume_plugin, "Bundled Onkyo volume plugin"),
-        (denon_marantz_volume_plugin, "Bundled Denon/Marantz volume plugin"),
-        (yamaha_volume_plugin, "Bundled Yamaha volume plugin"),
-        (pioneer_elite_volume_plugin, "Bundled Pioneer/Elite volume plugin"),
-        (sony_volume_plugin, "Bundled Sony volume plugin"),
-        (keyboard_input_plugin, "Bundled keyboard input plugin"),
-        (mqtt_input_plugin, "Bundled MQTT input plugin"),
     ]
     if sys.platform == "win32":
-        bundled[0:0] = [
+        bundled.extend([
             (discord_output_plugin, "Bundled Discord output plugin"),
             (audio_keepalive_plugin, "Bundled audio output keep-alive plugin"),
             (windows_default_device_plugin, "Bundled Windows default device plugin"),
             (ddc_input_source_plugin, "Bundled DDC monitor input plugin"),
             (ddc_volume_plugin, "Bundled DDC volume plugin"),
-            (windows_volume_input_plugin, "Bundled Windows Volume input plugin"),
+        ])
+    bundled.extend([
+        (onkyo_volume_plugin, "Bundled Onkyo volume plugin"),
+        (denon_marantz_volume_plugin, "Bundled Denon/Marantz volume plugin"),
+        (yamaha_volume_plugin, "Bundled Yamaha volume plugin"),
+        (pioneer_elite_volume_plugin, "Bundled Pioneer/Elite volume plugin"),
+        (sony_volume_plugin, "Bundled Sony volume plugin"),
+    ])
+    if sys.platform == "win32":
+        bundled.append(
+            (windows_volume_input_plugin, "Bundled Windows Volume input plugin")
+        )
+    bundled.extend([
+        (keyboard_input_plugin, "Bundled keyboard input plugin"),
+        (mqtt_input_plugin, "Bundled MQTT input plugin"),
+    ])
+    if sys.platform == "win32":
+        bundled.extend([
+            (windows_bluetooth_volume_plugin, "Bundled Windows Bluetooth volume plugin"),
             (windows_soundcard_volume_plugin, "Bundled Windows soundcard volume plugin"),
             (windows_microphone_gain_plugin, "Bundled Windows capture gain plugin"),
-        ]
+        ])
     for module, source in bundled:
         try:
             if module.PLUGIN_API_VERSION != PLUGIN_API_VERSION:
@@ -918,6 +930,29 @@ class PluginManager:
             raise ValueError("That route endpoint cannot be configured.")
         result = validate_plugin_ui_result(invoke(str(submit["id"]), parameters))
         return dict(result["values"]) if result.get("status") == "save" else dict(parameters)
+
+    def invoke_new_route_endpoint_ui_action(
+        self,
+        plugin_id: str,
+        endpoint: str,
+        action_id: str,
+        values: Mapping[str, object],
+    ) -> dict[str, object]:
+        if endpoint not in {"input", "output"}:
+            raise ValueError("Route endpoint is invalid.")
+        record = next(
+            (
+                item
+                for item in self._records
+                if item.initialized
+                and ((item.input_id if endpoint == "input" else item.plugin_id) == plugin_id)
+            ),
+            None,
+        )
+        invoke = getattr(record.plugin, "invoke_ui_action", None) if record is not None else None
+        if not callable(invoke):
+            raise ValueError("That route endpoint has no web configuration action.")
+        return validate_plugin_ui_result(invoke(action_id, values))
 
     def invoke_route_ui_action(self, route_id: str, endpoint: str, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
         route = next((item for item in self._input_routes if item.route_id == route_id), None)

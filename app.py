@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import sys
 import os
+import tkinter as tk
 from pathlib import Path
 
+from audio_outputs import (
+    AudioOutputError,
+    parse_internal_rename_request,
+    run_internal_rename_helper,
+)
 from diagnostics import close_logging, configure_logging, get_logger
 from default import ensure_default_configuration
+from gui import MonitorVolumeApp
 from settings import SETTINGS_PATH
 from native_platform import (
     InstanceAlreadyRunningError,
@@ -13,6 +20,7 @@ from native_platform import (
     SingleInstanceGuard,
     request_existing_instance_restore,
 )
+from web_presentation import CHILD_MODE_ARGUMENT
 
 
 def _is_supported_platform() -> bool:
@@ -26,14 +34,6 @@ def main() -> int:
     if not _is_supported_platform():
         print(f"FenSoundSwitch is supported on Windows and macOS, not {sys.platform}.", file=sys.stderr)
         return 2
-    from audio_outputs import (
-        AudioOutputError,
-        parse_internal_rename_request,
-        run_internal_rename_helper,
-    )
-    import tkinter as tk
-    from gui import MonitorVolumeApp
-    from web_presentation import CHILD_MODE_ARGUMENT
     restart_requested = False
     foreground_requested = FOREGROUND_ARGUMENT in sys.argv[1:]
     if sys.argv[1:2] == [CHILD_MODE_ARGUMENT]:

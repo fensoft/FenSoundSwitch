@@ -256,8 +256,11 @@ class WebUiAssetTests(unittest.TestCase):
         self.assertIn("wizard.values.route_type", script)
         self.assertIn('M2.5 12s3.5-6 9.5-6', html)
         self.assertNotIn('M12 3a9 9 0 1 0 0 18', html)
-        for method in ("snapshot.get", "route.save", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "action.save"):
+        for method in ("snapshot.get", "route.save", "route.endpoint-form", "route.endpoint-action", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "action.save"):
             self.assertIn(method, script)
+        self.assertIn("formDocument.actions", script)
+        self.assertIn("wizard.documents[endpoint] = result.document", script)
+        self.assertIn('action.auto === true', script)
         self.assertIn("pick_open_file", script)
         self.assertIn("pick_save_file", script)
         self.assertIn("configuration_directory", script)

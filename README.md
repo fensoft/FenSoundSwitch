@@ -12,7 +12,7 @@ Build named routes for the rooms and devices you use. Choose a monitor or receiv
 
 - Use Windows volume keys for a monitor, receiver, or several devices at once.
 - Create clearly named routes such as `Desk monitor`, `Living room`, or `Movie night`.
-- Control compatible displays and popular network receivers.
+- Control compatible displays, Bluetooth audio devices, Windows soundcards, and popular network receivers.
 - Optionally turn a configured receiver on and select its input when its route first activates.
 - Reuse named MQTT/Home Assistant broker configurations across volume routes and button-triggered automations, with per-use Home Assistant names and IDs.
 - See a clean Windows 11 or macOS-style volume overlay.

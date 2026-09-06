@@ -34,6 +34,7 @@ Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or 
 | `app.py` | Supported process entrypoint, single-instance boundary, and Tk composition root. |
 | `app_version.py` | Loads the build-injected version resource and defaults source/local execution to `dev`. |
 | `audio_outputs.py` | Fail-closed monitor/render-endpoint matching, endpoint visibility policy, and fixed FenSound elevated rename helper. |
+| `bluetooth_audio.py` | Paired Windows Bluetooth device discovery and active render-endpoint resolution for Bluetooth volume routes. |
 | `core_audio.py` | Focused Core Audio render/capture endpoint enumeration and master-volume adapter for soundcard/capture-gain route workers, explicit default-role changes, and silent WASAPI keep-alive streams. |
 | `autostart.py` | Current-user Run-key state and quoted source/packaged launch commands. |
 | `diagnostics.py` | Nonfatal per-user rotating-log configuration and component logger access. |
@@ -49,6 +50,7 @@ Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or 
 | `plugins/pioneer_elite_volume_plugin.py` | Bundled Pioneer/Elite main-zone provider using bounded outbound LAN TCP. |
 | `plugins/sony_volume_plugin.py` | Bundled Sony network AVR main-zone provider using bounded outbound HTTP. |
 | `plugins/windows_microphone_gain_plugin.py` | Bundled Windows capture endpoint gain provider. |
+| `plugins/windows_bluetooth_volume_plugin.py` | Bundled paired Bluetooth audio endpoint volume provider. |
 | `plugins/mqtt_input_plugin.py` | Bundled reusable MQTT/HA profiles, route volume input, and Home Assistant automation-button trigger clients. |
 | `plugins/yamaha_volume_plugin.py` | Bundled Yamaha main-zone provider using bounded outbound LAN TCP. |
 | `settings.py` | Per-user selected-monitor and Change speed JSON load/save. |

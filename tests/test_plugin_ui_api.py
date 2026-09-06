@@ -24,6 +24,7 @@ from plugins import (
     pioneer_elite_volume_plugin,
     sony_volume_plugin,
     windows11_overlay_plugin,
+    windows_bluetooth_volume_plugin,
     windows_microphone_gain_plugin,
     windows_soundcard_volume_plugin,
     yamaha_volume_plugin,
@@ -58,6 +59,7 @@ class PluginUiApiTests(unittest.TestCase):
             keyboard_input_plugin.KeyboardInputPlugin().get_route_input_ui(hotkey_parameters),
             mqtt_input_plugin.MqttInputPlugin().get_route_input_ui({}),
             ddc_volume_plugin.DdcVolumePlugin().get_route_output_ui({}),
+            windows_bluetooth_volume_plugin.WindowsBluetoothVolumePlugin().get_route_output_ui({}),
             windows_soundcard_volume_plugin.WindowsSoundcardVolumePlugin().get_route_output_ui({}),
             windows_microphone_gain_plugin.WindowsMicrophoneGainPlugin().get_route_output_ui({}),
         ]
@@ -78,9 +80,15 @@ class PluginUiApiTests(unittest.TestCase):
             self.assertEqual(document, validate_plugin_ui_document(document))
             self.assertEqual(document, _json_round_trip(document))
 
-        for document in route_documents[2:5]:
+        for document in route_documents[2:6]:
             discovery = next(action for action in document["actions"] if action["id"] == "discover")
             self.assertTrue(discovery["async"])
+        bluetooth_discovery = next(
+            action
+            for action in route_documents[3]["actions"]
+            if action["id"] == "discover"
+        )
+        self.assertTrue(bluetooth_discovery["auto"])
 
         discord_document = plugin_documents[1]
         secret = next(field for field in discord_document["fields"] if field["id"] == "client_secret")

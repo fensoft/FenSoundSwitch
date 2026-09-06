@@ -195,7 +195,30 @@ async function loadRouteWizardDocument(endpoint) {
   if (!pluginId) return null;
   const result = await nativeRequest("route.endpoint-form", { endpoint, plugin_id: pluginId, parameters: wizard.values[`${endpoint}_parameters`] || {} });
   wizard.documents[endpoint] = result?.document || null;
+  const automatic = safeArray(wizard.documents[endpoint]?.actions).find(action => action.kind === "action" && action.auto === true);
+  if (automatic) {
+    const update = await nativeRequest("route.endpoint-action", { endpoint, plugin_id: pluginId, action_id: safeText(automatic.id), values: wizard.values[`${endpoint}_parameters`] || {} });
+    if (update?.status === "update" && update.document) wizard.documents[endpoint] = update.document;
+  }
   return wizard.documents[endpoint];
+}
+
+async function invokeRouteWizardAction(endpoint, actionId, button) {
+  const wizard = state.editor;
+  if (!wizard || wizard.kind !== "route-wizard") return;
+  const pluginId = endpoint === "input" ? wizard.values.input_id : wizard.values.provider_id;
+  const values = collectEditorValues();
+  wizard.values[`${endpoint}_parameters`] = values;
+  button.disabled = true;
+  try {
+    const result = await nativeRequest("route.endpoint-action", { endpoint, plugin_id: pluginId, action_id: actionId, values });
+    if (result?.status === "update" && result.document) wizard.documents[endpoint] = result.document;
+    renderRouteWizard();
+  } catch (error) {
+    const target = document.querySelector("#editor-error");
+    target.textContent = safeText(error.message, "Plugin discovery failed."); target.hidden = false; target.focus();
+    button.disabled = false;
+  }
 }
 
 function renderRouteWizard() {
@@ -243,6 +266,16 @@ function renderRouteWizard() {
         const typeMap = { integer: "number", choice: "select" };
         const current = wizard.values[`${endpoint}_parameters`]?.[field.id] ?? field.value;
         container.append(renderField({ ...field, key: field.id, type: typeMap[field.type] || field.type }, current));
+      }
+      const actions = safeArray(formDocument.actions).filter(action => action.kind === "action");
+      if (actions.length) {
+        const buttons = element("div", { class: "button-row" });
+        for (const action of actions) {
+          const button = element("button", { class: "secondary", type: "button", text: safeText(action.label, "Refresh") });
+          button.addEventListener("click", () => invokeRouteWizardAction(endpoint, safeText(action.id), button));
+          buttons.append(button);
+        }
+        container.append(buttons);
       }
       if (endpoint === "input" && wizard.values.input_id === "mqtt") {
         const name = container.querySelector('[name="ha_name"]');
