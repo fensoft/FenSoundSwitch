@@ -6,7 +6,7 @@
 
 Build named routes for the rooms and devices you use. Choose a monitor or receiver for each route, then adjust them together from your keyboard. A tray-first WebView2 interface, configurable overlays, and optional Windows or Discord device switching keep control close without adding clutter. The interface is packaged locally and does not run a web server or load remote UI assets.
 
-![FenSoundSwitch control window](docs/app.png)
+![FenSoundSwitch command center with example routes](docs/manual/command-center-routes.png)
 
 ## Why FenSoundSwitch
 
@@ -28,13 +28,13 @@ Build named routes for the rooms and devices you use. Choose a monitor or receiv
 
 Windows 10 and Windows 11 support the complete current feature set, including DDC/CI monitor control, global media-volume key interception, tray operation, Windows endpoint automation, and Start with Windows.
 
-macOS uses the local pywebview Cocoa/WebKit command center as its primary UI, with the existing Tk renderer kept hidden solely for the volume overlay. It supports the route editor, network receiver outputs, MQTT/Home Assistant routes, and configuration archives. Global shortcuts, monitor DDC control, menu-bar operation, Discord output switching, Windows endpoint automation, and Windows audio plugins are intentionally unavailable. The Start with Windows toggle writes a current-user launchd agent.
+macOS uses the local pywebview Cocoa/WebKit command center as its primary UI, with the existing Tk renderer kept hidden solely for the volume overlay. It supports the route editor, network receiver outputs, MQTT/Home Assistant routes, and configuration archives. Global shortcuts, monitor DDC control, menu-bar operation, Discord output switching, Windows endpoint automation, and Windows audio plugins are intentionally unavailable. The **Start at Login** toggle writes a current-user launchd agent.
 
 ## Get Started
 
 1. Download `FenSoundSwitch.msi` from [GitHub Releases](https://github.com/fensoft/windows-ddc/releases) and install it.
 2. Launch **FenSoundSwitch** from the Start Menu and open the window from the notification area if needed.
-3. Add a route, give it a name and informational type, select **Windows media keys** as the input, and choose an output.
+3. Select **New route**, give it a name and informational type, select **Windows media keys** as the input, and choose an output.
 4. Configure the output, then press Volume Up or Volume Down at a safe listening level.
 
 Pass `--foreground` when launching the executable, or run `python app.py --foreground` from source, to open the command center immediately instead of starting in the notification area.
@@ -67,7 +67,7 @@ Default device automations:
 > [!IMPORTANT]
 > Once a route is ready, Volume Up and Volume Down control your configured route instead of Windows system volume. Mute is intercepted only when at least one ready routed output explicitly supports confirmed native mute; unsupported outputs, including DDC monitors, are left unchanged.
 
-## Simple Manual
+## User Documentation
 
 - [Complete user manual](docs/MANUAL.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)

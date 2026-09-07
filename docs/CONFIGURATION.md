@@ -14,7 +14,7 @@ Bundled providers include DDC monitor volume; Windows soundcard, capture, Blueto
 
 Receiver startup actions are disabled by default. When enabled, a route instance sends bounded outbound power/input commands once during its first worker-thread activation, before its initial volume probe. The input menus are protocol-wide supersets drawn from known models; an individual receiver may implement only part of its protocol's menu.
 
-The host owns the volume overlay. Its **Volume overlay** controls in the HTML **Routes** and **Appearance** pages show either the current provider or every routed provider with a confirmed volume; unavailable entries remain explicitly unavailable. Plugins receive only immutable host-published volume-status snapshots and cannot use the web presentation API to read Tk state or hardware.
+The host owns the volume overlay. The HTML **Appearance** page selects and configures a renderer that can show either the current provider or every routed provider with a confirmed volume; unavailable entries remain explicitly unavailable. Plugins receive only immutable host-published volume-status snapshots and cannot use the web presentation API to read Tk state or hardware.
 
 DDC monitor input, brightness, and contrast are configured directly on automation steps and exact-match a freshly enumerated stable monitor before mutation. The main-window **Integrations** tab owns reusable named MQTT/Home Assistant broker configurations and setup for integrations such as Discord. MQTT publishing, bounded HTTP requests, Windows power plans, Discord, and Windows device switching are automation steps; app-start, keyboard, tray, and MQTT/HA triggers belong to the containing automation. Bundled first-party modules live in the installed `plugins` package and are imported directly, never dynamically scanned. External Python plugins load from `external-plugins` next to the source tree or executable, then `%APPDATA%\fensoundswitch\plugins`. They are trusted, unsandboxed in-process code and take effect after restart. `%APPDATA%\windows-ddc\plugins` remains a final read-only, trusted compatibility location; move files to the new folder before changing them. Review external plugin source before placing it in either external folder.
 
@@ -24,7 +24,7 @@ The DDC provider can match the selected monitor to a Windows render endpoint. It
 
 ## Start With Windows And Logs
 
-**Start with Windows** is available in the main-window **Routes** section and manages `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\FenSoundSwitch`. It is current-user only and requires no elevation. A legacy `windows-ddc` value is read for compatibility; an explicit checkbox change writes the new value and removes the legacy one. Source launches prefer `pythonw.exe`; commands over 260 characters are rejected.
+**Start with Windows** is available on the main-window **Settings** page and manages `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\FenSoundSwitch`. It is current-user only and requires no elevation. A legacy `windows-ddc` value is read for compatibility; an explicit control change writes the new value and removes the legacy one. Source launches prefer `pythonw.exe`; commands over 260 characters are rejected.
 
 The rotating diagnostic log is `%LOCALAPPDATA%\fensoundswitch\fensoundswitch.log`, falling back to `APPDATA` and then home. It retains two 512 KiB backups. Inspect logs before sharing because unexpected exceptions can include local paths.
 
