@@ -258,6 +258,24 @@ class DdcInputSourcePluginTests(unittest.TestCase):
         self.assertEqual(worker_names, ["ddc-input-discovery"])
         self.assertIn("Found 1", statuses[-1])
 
+    def test_discovery_failure_preserves_the_exception_detail(self) -> None:
+        plugin = ddc_input_source_plugin.DdcInputSourcePlugin()
+        host, _saved, statuses, _overlays = host_context()
+        plugin.initialize(host)
+        plugin._operation_lock.acquire()
+
+        with patch.object(
+            ddc_input_source_plugin,
+            "enumerate_monitors",
+            side_effect=DDCError("I2C adapter monitor-7 refused access"),
+        ):
+            plugin._refresh_worker()
+
+        self.assertEqual(statuses[-1], "Discovery failed: I2C adapter monitor-7 refused access")
+        document = plugin.get_slot_ui("select-input", {})
+        self.assertEqual(document["state"], "error")
+        self.assertEqual(document["description"], statuses[-1])
+
     def test_action_reenumerates_matches_stable_identity_and_switches(self) -> None:
         old_ref = monitor_ref(path="old-path")
         selection = old_ref.selection_key

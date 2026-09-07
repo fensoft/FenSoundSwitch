@@ -12,15 +12,16 @@ Build named routes for the rooms and devices you use. Choose a monitor or receiv
 
 - Use Windows volume keys for a monitor, receiver, or several devices at once.
 - Create clearly named routes such as `Desk monitor`, `Living room`, or `Movie night`.
-- Control compatible displays, Bluetooth audio devices, Windows soundcards, and popular network receivers.
+- Control compatible displays, Windows applications and soundcards, Bluetooth audio devices, HTTP JSON devices, and popular network receivers.
 - Optionally turn a configured receiver on and select its input when its route first activates.
-- Reuse named MQTT/Home Assistant broker configurations across volume routes and button-triggered automations, with per-use Home Assistant names and IDs.
+- Reuse named MQTT/Home Assistant broker configurations across volume routes, button-triggered automations, and raw or Home Assistant-compatible publish steps.
 - See a clean Windows 11 or macOS-style volume overlay.
 - Keep the app quietly available in the notification area.
-- Build automations for monitor input selection, Windows playback, voice output, input, microphone, or optional Discord output switching. Run them when the app starts, from a keyboard shortcut, from a notification-area menu item, or from any combination of those triggers.
+- Build automations for monitor input, brightness, contrast, MQTT publishing, bounded HTTP requests, Windows power plans and audio devices, or optional Discord output switching. Run them when the app starts, from a keyboard shortcut, from a notification-area menu item, or from any combination of those triggers.
 - Keep the Windows default playback and/or voice output active by rendering silence, continuously or after recent mouse movement.
 - Start automatically with Windows.
 - Export and restore configuration archives; protect exports because MQTT credentials are included.
+- Follow the Windows language automatically or choose English, German, Spanish, French, or Italian for the command center.
 - Check the exact release tag, or `dev` for source/local builds, on the About page.
 
 ## Platform Support

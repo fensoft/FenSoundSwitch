@@ -44,6 +44,7 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("app_version.py", self.workflow)
         self.assertIn("audio_outputs.py", self.workflow)
         self.assertIn("bluetooth_audio.py", self.workflow)
+        self.assertIn("localization.py", self.workflow)
         self.assertIn("diagnostics.py", self.workflow)
         self.assertIn("plugins", self.workflow)
         self.assertIn("plugin_api.py", self.workflow)

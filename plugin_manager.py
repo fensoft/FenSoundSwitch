@@ -18,6 +18,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from plugins import (
     denon_marantz_volume_plugin,
+    http_volume_plugin,
     onkyo_volume_plugin,
     macos_overlay_plugin,
     windows11_overlay_plugin,
@@ -34,6 +35,8 @@ if sys.platform == "win32":
         ddc_volume_plugin,
         discord_output_plugin,
         audio_keepalive_plugin,
+        system_automation_plugin,
+        windows_application_volume_plugin,
         windows_default_device_plugin,
         windows_volume_input_plugin,
         windows_microphone_gain_plugin,
@@ -41,6 +44,7 @@ if sys.platform == "win32":
         windows_soundcard_volume_plugin,
     )
 from diagnostics import get_logger
+from localization import translate_source
 from plugin_api import (
     PLUGIN_API_VERSION,
     PLUGIN_ID_PATTERN,
@@ -417,6 +421,7 @@ def discover_plugins(
             (windows_default_device_plugin, "Bundled Windows default device plugin"),
             (ddc_input_source_plugin, "Bundled DDC monitor input plugin"),
             (ddc_volume_plugin, "Bundled DDC volume plugin"),
+            (system_automation_plugin, "Bundled system automation plugin"),
         ])
     bundled.extend([
         (onkyo_volume_plugin, "Bundled Onkyo volume plugin"),
@@ -424,6 +429,7 @@ def discover_plugins(
         (yamaha_volume_plugin, "Bundled Yamaha volume plugin"),
         (pioneer_elite_volume_plugin, "Bundled Pioneer/Elite volume plugin"),
         (sony_volume_plugin, "Bundled Sony volume plugin"),
+        (http_volume_plugin, "Bundled HTTP volume plugin"),
     ])
     if sys.platform == "win32":
         bundled.append(
@@ -438,6 +444,7 @@ def discover_plugins(
             (windows_bluetooth_volume_plugin, "Bundled Windows Bluetooth volume plugin"),
             (windows_soundcard_volume_plugin, "Bundled Windows soundcard volume plugin"),
             (windows_microphone_gain_plugin, "Bundled Windows capture gain plugin"),
+            (windows_application_volume_plugin, "Bundled Windows application volume plugin"),
         ])
     for module, source in bundled:
         try:
@@ -594,6 +601,25 @@ class PluginManager:
     def action_signals(self) -> tuple[ActionSignal, ...]:
         return self._action_signals
 
+    @staticmethod
+    def _localize_ui_document(document: dict[str, object]) -> dict[str, object]:
+        description = document.get("description")
+        if not isinstance(description, str):
+            return document
+        localized = translate_source(description)
+        return document if localized == description else {**document, "description": localized}
+
+    @staticmethod
+    def _localize_ui_result(result: dict[str, object]) -> dict[str, object]:
+        localized = dict(result)
+        message = localized.get("message")
+        if isinstance(message, str):
+            localized["message"] = translate_source(message)
+        document = localized.get("document")
+        if isinstance(document, dict):
+            localized["document"] = PluginManager._localize_ui_document(document)
+        return localized
+
     def signal_action_options(self) -> tuple[dict[str, object], ...]:
         options: list[dict[str, object]] = []
         for record in self.records:
@@ -602,6 +628,8 @@ class PluginManager:
             for action in record.slot_actions:
                 options.append({
                     "label": f"{record.name}: {action.label}",
+                    "plugin_name": record.name,
+                    "action_label": action.label,
                     "value": f"{record.plugin_id}/{action.action_id}",
                     "configurable": callable(getattr(record.plugin, "get_slot_ui", None)),
                     "description": action.description or f"Runs {action.label.lower()} using {record.name}.",
@@ -623,14 +651,14 @@ class PluginManager:
         getter = getattr(record.plugin, "get_mqtt_profile_ui", None) if record is not None and record.initialized else None
         if not callable(getter):
             raise ValueError("The MQTT/HA integration is unavailable.")
-        return validate_plugin_ui_document(getter(profile_id))
+        return self._localize_ui_document(validate_plugin_ui_document(getter(profile_id)))
 
     def invoke_mqtt_profile_ui(self, profile_id: str | None, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
         record = self._records_by_id.get("mqtt-input")
         invoke = getattr(record.plugin, "invoke_mqtt_profile_ui", None) if record is not None and record.initialized else None
         if not callable(invoke):
             raise ValueError("The MQTT/HA integration is unavailable.")
-        result = validate_plugin_ui_result(invoke(profile_id, action_id, values))
+        result = self._localize_ui_result(validate_plugin_ui_result(invoke(profile_id, action_id, values)))
         if result.get("status") == "save":
             self._rebuild_route_instances()
             self._rebuild_signal_triggers()
@@ -670,7 +698,7 @@ class PluginManager:
         ):
             raise ValueError("That automation action is unavailable.")
         getter = getattr(record.plugin, "get_slot_ui", None)
-        return validate_plugin_ui_document(getter(action_id, parameters)) if callable(getter) else None
+        return self._localize_ui_document(validate_plugin_ui_document(getter(action_id, parameters))) if callable(getter) else None
 
     def invoke_slot_ui_action(
         self,
@@ -687,7 +715,7 @@ class PluginManager:
         invoke = getattr(record.plugin, "invoke_slot_ui_action", None)
         if not callable(invoke):
             raise ValueError("That automation action has no configuration editor.")
-        return validate_plugin_ui_result(invoke(action_id, ui_action_id, values))
+        return self._localize_ui_result(validate_plugin_ui_result(invoke(action_id, ui_action_id, values)))
 
     def slot_summary(
         self,
@@ -855,7 +883,7 @@ class PluginManager:
         getter = getattr(record.plugin, "get_plugin_ui", None) if record is not None else None
         if not callable(getter):
             return None
-        return validate_plugin_ui_document(getter())
+        return self._localize_ui_document(validate_plugin_ui_document(getter()))
 
     def invoke_plugin_ui_action(
         self,
@@ -867,7 +895,7 @@ class PluginManager:
         invoke = getattr(record.plugin, "invoke_ui_action", None) if record is not None else None
         if not callable(invoke):
             raise ValueError("That plugin has no web configuration action.")
-        result = validate_plugin_ui_result(invoke(action_id, values))
+        result = self._localize_ui_result(validate_plugin_ui_result(invoke(action_id, values)))
         if record is not None and "message" in result:
             record.status = str(result["message"])
         return result
@@ -879,7 +907,7 @@ class PluginManager:
         route_endpoint = route.input if endpoint == "input" else route.output
         record = next((item for item in self._records if (item.input_id if endpoint == "input" else item.plugin_id) == route_endpoint.plugin_id), None)
         getter = getattr(record.plugin, f"get_route_{endpoint}_ui", None) if record is not None else None
-        return validate_plugin_ui_document(getter(route_endpoint.parameters)) if callable(getter) else None
+        return self._localize_ui_document(validate_plugin_ui_document(getter(route_endpoint.parameters))) if callable(getter) else None
 
     def get_new_route_endpoint_ui(
         self,
@@ -899,7 +927,7 @@ class PluginManager:
             None,
         )
         getter = getattr(record.plugin, f"get_route_{endpoint}_ui", None) if record is not None else None
-        return validate_plugin_ui_document(getter(dict(parameters or {}))) if callable(getter) else None
+        return self._localize_ui_document(validate_plugin_ui_document(getter(dict(parameters or {})))) if callable(getter) else None
 
     def validate_new_route_endpoint(
         self,
@@ -952,7 +980,7 @@ class PluginManager:
         invoke = getattr(record.plugin, "invoke_ui_action", None) if record is not None else None
         if not callable(invoke):
             raise ValueError("That route endpoint has no web configuration action.")
-        return validate_plugin_ui_result(invoke(action_id, values))
+        return self._localize_ui_result(validate_plugin_ui_result(invoke(action_id, values)))
 
     def invoke_route_ui_action(self, route_id: str, endpoint: str, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
         route = next((item for item in self._input_routes if item.route_id == route_id), None)
@@ -961,7 +989,7 @@ class PluginManager:
         record = next((item for item in self._records if (item.input_id if endpoint == "input" else item.plugin_id) == route_endpoint.plugin_id), None)
         invoke = getattr(record.plugin, "invoke_ui_action", None) if record is not None else None
         if not callable(invoke): raise ValueError("That endpoint has no web configuration action.")
-        return validate_plugin_ui_result(invoke(action_id, values))
+        return self._localize_ui_result(validate_plugin_ui_result(invoke(action_id, values)))
 
     def set_plugin_shortcut(self, plugin_id: str, action_id: str, value: object, forward_keys: bool) -> None:
         record = self._records_by_id.get(plugin_id)
@@ -1031,14 +1059,14 @@ class PluginManager:
         try:
             renderer = record.plugin.create_overlay_renderer(dark_mode, high_contrast)
         except Exception as exc:
-            record.status = f"Overlay creation failed: {self._format_error(exc)}"
+            record.status = translate_source(f"Overlay creation failed: {self._format_error(exc)}")
             LOGGER.error("Overlay renderer creation failed for %s (%s).", record.plugin_id, exc.__class__.__name__)
             self._notice(
                 f"Volume overlay unavailable: {self._format_error(exc)}. Routes remain available."
             )
             return None
         if not isinstance(renderer, OverlayRenderer):
-            record.status = "Overlay creation failed: invalid renderer"
+            record.status = translate_source("Overlay creation failed: invalid renderer")
             self._notice("Volume overlay unavailable: invalid renderer. Routes remain available.")
             return None
         return renderer
@@ -1046,7 +1074,7 @@ class PluginManager:
     def _show_plugin_overlay_text(self, text: str) -> None:
         if not isinstance(text, str) or not text.strip():
             return
-        safe_text = text.strip()[:300]
+        safe_text = translate_source(text.strip())[:300]
         self._post_to_ui(lambda: self._on_overlay_text(safe_text))
 
     @property
@@ -1314,7 +1342,7 @@ class PluginManager:
             self._initialize_shortcut_actions(record)
             self._initialize_slot_actions(record)
         except Exception as exc:
-            record.status = f"Initialization failed: {self._format_error(exc)}"
+            record.status = translate_source(f"Initialization failed: {self._format_error(exc)}")
             LOGGER.error("Plugin initialization failed for %s (%s).", record.plugin_id, exc.__class__.__name__)
             self._notice(f"Plugin {record.name} is unavailable: {self._format_error(exc)}")
 
@@ -1618,19 +1646,21 @@ class PluginManager:
     def _notice(self, message: str) -> None:
         if self._closing.is_set():
             return
-        self._post_to_ui(lambda: self._on_notice(message))
+        localized = translate_source(message)
+        self._post_to_ui(lambda: self._on_notice(localized))
 
     @staticmethod
     def _format_error(exc: Exception) -> str:
-        return str(exc).strip() or exc.__class__.__name__
+        return translate_source(str(exc).strip() or exc.__class__.__name__)
 
     def _report_status(self, plugin_id: str, status: str) -> None:
-        normalized = " ".join(str(status).split()) or "Unknown status"
+        source = " ".join(str(status).split()) or "Unknown status"
+        normalized = translate_source(source)
         with self._record_lock:
             record = self._records_by_id.get(plugin_id)
             if record is not None:
                 record.status = normalized
-        if normalized.lower().startswith(("unavailable", "authorization failed", "setup required")):
+        if source.lower().startswith(("unavailable", "authorization failed", "setup required")):
             record_name = record.name if record is not None else plugin_id
             self._notice(f"Plugin {record_name}: {normalized}")
 
@@ -2243,7 +2273,7 @@ class PluginManager:
                     record.configured_hotkeys = {self._binding_id(record.plugin_id, "legacy"): ActionHotkeyBinding(configured)}
                     self.refresh_hotkey(record.plugin_id)
             except Exception as exc:
-                record.status = f"Configuration failed: {self._format_error(exc)}"
+                record.status = translate_source(f"Configuration failed: {self._format_error(exc)}")
                 LOGGER.error(
                     "Plugin configuration failed for %s (%s).",
                     record.plugin_id,
@@ -2754,7 +2784,7 @@ class PluginManager:
             try:
                 record.plugin.configure(parent)
             except Exception as exc:
-                record.status = f"Configuration failed: {self._format_error(exc)}"
+                record.status = translate_source(f"Configuration failed: {self._format_error(exc)}")
         ttk.Button(quick_settings, text="Overlay settings", style="Quiet.TButton", command=configure_overlay).grid(row=4, column=0, sticky="w", pady=(10, 0))
 
         action_summary = ttk.LabelFrame(
@@ -2864,7 +2894,7 @@ class PluginManager:
             try:
                 record.plugin.configure(parent)
             except Exception as exc:
-                record.status = f"Configuration failed: {self._format_error(exc)}"
+                record.status = translate_source(f"Configuration failed: {self._format_error(exc)}")
 
         selector.bind("<<ComboboxSelected>>", choose_overlay)
         ttk.Button(

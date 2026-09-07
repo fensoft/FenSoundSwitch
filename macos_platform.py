@@ -62,13 +62,6 @@ class DisplayArea:
 
 
 @dataclass(frozen=True)
-class TrayMonitorMenuItem:
-    label: str
-    selection: object
-    active: bool = False
-
-
-@dataclass(frozen=True)
 class TraySignalMenuItem:
     label: str
     signal_id: str
@@ -76,10 +69,7 @@ class TraySignalMenuItem:
 
 @dataclass(frozen=True)
 class TrayMenuState:
-    active_monitor: str | None
-    current_volume: int | None
-    routing_status: str
-    monitors: tuple[TrayMonitorMenuItem, ...] = ()
+    routing_enabled: bool = False
     signals: tuple[TraySignalMenuItem, ...] = ()
 
 
@@ -177,6 +167,10 @@ def get_toplevel_window_handle(window_id: int) -> int:
 
 def get_window_dpi(_window_handle: int) -> int:
     return 96
+
+
+def get_user_default_locale_name() -> str | None:
+    return None
 
 
 def is_high_contrast_enabled() -> bool:

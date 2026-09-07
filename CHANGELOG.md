@@ -12,6 +12,8 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Added
 
+- Added bundled Windows application-session volume/mute, generic HTTP JSON volume with confirmed readback, and system automation for DDC brightness/contrast, bounded HTTP requests, and verified Windows power-plan changes.
+- Added raw or Home Assistant-compatible MQTT publishing through existing broker profiles.
 - Added a `--foreground` launch parameter that opens the command center immediately and remains active across configuration-triggered restarts.
 - Added a separate Integrations tab and reusable named MQTT/Home Assistant broker configurations. MQTT routes and MQTT-triggered automations select a shared configuration while retaining independent Home Assistant names and stable IDs; automation triggers publish retained HA button discovery and dispatch on exact `PRESS` commands.
 - Added tag-derived executable versions and an About page; ordinary source and local builds report `dev`.
@@ -57,6 +59,7 @@ That audited history contains one parentless commit. The audit clone had no loca
 
 ### Changed
 
+- Removed the obsolete global active-monitor, current-volume, and monitor-switching entries from the route-based notification-area menu.
 - Rebuilt the macOS overlay as a classic translucent rounded volume HUD with a drawn speaker glyph, level-aware sound waves, and a 16-segment meter while retaining routed status, High Contrast, DPI-aware placement, and no-activate behavior.
 - Made each overlay plugin's Test action preview that renderer without changing the active overlay selection.
 - Added supersampled font and icon antialiasing to the macOS volume HUD.

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from plugin_api import PluginHostContext
 from plugins.mqtt_input_plugin import MqttInputPlugin, MqttRouteInput, MqttSignalTrigger, validate_parameters
@@ -185,6 +185,63 @@ class MqttInputPluginTests(unittest.TestCase):
             plugin.create_signal_trigger("signal", {"profile_id": "missing", "ha_name": "Name", "ha_id": "id"}, lambda _signal: None)
         with self.assertRaises(ValueError):
             validate_parameters({"profile_id": "living-room", "ha_name": "Name", "ha_id": "bad/id", "max_value": 100})
+
+    def test_publish_slot_uses_existing_profile_and_waits_for_completion(self) -> None:
+        plugin = MqttInputPlugin()
+        plugin.initialize(_host({"profiles": [_profile()]}))
+        published = Mock()
+        published.wait_for_publish.return_value = True
+        published.is_published.return_value = True
+        published.rc = 0
+        client = Mock()
+        client.loop_start.side_effect = lambda: client.on_connect(client, None, None, 0)
+        client.publish.return_value = published
+        parameters = {"profile_id": "living-room", "mode": "raw", "topic": "lights/desk/set", "payload": "ON", "qos": 1, "retain": False}
+
+        with patch.object(plugin, "_mqtt_client_factory", return_value=lambda **_kwargs: client):
+            plugin.run_slot("publish", parameters)
+
+        client.username_pw_set.assert_called_once_with("user", "secret")
+        client.connect_async.assert_called_once_with("broker.local", 1884, keepalive=10)
+        client.publish.assert_called_once_with("lights/desk/set", "ON", qos=1, retain=False)
+        published.wait_for_publish.assert_called_once_with(timeout=5.0)
+        client.disconnect.assert_called_once_with()
+        client.loop_stop.assert_called_once_with()
+
+    def test_publish_slot_home_assistant_payload_is_strict_json_and_hides_password(self) -> None:
+        plugin = MqttInputPlugin()
+        plugin.initialize(_host({"profiles": [_profile()]}))
+        raw = {"profile_id": "living-room", "mode": "home-assistant", "topic": "homeassistant/service/light/turn_on", "payload": '{"entity_id":"light.desk"}', "qos": 1, "retain": False}
+
+        result = plugin.invoke_slot_ui_action("publish", "save", raw)
+        document = plugin.get_slot_ui("publish", result["values"])
+
+        self.assertNotIn("secret", json.dumps(result))
+        self.assertNotIn("secret", json.dumps(document))
+        self.assertNotIn("secret", plugin.slot_summary("publish", result["values"]))
+        with self.assertRaisesRegex(ValueError, "valid JSON"):
+            plugin.invoke_slot_ui_action("publish", "save", {**raw, "payload": "not-json"})
+        with self.assertRaisesRegex(ValueError, "JSON object"):
+            plugin.invoke_slot_ui_action("publish", "save", {**raw, "payload": "[]"})
+
+    def test_publish_timeout_disconnects_and_rejects_unknown_values(self) -> None:
+        plugin = MqttInputPlugin()
+        plugin.initialize(_host({"profiles": [_profile()]}))
+        published = Mock()
+        published.wait_for_publish.return_value = False
+        published.is_published.return_value = False
+        published.rc = 0
+        client = Mock()
+        client.loop_start.side_effect = lambda: client.on_connect(client, None, None, 0)
+        client.publish.return_value = published
+        parameters = {"profile_id": "living-room", "mode": "raw", "topic": "safe/topic", "payload": "value", "qos": 0, "retain": True}
+
+        with patch.object(plugin, "_mqtt_client_factory", return_value=lambda **_kwargs: client):
+            with self.assertRaises(TimeoutError):
+                plugin.run_slot("publish", parameters)
+        client.disconnect.assert_called_once_with()
+        with self.assertRaisesRegex(ValueError, "invalid"):
+            plugin.run_slot("publish", {**parameters, "password": "leak"})
 
 
 if __name__ == "__main__":

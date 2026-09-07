@@ -46,6 +46,7 @@ _CRED_TYPE_GENERIC = 1
 _CRED_PERSIST_LOCAL_MACHINE = 2
 _ERROR_NOT_FOUND = 1168
 _MAX_CREDENTIAL_BLOB_SIZE = 5 * 512
+_DISCORD_RETRY_SECONDS = 30.0
 
 
 class _CredentialAttributeW(ctypes.Structure):
@@ -78,6 +79,10 @@ class DiscordRpcError(RuntimeError):
     pass
 
 
+class DiscordNotRunningError(DiscordRpcError):
+    pass
+
+
 class DiscordRpcClient:
     def __init__(self, client_id: str, timeout: float = 5.0) -> None:
         self._client_id = client_id
@@ -101,7 +106,9 @@ class DiscordRpcClient:
             except OSError:
                 continue
         if self._pipe is None:
-            raise DiscordRpcError("Discord is not running or no local RPC pipe is available")
+            raise DiscordNotRunningError(
+                "Discord is not running or no local RPC pipe is available"
+            )
 
         self._write_frame(_OP_HANDSHAKE, {"v": 1, "client_id": self._client_id})
         opcode, response = self._read_frame()
@@ -569,7 +576,10 @@ class DiscordOutputPlugin:
         self._clients_lock = threading.Lock()
         self._clients: set[DiscordRpcClient] = set()
         self._shutdown = threading.Event()
+        self._retry_wake = threading.Event()
         self._configured = False
+        self._discord_not_running = False
+        self._retry_worker_active = False
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
@@ -584,13 +594,46 @@ class DiscordOutputPlugin:
 
     def _set_status(self, status: str) -> None:
         with self._state_lock:
+            changed = self._status != status
             self._status = status
-        if self._host is not None:
+        if changed and self._host is not None:
             self._host.report_status(status)
 
     def _current_status(self) -> str:
         with self._state_lock:
             return self._status
+
+    def _set_discord_not_running(self, unavailable: bool) -> None:
+        with self._state_lock:
+            self._discord_not_running = unavailable
+
+    def _ensure_retry_worker(self) -> None:
+        with self._state_lock:
+            if self._retry_worker_active or not self._configured:
+                return
+            self._retry_worker_active = True
+        if not self._start_worker(self._retry_authorization_loop):
+            with self._state_lock:
+                self._retry_worker_active = False
+
+    def _retry_authorization_loop(self) -> None:
+        try:
+            while not self._shutdown.is_set():
+                self._retry_wake.wait(_DISCORD_RETRY_SECONDS)
+                self._retry_wake.clear()
+                if self._shutdown.is_set():
+                    return
+                with self._state_lock:
+                    should_retry = self._configured and self._discord_not_running
+                if not should_retry:
+                    return
+                self._validate_authorization(False)
+                with self._state_lock:
+                    if not self._discord_not_running:
+                        return
+        finally:
+            with self._state_lock:
+                self._retry_worker_active = False
 
     def _start_worker(self, target: Any, *args: object) -> bool:
         if self._shutdown.is_set():
@@ -636,10 +679,17 @@ class DiscordOutputPlugin:
                 _authorize_new_oauth(client, saved)
             else:
                 _authenticate_saved_oauth(client, saved)
+            self._set_discord_not_running(False)
             self._set_status("Ready")
+        except DiscordNotRunningError as exc:
+            self._set_discord_not_running(True)
+            self._set_status(f"Authorization failed: {str(exc).strip()}")
+            self._ensure_retry_worker()
         except (DiscordRpcError, OSError) as exc:
+            self._set_discord_not_running(False)
             self._set_status(f"Authorization failed: {str(exc).strip() or exc.__class__.__name__}")
         except Exception as exc:
+            self._set_discord_not_running(False)
             if self._host is not None:
                 self._host.logger.error(
                     "Unexpected Discord authorization failure (%s).",
@@ -677,7 +727,13 @@ class DiscordOutputPlugin:
             client.connect()
             _authenticate_saved_oauth(client, saved)
             _switch_authenticated_output(client, 1.0, self._shutdown)
+            self._set_discord_not_running(False)
             self._set_status("Ready")
+        except DiscordNotRunningError as exc:
+            self._set_discord_not_running(True)
+            self._set_status(f"Authorization failed: {str(exc).strip()}")
+            self._ensure_retry_worker()
+            raise
         finally:
             if client is not None:
                 client.close()
@@ -687,10 +743,18 @@ class DiscordOutputPlugin:
     def get_plugin_ui(self) -> dict[str, object]:
         with self._state_lock:
             configured = self._configured
+            discord_not_running = self._discord_not_running
         if configured:
-            return plugin_ui_document("Discord output switch", [], [
-                {"id": "reset", "label": "Reset authorization", "kind": "action", "async": True, "confirm": "Remove the saved Discord client secret and OAuth grant from Windows Credential Manager?"},
-            ], f"OAuth status: {self._current_status()}.")
+            actions = []
+            if discord_not_running:
+                actions.append({"id": "retry", "label": "Retry", "kind": "action", "async": True})
+            actions.append({"id": "reset", "label": "Reset authorization", "kind": "action", "async": True, "confirm": "Remove the saved Discord client secret and OAuth grant from Windows Credential Manager?"})
+            return plugin_ui_document(
+                "Discord output switch",
+                [],
+                actions,
+                f"OAuth status: {self._current_status()}.",
+            )
         return plugin_ui_document("Configure Discord output switch", [
             {"id": "client_secret", "type": "password", "label": "Client secret", "value": "", "required": True, "write_only": True, "description": "Reset the secret in Discord's Developer Portal before copying it here."},
             {"id": "client_id", "type": "text", "label": "Application ID", "value": "", "required": True},
@@ -730,6 +794,14 @@ class DiscordOutputPlugin:
             self._set_status("Checking Discord authorization…")
             self._start_worker(self._validate_authorization, True)
             return plugin_ui_result("complete", message="Discord authorization started.")
+        if action_id == "retry":
+            with self._state_lock:
+                can_retry = self._configured and self._discord_not_running
+            if not can_retry:
+                raise DiscordRpcError("Discord authorization retry is not currently available")
+            self._ensure_retry_worker()
+            self._retry_wake.set()
+            return plugin_ui_result("complete")
         if action_id == "reset":
             if not self._operation_lock.acquire(blocking=False):
                 raise DiscordRpcError("Wait for the current Discord operation before resetting")
@@ -740,6 +812,8 @@ class DiscordOutputPlugin:
                 self._operation_lock.release()
             with self._state_lock:
                 self._configured = False
+                self._discord_not_running = False
+            self._retry_wake.set()
             self._set_status("Setup required")
             return plugin_ui_result("complete", message="Discord authorization was reset.")
         raise ValueError(f"Unknown Discord UI action {action_id!r}.")
@@ -748,6 +822,7 @@ class DiscordOutputPlugin:
         if timeout < 0:
             raise ValueError("Discord plugin shutdown timeout cannot be negative")
         self._shutdown.set()
+        self._retry_wake.set()
         deadline = time.monotonic() + timeout
         operation_finished = self._operation_lock.acquire(
             timeout=max(0.0, deadline - time.monotonic())

@@ -46,7 +46,15 @@ from config_archive import (
     recent_configurations,
 )
 from plugin_api import OverlayRenderer, VolumeStatus
-from settings import ROUTE_TYPE_LABELS, load_selected_monitor_key, save_selected_monitor_key
+from localization import set_language as set_native_ui_language, tr, translate_source as translate_native_ui_text
+from settings import (
+    ROUTE_TYPE_LABELS,
+    load_selected_monitor_key,
+    load_ui_language,
+    resolve_ui_language,
+    save_selected_monitor_key,
+    save_ui_language,
+)
 from theme import (
     DARK_BORDER,
     DARK_SURFACE,
@@ -67,8 +75,8 @@ from native_platform import (
     GlobalVolumeKeyListener,
     TrayIconController,
     TrayMenuState,
-    TrayMonitorMenuItem,
     TraySignalMenuItem,
+    get_user_default_locale_name,
 )
 from web_presentation import PresentationSnapshot, UserActionError, WebPresentationController
 
@@ -151,6 +159,12 @@ class MonitorVolumeApp:
 
         self.monitors: list[MonitorRef] = []
         self.preferred_selected_key = load_selected_monitor_key()
+        self.ui_language_preference = load_ui_language()
+        self.ui_language = resolve_ui_language(
+            self.ui_language_preference,
+            get_user_default_locale_name(),
+        )
+        set_native_ui_language(self.ui_language)
         self.selected_key: SavedMonitorSelection | None = None
         self.current_volume: int | None = None
         self.target_volume: int | None = None
@@ -221,7 +235,7 @@ class MonitorVolumeApp:
 
         self.monitor_var = tk.StringVar()
         self.start_with_windows_var = tk.BooleanVar(value=self.start_with_windows)
-        self.status_var = tk.StringVar(value="Searching for monitors...")
+        self.status_var = tk.StringVar(value=tr("shell.searching"))
 
         if not self._web_only:
             self.app_icon_path = apply_app_icon(self.root)
@@ -274,11 +288,12 @@ class MonitorVolumeApp:
             text="FenSoundSwitch",
             style="AppTitle.TLabel",
         ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
+        self.brand_subtitle = ttk.Label(
             self.brand_frame,
-            text="Audio routing control",
+            text=tr("shell.subtitle"),
             style="AppSubtitle.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(self._scaled_px(2), 0))
+        )
+        self.brand_subtitle.grid(row=1, column=0, sticky="w", pady=(self._scaled_px(2), 0))
 
         self.navigation = ttk.Frame(self.sidebar, style="Sidebar.TFrame")
         self.navigation.grid(
@@ -290,14 +305,14 @@ class MonitorVolumeApp:
         self.navigation.columnconfigure(0, weight=1)
         self.route_nav_button = ttk.Button(
             self.navigation,
-            text="Routes",
+            text=tr("nav.routes"),
             style="Selected.Nav.TButton",
             command=lambda: self._show_page("routes"),
         )
         self.route_nav_button.grid(row=0, column=0, sticky="ew")
         self.plugin_nav_button = ttk.Button(
             self.navigation,
-            text="Automations",
+            text=tr("common.automations"),
             style="Nav.TButton",
             command=lambda: self._show_page("plugins"),
         )
@@ -309,14 +324,14 @@ class MonitorVolumeApp:
         )
         self.integrations_nav_button = ttk.Button(
             self.navigation,
-            text="Integrations",
+            text=tr("nav.integrations"),
             style="Nav.TButton",
             command=lambda: self._show_page("integrations"),
         )
         self.integrations_nav_button.grid(row=2, column=0, sticky="ew", pady=(self._scaled_px(4), 0))
         self.appearance_nav_button = ttk.Button(
             self.navigation,
-            text="Appearance",
+            text=tr("nav.appearance"),
             style="Nav.TButton",
             command=lambda: self._show_page("appearance"),
         )
@@ -328,7 +343,7 @@ class MonitorVolumeApp:
         )
         self.settings_nav_button = ttk.Button(
             self.navigation,
-            text="Settings",
+            text=tr("nav.settings"),
             style="Nav.TButton",
             command=lambda: self._show_page("settings"),
         )
@@ -350,9 +365,9 @@ class MonitorVolumeApp:
 
         self.page_header = ttk.Frame(self.main_frame, style="Content.TFrame")
         self.page_header.grid(row=0, column=0, sticky="ew", pady=(0, self._scaled_px(18)))
-        self.page_title_var = tk.StringVar(value="Audio routes")
+        self.page_title_var = tk.StringVar(value=tr("page.routes.title"))
         self.page_subtitle_var = tk.StringVar(
-            value="Send each input to the output you want to control."
+            value=tr("page.routes.description")
         )
         self.monitor_label = ttk.Label(
             self.page_header,
@@ -397,34 +412,36 @@ class MonitorVolumeApp:
 
         self.log_button = ttk.Button(
             self.sidebar,
-            text="Diagnostics",
+            text=tr("nav.diagnostics"),
             style="Nav.TButton",
             command=self.show_diagnostic_log,
         )
         self.log_button.grid(row=6, column=0, sticky="ew")
 
-        startup_card = ttk.LabelFrame(
+        self.startup_card = ttk.LabelFrame(
             self.settings_panel,
-            text="Startup",
+            text=tr("settings.startup"),
             style="Card.TLabelframe",
             padding=16,
         )
-        startup_card.grid(row=0, column=0, sticky="ew")
-        startup_card.columnconfigure(0, weight=1)
-        ttk.Label(
-            startup_card,
-            text="Start with Windows",
+        self.startup_card.grid(row=0, column=0, sticky="ew")
+        self.startup_card.columnconfigure(0, weight=1)
+        self.start_with_windows_label = ttk.Label(
+            self.startup_card,
+            text=tr("settings.start_with_windows"),
             style="Card.TLabel",
             font=("Segoe UI Variable", 10, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            startup_card,
-            text="Launch quietly in the notification area when you sign in.",
+        )
+        self.start_with_windows_label.grid(row=0, column=0, sticky="w")
+        self.startup_description_label = ttk.Label(
+            self.startup_card,
+            text=tr("settings.startup_description"),
             style="CardMuted.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(self._scaled_px(3), 0))
+        )
+        self.startup_description_label.grid(row=1, column=0, sticky="w", pady=(self._scaled_px(3), 0))
         self.start_with_windows_button = ttk.Button(
-            startup_card,
-            text="On" if self.start_with_windows_var.get() else "Off",
+            self.startup_card,
+            text=tr("common.on") if self.start_with_windows_var.get() else tr("common.off"),
             command=self._toggle_start_with_windows_from_button,
             style="Toggle.TButton",
         )
@@ -438,7 +455,7 @@ class MonitorVolumeApp:
 
         self.configuration_actions = ttk.LabelFrame(
             self.settings_panel,
-            text="Configuration",
+            text=tr("settings.configuration"),
             style="Card.TLabelframe",
             padding=16,
         )
@@ -449,26 +466,29 @@ class MonitorVolumeApp:
             pady=(self._scaled_px(14), 0),
         )
         self.configuration_actions.columnconfigure(0, weight=1)
-        ttk.Label(
+        self.configuration_description_label = ttk.Label(
             self.configuration_actions,
-            text="Export a backup, import one, or restore the bundled defaults.",
+            text=tr("settings.configuration_description"),
             style="CardMuted.TLabel",
-        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, self._scaled_px(12)))
-        ttk.Button(
+        )
+        self.configuration_description_label.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, self._scaled_px(12)))
+        self.export_configuration_button = ttk.Button(
             self.configuration_actions,
-            text="Export",
+            text=tr("settings.export"),
             style="Accent.TButton",
             command=self.export_configuration,
-        ).grid(row=1, column=0, sticky="w")
-        ttk.Button(
+        )
+        self.export_configuration_button.grid(row=1, column=0, sticky="w")
+        self.import_configuration_button = ttk.Button(
             self.configuration_actions,
-            text="Import",
+            text=tr("settings.import"),
             style="Quiet.TButton",
             command=self.import_configuration,
-        ).grid(row=1, column=1, sticky="w", padx=(self._scaled_px(8), 0))
+        )
+        self.import_configuration_button.grid(row=1, column=1, sticky="w", padx=(self._scaled_px(8), 0))
         self.import_history_button = ttk.Button(
             self.configuration_actions,
-            text="Recent",
+            text=tr("settings.recent"),
             style="Quiet.TButton",
             command=self.show_import_history,
             takefocus=False,
@@ -479,12 +499,13 @@ class MonitorVolumeApp:
             sticky="w",
             padx=(self._scaled_px(8), 0),
         )
-        ttk.Button(
+        self.restore_default_button = ttk.Button(
             self.configuration_actions,
-            text="Restore default",
+            text=tr("settings.restore_default"),
             style="Quiet.TButton",
             command=self.import_default_configuration,
-        ).grid(row=2, column=0, sticky="w", pady=(self._scaled_px(10), 0))
+        )
+        self.restore_default_button.grid(row=2, column=0, sticky="w", pady=(self._scaled_px(10), 0))
         self.settings_panel.columnconfigure(0, weight=1)
 
         self.status_bar = tk.Label(
@@ -517,35 +538,36 @@ class MonitorVolumeApp:
             "routes": (
                 self.routes_panel,
                 self.route_nav_button,
-                "Audio routes",
-                "Send each input to the output you want to control.",
+                tr("page.routes.title"),
+                tr("page.routes.description"),
             ),
             "plugins": (
                 self.plugins_panel,
                 self.plugin_nav_button,
-                "Automations",
-                "Build ordered steps and choose how they run.",
+                tr("common.automations"),
+                tr("page.automations.description"),
             ),
             "integrations": (
                 self.integrations_panel,
                 self.integrations_nav_button,
-                "Integrations",
-                "Configure shared connections used by routes and automations.",
+                tr("nav.integrations"),
+                tr("page.integrations.description"),
             ),
             "appearance": (
                 self.appearance_panel,
                 self.appearance_nav_button,
-                "Appearance",
-                "Choose how volume changes are presented on screen.",
+                tr("nav.appearance"),
+                tr("page.appearance.description"),
             ),
             "settings": (
                 self.settings_panel,
                 self.settings_nav_button,
-                "Settings",
-                "Manage startup behavior and configuration backups.",
+                tr("nav.settings"),
+                tr("page.settings.description"),
             ),
         }
         selected_page, selected_button, title, subtitle = pages.get(page, pages["routes"])
+        self._current_legacy_page = page if page in pages else "routes"
         for candidate_page, candidate_button, _title, _subtitle in pages.values():
             if candidate_page is selected_page:
                 candidate_page.grid()
@@ -555,6 +577,48 @@ class MonitorVolumeApp:
                 candidate_button.configure(style="Nav.TButton")
         self.page_title_var.set(title)
         self.page_subtitle_var.set(subtitle)
+
+    def _refresh_legacy_localization(self) -> None:
+        """Refresh the recovery shell without rebuilding plugin-owned panels."""
+        widget_text = {
+            "brand_subtitle": "shell.subtitle",
+            "route_nav_button": "nav.routes",
+            "plugin_nav_button": "common.automations",
+            "integrations_nav_button": "nav.integrations",
+            "appearance_nav_button": "nav.appearance",
+            "settings_nav_button": "nav.settings",
+            "log_button": "nav.diagnostics",
+            "startup_card": "settings.startup",
+            "start_with_windows_label": "settings.start_with_windows",
+            "startup_description_label": "settings.startup_description",
+            "configuration_actions": "settings.configuration",
+            "configuration_description_label": "settings.configuration_description",
+            "export_configuration_button": "settings.export",
+            "import_configuration_button": "settings.import",
+            "import_history_button": "settings.recent",
+            "restore_default_button": "settings.restore_default",
+            "_log_title_label": "diagnostics.title",
+            "_log_description_label": "diagnostics.description",
+            "_log_refresh_button": "common.refresh",
+            "_log_close_button": "common.close",
+        }
+        for attribute, key in widget_text.items():
+            widget = getattr(self, attribute, None)
+            if widget is not None:
+                widget.configure(text=tr(key))
+        button = getattr(self, "start_with_windows_button", None)
+        start_var = getattr(self, "start_with_windows_var", None)
+        if button is not None and start_var is not None:
+            button.configure(text=tr("common.on") if start_var.get() else tr("common.off"))
+        window = getattr(self, "_log_window", None)
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    window.title(tr("diagnostics.window_title"))
+            except tk.TclError:
+                pass
+        if hasattr(self, "page_title_var"):
+            self._show_page(getattr(self, "_current_legacy_page", "routes"))
 
     def show_diagnostic_log(self) -> None:
         """Open the bounded diagnostic history without mutating its files."""
@@ -574,11 +638,11 @@ class MonitorVolumeApp:
         filename = f"FenSoundSwitch-{datetime.now():%Y%m%d-%H%M%S-%f}{ARCHIVE_EXTENSION}"
         destination = filedialog.asksaveasfilename(
             parent=self.root,
-            title="Export FenSoundSwitch configuration",
+            title=tr("config.export_title"),
             initialdir=directory,
             initialfile=filename,
             defaultextension=ARCHIVE_EXTENSION,
-            filetypes=[("FenSoundSwitch configuration", f"*{ARCHIVE_EXTENSION}"), ("All files", "*.*")],
+            filetypes=[(tr("config.file_type"), f"*{ARCHIVE_EXTENSION}"), (tr("common.all_files"), "*.*")],
         )
         if not destination:
             return
@@ -591,16 +655,16 @@ class MonitorVolumeApp:
             self._set_status(str(exc))
             return
         if history_archive == archive:
-            self._set_status(f"Configuration exported to {archive}.")
+            self._set_status(tr("config.exported").format(path=archive))
         else:
-            self._set_status(f"Configuration exported to {archive} and added to import history.")
+            self._set_status(tr("config.exported_history").format(path=archive))
 
     def import_configuration(self) -> None:
         source = filedialog.askopenfilename(
             parent=self.root,
-            title="Import FenSoundSwitch configuration",
+            title=tr("config.import_title"),
             initialdir=configuration_directory(),
-            filetypes=[("FenSoundSwitch configuration", f"*{ARCHIVE_EXTENSION}"), ("All files", "*.*")],
+            filetypes=[(tr("config.file_type"), f"*{ARCHIVE_EXTENSION}"), (tr("common.all_files"), "*.*")],
         )
         if source:
             self._confirm_import_configuration(Path(source))
@@ -608,7 +672,7 @@ class MonitorVolumeApp:
     def show_import_history(self) -> None:
         configurations = recent_configurations()
         if not configurations:
-            self._set_status("No exported configuration is available.")
+            self._set_status(tr("config.none_available"))
             return
         menu = tk.Menu(self.root, tearoff=False)
         for source in configurations:
@@ -627,14 +691,14 @@ class MonitorVolumeApp:
     def import_default_configuration(self) -> None:
         source = configuration_directory() / DEFAULT_ARCHIVE_NAME
         if not source.is_file():
-            self._set_status(f"Default configuration not found: {source}.")
+            self._set_status(tr("config.default_missing").format(path=source))
             return
         self._confirm_import_configuration(source)
 
     def _confirm_import_configuration(self, source: Path) -> None:
         if not messagebox.askyesno(
-            "Restart FenSoundSwitch?",
-            f"Importing {source.name} will close and restart FenSoundSwitch. Continue?",
+            tr("config.restart_title"),
+            tr("config.restart_message").format(name=source.name),
             parent=self.root,
         ):
             return
@@ -644,13 +708,13 @@ class MonitorVolumeApp:
             LOGGER.warning("Configuration import failed (%s).", exc.__class__.__name__)
             self._set_status(str(exc))
             return
-        self._set_status(f"Configuration imported from {source.name}. Restarting FenSoundSwitch...")
+        self._set_status(tr("config.imported_restart").format(name=source.name))
         self.restart_requested = True
         self.root.after_idle(self.on_close)
 
     def _create_diagnostic_log_window(self) -> None:
         window = tk.Toplevel(self.root)
-        window.title("FenSoundSwitch diagnostic log")
+        window.title(tr("diagnostics.window_title"))
         window.minsize(self._scaled_px(600), self._scaled_px(360))
         window.geometry(f"{self._scaled_px(820)}x{self._scaled_px(560)}")
         window.transient(self.root)
@@ -668,16 +732,18 @@ class MonitorVolumeApp:
         content.columnconfigure(0, weight=1)
         content.rowconfigure(2, weight=1)
 
-        ttk.Label(
+        self._log_title_label = ttk.Label(
             content,
-            text="Diagnostic log",
+            text=tr("diagnostics.title"),
             style="DialogTitle.TLabel",
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(
+        )
+        self._log_title_label.grid(row=0, column=0, columnspan=2, sticky="w")
+        self._log_description_label = ttk.Label(
             content,
-            text="Live application events. Sensitive credentials are never written here.",
+            text=tr("diagnostics.description"),
             style="DialogSubtitle.TLabel",
-        ).grid(
+        )
+        self._log_description_label.grid(
             row=1,
             column=0,
             columnspan=2,
@@ -709,8 +775,10 @@ class MonitorVolumeApp:
 
         actions = ttk.Frame(content)
         actions.grid(row=4, column=0, columnspan=2, sticky="e", pady=(self._scaled_px(14), 0))
-        ttk.Button(actions, text="Refresh", style="Accent.TButton", command=self._refresh_diagnostic_log).grid(row=0, column=0)
-        ttk.Button(actions, text="Close", style="Quiet.TButton", command=self._close_diagnostic_log).grid(
+        self._log_refresh_button = ttk.Button(actions, text=tr("common.refresh"), style="Accent.TButton", command=self._refresh_diagnostic_log)
+        self._log_refresh_button.grid(row=0, column=0)
+        self._log_close_button = ttk.Button(actions, text=tr("common.close"), style="Quiet.TButton", command=self._close_diagnostic_log)
+        self._log_close_button.grid(
             row=0,
             column=1,
             padx=(self._scaled_px(8), 0),
@@ -772,6 +840,10 @@ class MonitorVolumeApp:
         window = self._log_window
         self._log_window = None
         self._log_text = None
+        self._log_title_label = None
+        self._log_description_label = None
+        self._log_refresh_button = None
+        self._log_close_button = None
         if self._log_refresh_after_id is not None:
             self.root.after_cancel(self._log_refresh_after_id)
             self._log_refresh_after_id = None
@@ -942,9 +1014,6 @@ class MonitorVolumeApp:
                 on_error=self._handle_tray_error_from_thread,
                 icon_path=self.app_icon_path,
                 on_refresh=lambda: self._post_to_ui(self.refresh_configured_routes),
-                on_select_monitor=lambda selection: self._post_to_ui(
-                    lambda target=selection: self._select_monitor_from_tray(target)
-                ),
                 on_signal=lambda signal_id: self._post_to_ui(
                     lambda target=signal_id: self._dispatch_tray_signal(target)
                 ),
@@ -969,7 +1038,7 @@ class MonitorVolumeApp:
             Path(__file__).resolve().with_name("web_ui_host.py"),
             post_to_ui=self._post_to_ui,
             get_snapshot=self._web_snapshot,
-            dispatch_action=self._dispatch_web_action,
+            dispatch_action=self._dispatch_localized_web_action,
             allowed_actions={"route.save", "route.endpoint-form", "route.endpoint-action", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
             on_exit=self.on_close,
             on_minimize=self._on_web_minimize,
@@ -1070,8 +1139,9 @@ class MonitorVolumeApp:
                     if not any(option["value"] == target for option in signal_options_for_form):
                         signal_options_for_form.append({"label": f"Unavailable: {target}", "value": target, "configurable": False, "disabled": True})
                     label = next((str(option["label"]) for option in signal_options if option["value"] == target), target)
+                    option = next((option for option in signal_options if option["value"] == target), None)
                     summary = manager.slot_summary(slot.plugin_id, slot.action_id, slot.parameters)
-                    slot_values.append({"kind": "action", "target": target, "parameters": slot.parameters, "summary": summary})
+                    slot_values.append({"kind": "action", "target": target, "parameters": slot.parameters, "summary": summary, "summary_translatable": summary in {"Not configured", "Configuration unavailable", "Unavailable"}, "plugin_name": option.get("plugin_name", "") if option else "", "action_label": option.get("action_label", "") if option else ""})
                     slot_labels.append(f"{label} ({summary})" if summary else label)
             trigger_labels = []
             if signal.hotkey.hotkey is not None: trigger_labels.append(signal.hotkey.hotkey.label)
@@ -1136,8 +1206,28 @@ class MonitorVolumeApp:
             if sys.platform == "darwin"
             else "Launch quietly in the notification area when you sign in."
         )
-        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "integrations": integrations, "mqtt_profiles": mqtt_profiles, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "startup_label": startup_label, "startup_description": startup_description, "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "route_type", "type": "select", "label": "Type", "required": True, "default": "other", "options": [{"value": value, "label": label} for value, label in ROUTE_TYPE_LABELS.items()]}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form, "mqtt_profile": mqtt_profile_form}}
+        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "integrations": integrations, "mqtt_profiles": mqtt_profiles, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "startup_label": startup_label, "startup_description": startup_description, "ui_language": self.ui_language_preference, "resolved_ui_language": self.ui_language, "language_options": [{"value": "auto", "label": "Automatic (Windows language)"}, {"value": "en", "label": "English"}, {"value": "de", "label": "Deutsch"}, {"value": "es", "label": "Español"}, {"value": "fr", "label": "Français"}, {"value": "it", "label": "Italiano"}], "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "route_type", "type": "select", "label": "Type", "required": True, "default": "other", "options": [{"value": value, "label": label} for value, label in ROUTE_TYPE_LABELS.items()]}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form, "mqtt_profile": mqtt_profile_form}}
         return PresentationSnapshot(self._presentation_revision, snapshot)
+
+    def _dispatch_localized_web_action(self, action: str, arguments: Mapping[str, Any]) -> Any:
+        try:
+            result = self._dispatch_web_action(action, arguments)
+        except ValueError as exc:
+            raise UserActionError(translate_native_ui_text(str(exc).strip()) or exc.__class__.__name__) from exc
+        if not isinstance(result, dict):
+            return result
+        localized = dict(result)
+        message = localized.get("message")
+        if isinstance(message, str):
+            localized["message"] = translate_native_ui_text(message)
+        document = localized.get("document")
+        if isinstance(document, dict) and document.get("state") == "error":
+            description = document.get("description")
+            if isinstance(description, str):
+                localized["document"] = {**document, "description": translate_native_ui_text(description)}
+        if localized.get("state") == "error" and isinstance(localized.get("description"), str):
+            localized["description"] = translate_native_ui_text(str(localized["description"]))
+        return localized
 
     def _dispatch_web_action(self, action: str, arguments: Mapping[str, Any]) -> Any:
         manager = self._plugin_manager
@@ -1342,7 +1432,27 @@ class MonitorVolumeApp:
             values = arguments.get("values", {})
             if not isinstance(values, dict): raise ValueError("Plugin values are invalid.")
             manager.invoke_plugin_ui_action(str(arguments.get("id", "")), str(arguments.get("action_id", "")), values)
-        elif action == "settings.save": self.set_start_with_windows_enabled(bool(arguments.get("start_with_windows")))
+        elif action == "settings.save":
+            if "start_with_windows" in arguments:
+                enabled = arguments["start_with_windows"]
+                if not isinstance(enabled, bool):
+                    raise UserActionError("The startup setting is invalid.")
+                self.set_start_with_windows_enabled(enabled)
+            if "ui_language" in arguments:
+                language = arguments["ui_language"]
+                if not isinstance(language, str):
+                    raise UserActionError("The language setting is invalid.")
+                try:
+                    save_ui_language(language)
+                except (OSError, ValueError) as exc:
+                    raise UserActionError(str(exc)) from exc
+                self.ui_language_preference = load_ui_language()
+                self.ui_language = resolve_ui_language(
+                    self.ui_language_preference,
+                    get_user_default_locale_name(),
+                )
+                set_native_ui_language(self.ui_language)
+                self._refresh_legacy_localization()
         elif action == "config.export": export_configuration(Path(str(arguments.get("path", ""))))
         elif action == "config.import":
             import_configuration(Path(str(arguments.get("path", "")))); self.restart_requested = True; self.root.after_idle(self.on_close)
@@ -1402,22 +1512,19 @@ class MonitorVolumeApp:
                 "Updating the Start with Windows setting failed (%s).",
                 exc.__class__.__name__,
             )
-            action = "enable" if enabled else "disable"
-            self._set_status(
-                f"Could not {action} Start with Windows: {self._format_error(exc)}"
-            )
+            key = "startup.enable_failed" if enabled else "startup.disable_failed"
+            self._set_status(tr(key).format(error=self._format_error(exc)))
             return
 
         self.start_with_windows = enabled
-        state = "enabled" if enabled else "disabled"
-        self._set_status(f"Start with Windows {state}.")
+        self._set_status(tr("startup.enabled" if enabled else "startup.disabled"))
 
     def set_start_with_windows_enabled(self, enabled: bool) -> None:
         self.start_with_windows_var.set(bool(enabled))
         self.on_start_with_windows_toggled()
         button = getattr(self, "start_with_windows_button", None)
         if button is not None:
-            button.configure(text="On" if self.start_with_windows_var.get() else "Off")
+            button.configure(text=tr("common.on") if self.start_with_windows_var.get() else tr("common.off"))
         manager = getattr(self, "_plugin_manager", None)
         if manager is not None:
             manager.refresh_start_with_windows_controls()
@@ -1426,7 +1533,7 @@ class MonitorVolumeApp:
         self.start_with_windows_var.set(not bool(self.start_with_windows_var.get()))
         self.on_start_with_windows_toggled()
         self.start_with_windows_button.configure(
-            text="On" if self.start_with_windows_var.get() else "Off"
+            text=tr("common.on") if self.start_with_windows_var.get() else tr("common.off")
         )
         manager = getattr(self, "_plugin_manager", None)
         if manager is not None:
@@ -1854,11 +1961,13 @@ class MonitorVolumeApp:
 
     def _format_error(self, exc: Exception) -> str:
         message = str(exc).strip()
-        return message or exc.__class__.__name__
+        return translate_native_ui_text(message or exc.__class__.__name__)
 
     def _set_status(self, message: str) -> None:
-        self.status_var.set(message)
-        LOGGER.info("Status bar: %s", message)
+        self._status_source = message
+        localized = translate_native_ui_text(message)
+        self.status_var.set(localized)
+        LOGGER.info("Status bar: %s", localized)
 
     def _set_widget_enabled(self, widget: ttk.Widget, enabled: bool) -> None:
         if enabled:
@@ -1986,7 +2095,7 @@ class MonitorVolumeApp:
         can_update_status = (
             self._is_topology_generation_current(generation)
             and self._control_ready()
-            and self.status_var.get().startswith("Ready.")
+            and getattr(self, "_status_source", self.status_var.get()).startswith("Ready.")
         )
         if error is not None:
             if isinstance(error, AudioOutputTopologyChanged):
@@ -2081,7 +2190,7 @@ class MonitorVolumeApp:
         if callable(show_text):
             self._render_overlay(
                 "show_text",
-                text,
+                translate_native_ui_text(text),
                 preferred_display_device_name=self._selected_display_device_name(),
             )
 
@@ -2094,8 +2203,8 @@ class MonitorVolumeApp:
                 return
             self._show_volume_statuses(
                 (
-                    VolumeStatus("preview-audio-1", "Voice", 30, routed=True, route_type="voice"),
-                    VolumeStatus("preview-audio-2", "Headset", 70, routed=True, route_type="headset"),
+                    VolumeStatus("preview-audio-1", translate_native_ui_text("Voice"), 30, routed=True, route_type="voice"),
+                    VolumeStatus("preview-audio-2", translate_native_ui_text("Headset"), 70, routed=True, route_type="headset"),
                 ),
                 None,
             )
@@ -2116,8 +2225,8 @@ class MonitorVolumeApp:
             previous.close()
         self._preview_overlay = overlay
         statuses = (
-            VolumeStatus("preview-audio-1", "Voice", 30, routed=True, route_type="voice"),
-            VolumeStatus("preview-audio-2", "Headset", 70, routed=True, route_type="headset"),
+            VolumeStatus("preview-audio-1", translate_native_ui_text("Voice"), 30, routed=True, route_type="voice"),
+            VolumeStatus("preview-audio-2", translate_native_ui_text("Headset"), 70, routed=True, route_type="headset"),
         )
         try:
             selected = overlay.select_statuses(statuses, None)
@@ -2261,7 +2370,7 @@ class MonitorVolumeApp:
         if not self._closing and self._overlay is not None:
             self._render_overlay(
                 "show_error",
-                reason,
+                translate_native_ui_text(reason),
                 preferred_display_device_name=self._selected_display_device_name(),
             )
 
@@ -2324,30 +2433,9 @@ class MonitorVolumeApp:
         if tray_icon is None:
             return
 
-        selected_key = getattr(self, "selected_key", None)
-        active_monitor = selected_key.description if selected_key is not None else None
-        monitor_items: list[TrayMonitorMenuItem] = []
-        for monitor_ref in getattr(self, "monitors", ()):
-            selection = monitor_ref.selection_key
-            if selection is None:
-                continue
-            active = selection == selected_key
-            if active:
-                active_monitor = monitor_ref.display_name
-            monitor_items.append(
-                TrayMonitorMenuItem(
-                    label=monitor_ref.display_name,
-                    selection=selection,
-                    active=active,
-                )
-            )
-
         tray_icon.update_menu_state(
             TrayMenuState(
-                active_monitor=active_monitor,
-                current_volume=getattr(self, "current_volume", None),
                 routing_enabled=bool(getattr(self, "_hotkeys_enabled", False)),
-                monitors=tuple(monitor_items),
                 signals=tuple(
                     TraySignalMenuItem(signal.tray_label, signal.signal_id)
                     for signal in getattr(getattr(self, "_plugin_manager", None), "action_signals", ())
@@ -2362,14 +2450,6 @@ class MonitorVolumeApp:
         manager = getattr(self, "_plugin_manager", None)
         if manager is not None:
             manager.dispatch_action_signal(signal_id)
-
-    def _select_monitor_from_tray(self, selection: SavedMonitorSelection) -> None:
-        if self._closing:
-            return
-        if self._busy:
-            self._set_status("Wait for the current monitor operation before switching monitors.")
-            return
-        self.refresh_monitors(selection_target=selection)
 
     @staticmethod
     def _selection_error_message(status: SelectionMatchStatus) -> str:

@@ -45,6 +45,10 @@ Each route activates independently. If several routes address the same receiver 
 
 If a receiver does not respond, confirm that it is powered on, on the same network, and that its network-control option is enabled.
 
+### Application And HTTP Outputs
+
+**Windows application volume** exact-matches an active Core Audio session by executable on one configured render endpoint without persisting a PID. **Generic HTTP volume** performs bounded HTTP/HTTPS JSON reads and absolute writes with mandatory confirmed readback; redirects are rejected.
+
 ## Manage Routes
 
 - **Edit** changes a route name, informational type, input, output, or output settings.
@@ -75,6 +79,8 @@ The separate **Integrations** tab is a simple integration list. Select **Configu
 Before Discord is configured, its integration card shows **Configure** and **Open Developer Portal**. Configure presents numbered OAuth setup instructions. After client configuration is saved, those setup controls are hidden and **Reset authorization** is shown instead. Reset removes the Credential Manager OAuth data and restores the setup controls.
 
 **DDC monitor input** adds a **Select monitor input** automation step. Add the step and select **Configure** beside it. The configuration dialog opens immediately with a waiting message while monitor discovery runs, then shows the stable monitor and input choices. DDC handles and the live `Display n` number shown in Windows Settings are acquired together from the same Windows monitor record; neither list position nor description matching is used. Monitor choices are ordered by ascending Windows display number. Use **Refresh monitors** in that dialog to repeat discovery. Every step keeps its own target, so one automation can configure several screens independently. The monitor is saved by stable EDID identity when available, with its Windows device path as the fallback; its temporary display number is never saved. Each run finds that exact monitor again, confirms that it still advertises the selected input, changes it once, and verifies the result. A missing or ambiguous monitor stops the automation without changing another display.
+
+MQTT publishing through a saved profile is available in the bundled MQTT plugin. The bundled system automation plugin adds exact-monitor DDC brightness/contrast, bounded HTTP/HTTPS requests, and confirmed Windows power-plan changes. HTTP actions reject URL credentials, redirects, and transport-controlled headers; their configured headers and bodies are included in exports.
 
 **Audio output keep-alive** renders silence to the selected current Windows default playback output, voice output, or both. It is disabled until configured. Choose continuous operation, or keep the outputs active only while the pointer has moved within the selected number of seconds. The plugin does not change volume or default-device selection.
 

@@ -5,13 +5,22 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, call, patch
+from unittest.mock import Mock, call, mock_open, patch
 
 from plugins import discord_output_plugin as discord
 from plugin_api import PluginHostContext
 
 
 class DiscordPureFunctionTests(unittest.TestCase):
+    def test_exhausted_local_pipes_report_discord_not_running(self) -> None:
+        client = discord.DiscordRpcClient("123456789012345")
+        with patch("plugins.discord_output_plugin.sys.platform", "win32"), patch(
+            "builtins.open", mock_open()
+        ) as opened:
+            opened.side_effect = OSError("missing")
+            with self.assertRaises(discord.DiscordNotRunningError):
+                client.connect()
+
     def test_alternative_selection_prefers_first_non_current_concrete_device(self) -> None:
         output = {
             "device_id": "current",
@@ -244,6 +253,8 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
                 "client_secret": " secret ",
             })
         self.assertEqual("complete", result["status"])
+        self.assertEqual("Discord authorization started.", result["message"])
+        self.assertEqual("Checking Discord authorization…", plugin._current_status())
         save.assert_called_once_with(saved)
         start_worker.assert_called_once_with(plugin._validate_authorization, True)
         self.assertEqual([action["id"] for action in plugin.get_plugin_ui()["actions"]], ["reset"])
@@ -252,10 +263,21 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
         plugin = discord.DiscordOutputPlugin()
         plugin._configured = True
         with patch("plugins.discord_output_plugin._delete_credential") as delete:
-            plugin.invoke_ui_action("reset", {})
+            result = plugin.invoke_ui_action("reset", {})
 
         self.assertEqual(delete.call_count, 2)
+        self.assertEqual("Discord authorization was reset.", result["message"])
+        self.assertEqual("Setup required", plugin._current_status())
         self.assertEqual([action["id"] for action in plugin.get_plugin_ui()["actions"]], ["open_portal", "setup"])
+
+    def test_portal_action_reports_the_fixed_opened_status(self) -> None:
+        plugin = discord.DiscordOutputPlugin()
+
+        with patch("plugins.discord_output_plugin.webbrowser.open") as opened:
+            result = plugin.invoke_ui_action("open_portal", {})
+
+        opened.assert_called_once()
+        self.assertEqual("Discord Developer Portal opened.", result["message"])
 
     def test_repeat_trigger_is_ignored_while_an_operation_is_active(self) -> None:
         plugin = discord.DiscordOutputPlugin()
@@ -305,6 +327,7 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
             "expires_at": 99.0,
         }
         plugin = discord.DiscordOutputPlugin()
+        plugin._configured = True
         report_status = Mock()
         plugin._host = PluginHostContext(
             plugin_id="discord-output",
@@ -315,13 +338,55 @@ class DiscordPluginLifecycleTests(unittest.TestCase):
             prepare_window=Mock(),
         )
         client = Mock()
-        client.connect.side_effect = discord.DiscordRpcError("Discord is not running")
+        client.connect.side_effect = discord.DiscordNotRunningError("Discord is not running")
         with patch("plugins.discord_output_plugin._load_saved_oauth", return_value=saved), patch(
             "plugins.discord_output_plugin.DiscordRpcClient", return_value=client
-        ):
+        ), patch.object(plugin, "_ensure_retry_worker") as ensure_retry:
             plugin._validate_authorization(False)
         self.assertIn("Authorization failed", plugin._current_status())
+        self.assertEqual(
+            [action["id"] for action in plugin.get_plugin_ui()["actions"]],
+            ["retry", "reset"],
+        )
+        ensure_retry.assert_called_once_with()
         report_status.assert_called()
+
+    def test_retry_button_wakes_the_existing_retry_worker(self) -> None:
+        plugin = discord.DiscordOutputPlugin()
+        plugin._configured = True
+        plugin._discord_not_running = True
+
+        with patch.object(plugin, "_ensure_retry_worker") as ensure_retry, patch.object(
+            plugin._retry_wake, "set"
+        ) as wake:
+            result = plugin.invoke_ui_action("retry", {})
+
+        self.assertEqual({"status": "complete"}, result)
+        ensure_retry.assert_called_once_with()
+        wake.assert_called_once_with()
+
+    def test_retry_worker_revalidates_after_thirty_seconds_and_stops_when_ready(self) -> None:
+        plugin = discord.DiscordOutputPlugin()
+        plugin._configured = True
+        plugin._discord_not_running = True
+        retry_wake = Mock()
+        retry_wake.wait.return_value = False
+        plugin._retry_wake = retry_wake
+
+        def validate(_allow_authorize: bool) -> None:
+            plugin._set_discord_not_running(False)
+            plugin._set_status("Ready")
+
+        with patch.object(plugin, "_validate_authorization", side_effect=validate) as validate_mock:
+            plugin._retry_authorization_loop()
+
+        retry_wake.wait.assert_called_once_with(30.0)
+        validate_mock.assert_called_once_with(False)
+        self.assertEqual("Ready", plugin._current_status())
+        self.assertEqual(
+            [action["id"] for action in plugin.get_plugin_ui()["actions"]],
+            ["reset"],
+        )
 
 
 if __name__ == "__main__":

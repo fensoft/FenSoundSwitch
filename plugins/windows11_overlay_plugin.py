@@ -6,6 +6,7 @@ from tkinter import ttk
 from typing import Mapping
 
 from diagnostics import get_logger
+from localization import tr, translate_source
 from plugin_api import PLUGIN_API_VERSION, OverlayRenderer, PluginHostContext, VolumeStatus, plugin_ui_document, plugin_ui_result
 from native_platform import (
     DisplayArea,
@@ -91,7 +92,7 @@ def order_volume_statuses(
 def format_volume_status(status: VolumeStatus) -> str:
     if status.confirmed_volume is not None:
         return f"{status.confirmed_volume}%"
-    return "Unavailable" + (f" ({status.reason})" if status.reason else "")
+    return tr("common.unavailable") + (f" ({translate_source(status.reason)})" if status.reason else "")
 
 
 def format_volume_status_rows(
@@ -148,7 +149,7 @@ class VolumeOverlay:
         except tk.TclError:
             pass
 
-        self.title_var = tk.StringVar(value="Volume")
+        self.title_var = tk.StringVar(value=tr("overlay.volume"))
         self.route_var = tk.StringVar(value="")
         self.error_var = tk.StringVar(value="")
 
@@ -283,7 +284,7 @@ class VolumeOverlay:
         volume = max(0, min(volume, 100))
         self._hide_status_rows()
         self._hide_route_name()
-        self.title_var.set("Volume")
+        self.title_var.set(tr("overlay.volume"))
         self.value_var.set(f"{volume}%")
         self.value_label.configure(fg=self._palette.text)
         if not self.value_label.winfo_manager():
@@ -302,12 +303,12 @@ class VolumeOverlay:
     ) -> None:
         self._hide_status_rows()
         self._hide_route_name()
-        self.title_var.set("Volume")
-        self.value_var.set("Unavailable")
+        self.title_var.set(tr("overlay.volume"))
+        self.value_var.set(tr("common.unavailable"))
         self.value_label.configure(fg=self._palette.error)
         if not self.value_label.winfo_manager():
             self.value_label.pack(anchor="w", pady=(1, 8))
-        self.error_var.set(message.strip() or "Selected monitor is unavailable.")
+        self.error_var.set(message.strip() or tr("overlay.monitor_unavailable"))
         self.progress.pack_forget()
         if not self.error_label.winfo_manager():
             self.error_label.pack(anchor="w")
@@ -321,7 +322,7 @@ class VolumeOverlay:
         self._hide_status_rows()
         self._hide_route_name()
         self.title_var.set("FenSoundSwitch")
-        self.value_var.set(text.strip() or "Done")
+        self.value_var.set(text.strip() or tr("common.done"))
         self.value_label.configure(fg=self._palette.text)
         if not self.value_label.winfo_manager():
             self.value_label.pack(anchor="w", pady=(1, 8))
@@ -338,7 +339,7 @@ class VolumeOverlay:
     ) -> None:
         statuses = self.select_statuses(statuses, current_provider_id)
         if not statuses:
-            self.show_error("No routed volume providers are available.", preferred_display_device_name)
+            self.show_error(tr("overlay.no_providers"), preferred_display_device_name)
             return
         if self._mode == "current":
             self._show_current_status(statuses[0])
@@ -348,15 +349,15 @@ class VolumeOverlay:
 
     def _show_current_status(self, status: VolumeStatus) -> None:
         self._hide_status_rows()
-        self.title_var.set("Volume")
+        self.title_var.set(tr("overlay.volume"))
         self.route_var.set(status.display_name)
         if not self.route_label.winfo_manager():
             self.route_label.pack(anchor="w", pady=(1, 3))
-        self.error_var.set(status.reason or "Selected route is unavailable.")
+        self.error_var.set(translate_source(status.reason) if status.reason else tr("overlay.route_unavailable"))
         self.error_label.pack_forget()
         if status.confirmed_volume is None:
             self.progress.pack_forget()
-            self.value_var.set("Unavailable")
+            self.value_var.set(tr("common.unavailable"))
             self.value_label.configure(fg=self._palette.error)
             if not self.value_label.winfo_manager():
                 self.value_label.pack(anchor="w", pady=(1, 3))
@@ -372,7 +373,7 @@ class VolumeOverlay:
         self.progress.configure(value=status.confirmed_volume)
 
     def _show_all_statuses(self, statuses: tuple[VolumeStatus, ...]) -> None:
-        self.title_var.set("Volume")
+        self.title_var.set(tr("overlay.volume"))
         self.route_var.set("")
         self.error_var.set("")
         self._hide_route_name()

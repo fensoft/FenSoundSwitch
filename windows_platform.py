@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from localization import tr
+
 
 HC_ACTION = 0
 WH_KEYBOARD_LL = 13
@@ -52,7 +54,6 @@ NOTIFYICON_VERSION_4 = 4
 LR_LOADFROMFILE = 0x0010
 MF_STRING = 0x00000000
 MF_GRAYED = 0x00000001
-MF_CHECKED = 0x00000008
 MF_SEPARATOR = 0x00000800
 TPM_RIGHTBUTTON = 0x0002
 TPM_RETURNCMD = 0x0100
@@ -70,6 +71,7 @@ SWP_NOOWNERZORDER = 0x0200
 HWND_TOPMOST = -1
 DEFAULT_DISPLAY_SCALE_PERCENT = 100
 USER_DEFAULT_SCREEN_DPI = 96
+LOCALE_NAME_MAX_LENGTH = 85
 SPI_GETHIGHCONTRAST = 0x0042
 HCF_HIGHCONTRASTON = 0x00000001
 SM_CXSMICON = 49
@@ -437,6 +439,8 @@ kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
 kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 kernel32.GetCurrentThreadId.argtypes = []
 kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+kernel32.GetUserDefaultLocaleName.argtypes = [wintypes.LPWSTR, ctypes.c_int]
+kernel32.GetUserDefaultLocaleName.restype = ctypes.c_int
 kernel32.CreateMutexW.argtypes = [LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
 kernel32.CreateMutexW.restype = wintypes.HANDLE
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -843,6 +847,13 @@ def get_window_dpi(hwnd: int) -> int:
     return dpi
 
 
+def get_user_default_locale_name() -> str | None:
+    buffer = ctypes.create_unicode_buffer(LOCALE_NAME_MAX_LENGTH)
+    if kernel32.GetUserDefaultLocaleName(buffer, len(buffer)) <= 0:
+        return None
+    return buffer.value or None
+
+
 def is_high_contrast_enabled() -> bool:
     high_contrast = HIGHCONTRASTW()
     high_contrast.cbSize = ctypes.sizeof(high_contrast)
@@ -1206,13 +1217,6 @@ class _TrayShowRequest:
 
 
 @dataclass(frozen=True)
-class TrayMonitorMenuItem:
-    label: str
-    selection: object
-    active: bool = False
-
-
-@dataclass(frozen=True)
 class TraySignalMenuItem:
     label: str
     signal_id: str
@@ -1220,10 +1224,7 @@ class TraySignalMenuItem:
 
 @dataclass(frozen=True)
 class TrayMenuState:
-    active_monitor: str | None = None
-    current_volume: int | None = None
     routing_enabled: bool = False
-    monitors: tuple[TrayMonitorMenuItem, ...] = ()
     signals: tuple[TraySignalMenuItem, ...] = ()
 
 
@@ -1232,9 +1233,7 @@ class TrayIconController:
     MENU_RESTORE = 1001
     MENU_EXIT = 1002
     MENU_REFRESH = 1003
-    MENU_MONITOR_BASE = 2000
     MENU_SIGNAL_BASE = 3000
-    MAX_MONITOR_MENU_ITEMS = 100
     MAX_SIGNAL_MENU_ITEMS = 100
     SHOW_TIMEOUT_SECONDS = 2.0
     START_TIMEOUT_SECONDS = NATIVE_START_TIMEOUT_SECONDS
@@ -1248,7 +1247,6 @@ class TrayIconController:
         on_error: Callable[[Exception], None],
         icon_path: Path | None = None,
         on_refresh: Callable[[], None] | None = None,
-        on_select_monitor: Callable[[object], None] | None = None,
         on_signal: Callable[[str], None] | None = None,
     ) -> None:
         self.tooltip = tooltip[:127]
@@ -1256,7 +1254,6 @@ class TrayIconController:
         self.on_exit = on_exit
         self.on_error = on_error
         self.on_refresh = on_refresh or (lambda: None)
-        self.on_select_monitor = on_select_monitor or (lambda _selection: None)
         self.on_signal = on_signal or (lambda _signal_id: None)
         self._icon_path = str(icon_path) if icon_path is not None else None
         self._instance = kernel32.GetModuleHandleW(None)
@@ -1527,7 +1524,6 @@ class TrayIconController:
 
     def _show_context_menu(self, hwnd: wintypes.HWND) -> None:
         state = self._get_menu_state()
-        monitor_items = state.monitors[: self.MAX_MONITOR_MENU_ITEMS]
         signal_items = state.signals[: self.MAX_SIGNAL_MENU_ITEMS]
         menu = user32.CreatePopupMenu()
         if not menu:
@@ -1535,45 +1531,20 @@ class TrayIconController:
             return
 
         try:
-            active_monitor = state.active_monitor or "Not selected"
-            current_volume = (
-                "--" if state.current_volume is None else f"{state.current_volume}%"
-            )
-            routing_state = "Enabled" if state.routing_enabled else "Disabled"
+            routing_state = tr("common.enabled") if state.routing_enabled else tr("common.disabled")
             entries = (
-                (MF_STRING | MF_GRAYED, 0, f"Active monitor: {active_monitor}"),
-                (MF_STRING | MF_GRAYED, 0, f"Current volume: {current_volume}"),
-                (MF_STRING | MF_GRAYED, 0, f"Routing: {routing_state}"),
+                (MF_STRING | MF_GRAYED, 0, f"{tr('tray.routing')}: {routing_state}"),
                 (MF_SEPARATOR, 0, None),
-                (MF_STRING, self.MENU_REFRESH, "Refresh"),
-                (MF_STRING | MF_GRAYED, 0, "Switch monitor"),
+                (MF_STRING, self.MENU_REFRESH, tr("common.refresh")),
             )
             for flags, command_id, label in entries:
                 if not self._append_menu_item(menu, flags, command_id, label):
                     return
 
-            if monitor_items:
-                for index, item in enumerate(monitor_items):
-                    flags = MF_STRING | (MF_CHECKED if item.active else 0)
-                    if not self._append_menu_item(
-                        menu,
-                        flags,
-                        self.MENU_MONITOR_BASE + index,
-                        item.label,
-                    ):
-                        return
-            elif not self._append_menu_item(
-                menu,
-                MF_STRING | MF_GRAYED,
-                0,
-                "No selectable monitors",
-            ):
-                return
-
             if signal_items:
                 if not self._append_menu_item(menu, MF_SEPARATOR, 0, None):
                     return
-                if not self._append_menu_item(menu, MF_STRING | MF_GRAYED, 0, "Automations"):
+                if not self._append_menu_item(menu, MF_STRING | MF_GRAYED, 0, tr("common.automations")):
                     return
                 for index, item in enumerate(signal_items):
                     if not self._append_menu_item(
@@ -1586,8 +1557,8 @@ class TrayIconController:
 
             for flags, command_id, label in (
                 (MF_SEPARATOR, 0, None),
-                (MF_STRING, self.MENU_RESTORE, "Restore"),
-                (MF_STRING, self.MENU_EXIT, "Exit"),
+                (MF_STRING, self.MENU_RESTORE, tr("common.restore")),
+                (MF_STRING, self.MENU_EXIT, tr("common.exit")),
             ):
                 if not self._append_menu_item(menu, flags, command_id, label):
                     return
@@ -1609,7 +1580,7 @@ class TrayIconController:
             )
             user32.PostMessageW(hwnd, WM_NULL, 0, 0)
 
-            self._dispatch_menu_command(command_id, monitor_items, signal_items)
+            self._dispatch_menu_command(command_id, signal_items)
         finally:
             user32.DestroyMenu(menu)
 
@@ -1636,7 +1607,6 @@ class TrayIconController:
     def _dispatch_menu_command(
         self,
         command_id: int,
-        monitor_items: tuple[TrayMonitorMenuItem, ...] | None = None,
         signal_items: tuple[TraySignalMenuItem, ...] | None = None,
     ) -> bool:
         if command_id == self.MENU_RESTORE:
@@ -1649,11 +1619,6 @@ class TrayIconController:
             self.on_refresh()
             return True
 
-        items = monitor_items if monitor_items is not None else self._get_menu_state().monitors
-        item_index = command_id - self.MENU_MONITOR_BASE
-        if 0 <= item_index < min(len(items), self.MAX_MONITOR_MENU_ITEMS):
-            self.on_select_monitor(items[item_index].selection)
-            return True
         signals = signal_items if signal_items is not None else self._get_menu_state().signals
         signal_index = command_id - self.MENU_SIGNAL_BASE
         if 0 <= signal_index < min(len(signals), self.MAX_SIGNAL_MENU_ITEMS):

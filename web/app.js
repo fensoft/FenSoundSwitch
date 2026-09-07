@@ -1,16 +1,17 @@
 "use strict";
 
+const { applyStatic: applyStaticTranslations, setLanguage, source: sourceText, t } = window.FenI18n;
 const pages = {
-  routes: ["Routes", "Connect an input to the volume output it controls.", "New route"],
-  actions: ["Automations", "Run ordered steps from app start, keyboard, tray, or MQTT/HA.", "New automation"],
-  integrations: ["Integrations", "Configure connections used by routes and automations.", ""],
-  appearance: ["Appearance", "Choose how volume changes appear on screen.", ""],
-  settings: ["Settings", "Manage startup and configuration backups.", ""],
-  diagnostics: ["Diagnostics", "Review bounded application health information.", ""],
-  about: ["About", "Application identity and build information.", ""]
+  routes: ["nav.routes", "page.routes.description", "page.routes.action"],
+  actions: ["nav.actions", "page.actions.description", "page.actions.action"],
+  integrations: ["nav.integrations", "page.integrations.description", ""],
+  appearance: ["nav.appearance", "page.appearance.description", ""],
+  settings: ["nav.settings", "page.settings.description", ""],
+  diagnostics: ["nav.diagnostics", "page.diagnostics.description", ""],
+  about: ["nav.about", "page.about.description", ""]
 };
 
-const state = { page: "routes", snapshot: null, revision: -1, polling: false, failures: 0, editor: null, importMenuOpen: false };
+const state = { page: "routes", snapshot: null, revision: -1, polling: false, failures: 0, editor: null, importMenuOpen: false, language: "" };
 const content = document.querySelector("#content");
 const notices = document.querySelector("#notice-region");
 const primaryAction = document.querySelector("#primary-action");
@@ -37,6 +38,25 @@ function element(tag, options = {}, children = []) {
 
 function safeArray(value) { return Array.isArray(value) ? value : []; }
 function safeText(value, fallback = "") { return typeof value === "string" ? value : fallback; }
+function optionText(field, option) {
+  const label = safeText(option.label, String(option.value ?? ""));
+  const key = safeText(field.key || field.id);
+  const baseKey = key.split("__").at(-1);
+  const endpointId = option.value && typeof option.value === "object" ? safeText(option.value.endpoint_id) : "";
+  const isTranslatedEnum = baseKey === "route_type" || baseKey === "mode" || baseKey === "startup_input" || (baseKey === "endpoint" && endpointId.startsWith("fensoundswitch:"));
+  return isTranslatedEnum ? sourceText(label) : label;
+}
+function applyLanguage() {
+  const language = safeText(state.snapshot?.settings?.resolved_ui_language, "en");
+  if (state.language === language) return;
+  state.language = language;
+  setLanguage(language);
+  applyStaticTranslations();
+  const [title, description, action] = pages[state.page];
+  document.querySelector("#page-title").textContent = t(title);
+  document.querySelector("#page-description").textContent = t(description);
+  primaryAction.textContent = action ? t(action) : "";
+}
 function homeAssistantId(value) {
   return safeText(value)
     .normalize("NFKD")
@@ -47,15 +67,15 @@ function homeAssistantId(value) {
     .slice(0, 64);
 }
 function hotkeyLabel(value) {
-  if (!value || typeof value !== "object") return "Not set";
+  if (!value || typeof value !== "object") return t("common.notSet");
   const parts = [];
-  if (value.modifiers & 2) parts.push("Ctrl");
-  if (value.modifiers & 1) parts.push("Alt");
-  if (value.modifiers & 4) parts.push("Shift");
-  if (value.modifiers & 8) parts.push("Win");
+  if (value.modifiers & 2) parts.push(sourceText("Ctrl"));
+  if (value.modifiers & 1) parts.push(sourceText("Alt"));
+  if (value.modifiers & 4) parts.push(sourceText("Shift"));
+  if (value.modifiers & 8) parts.push(sourceText("Win"));
   const key = Number(value.virtual_key);
   const names = { 8: "Backspace", 9: "Tab", 13: "Enter", 19: "Pause", 20: "Caps Lock", 27: "Escape", 32: "Space", 33: "Page Up", 34: "Page Down", 35: "End", 36: "Home", 37: "Left", 38: "Up", 39: "Right", 40: "Down", 44: "Print Screen", 45: "Insert", 46: "Delete", 91: "Left Win", 92: "Right Win", 93: "Menu", 144: "Num Lock", 145: "Scroll Lock" };
-  parts.push(names[key] || (key >= 65 && key <= 90 ? String.fromCharCode(key) : key >= 48 && key <= 57 ? String.fromCharCode(key) : key >= 96 && key <= 105 ? `Numpad ${key - 96}` : key >= 112 && key <= 135 ? `F${key - 111}` : `VK 0x${key.toString(16).toUpperCase().padStart(2, "0")}`));
+  parts.push(sourceText(names[key]) || (key >= 65 && key <= 90 ? String.fromCharCode(key) : key >= 48 && key <= 57 ? String.fromCharCode(key) : key >= 96 && key <= 105 ? `${sourceText("Numpad")} ${key - 96}` : key >= 112 && key <= 135 ? `F${key - 111}` : `VK 0x${key.toString(16).toUpperCase().padStart(2, "0")}`));
   return parts.join("+");
 }
 function virtualKeyFromEvent(event) {
@@ -73,9 +93,14 @@ function virtualKeyFromEvent(event) {
 }
 
 async function nativeRequest(method, params = {}) {
-  if (!window.pywebview?.api?.request) throw new Error("Native bridge is not ready.");
+  if (!window.pywebview?.api?.request) throw new Error(t("error.bridge"));
   const response = await window.pywebview.api.request(method, params);
-  if (!response || response.ok !== true) throw new Error(response?.error?.message || "The request failed.");
+  if (!response || response.ok !== true) {
+    const raw = safeText(response?.error?.message);
+    if (!raw) throw new Error(t("error.request"));
+    const translated = sourceText(raw);
+    throw new Error(translated !== raw || state.language === "en" ? translated : t("error.requestDetail", { detail: raw }));
+  }
   return response.result;
 }
 
@@ -91,7 +116,7 @@ function showNotice(message, error = false, retry = false) {
   if (!message) return;
   const box = element("div", { class: `notice${error ? " is-error" : ""}`, role: error ? "alert" : "status" });
   box.append(element("p", { text: message }));
-  if (retry) box.append(element("button", { class: "secondary", type: "button", text: "Reconnect", onclick: pollSnapshot }));
+  if (retry) box.append(element("button", { class: "secondary", type: "button", text: t("common.reconnect"), onclick: pollSnapshot }));
   notices.append(box);
 }
 
@@ -105,16 +130,17 @@ async function pollSnapshot() {
     if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)) {
       if (Number.isInteger(snapshot.revision) && snapshot.revision >= state.revision) state.revision = snapshot.revision;
       if (snapshot.changed !== false) state.snapshot = snapshot;
+      applyLanguage();
       state.failures = 0;
-      setConnection("online", "Connected");
+      setConnection("online", t("common.connected"));
       showNotice("");
       render();
     }
   } catch (error) {
     state.failures += 1;
-    setConnection("offline", "Disconnected");
-    showNotice(safeText(error.message, "Connection lost."), true, true);
-    if (!state.snapshot) renderError("The command center could not connect to FenSoundSwitch.");
+    setConnection("offline", t("common.disconnected"));
+    showNotice(sourceText(safeText(error.message, t("error.connection"))), true, true);
+    if (!state.snapshot) renderError(t("error.connect"));
   } finally {
     state.polling = false;
     window.setTimeout(pollSnapshot, state.failures ? 3000 : 900);
@@ -131,9 +157,9 @@ function switchPage(page) {
     if (selected) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
   }
   const [title, description, action] = pages[page];
-  document.querySelector("#page-title").textContent = title;
-  document.querySelector("#page-description").textContent = description;
-  primaryAction.textContent = action;
+  document.querySelector("#page-title").textContent = t(title);
+  document.querySelector("#page-description").textContent = t(description);
+  primaryAction.textContent = action ? t(action) : "";
   primaryAction.hidden = !action;
   render();
   document.querySelector("#workspace").focus({ preventScroll: true });
@@ -148,7 +174,7 @@ function render() {
 
 function renderError(message) {
   content.setAttribute("aria-busy", "false");
-  content.replaceChildren(element("div", { class: "empty-state" }, [element("span", { class: "empty-icon", "aria-hidden": "true", text: "!" }), element("h2", { text: "Unable to load" }), element("p", { class: "muted", text: message })]));
+  content.replaceChildren(element("div", { class: "empty-state" }, [element("span", { class: "empty-icon", "aria-hidden": "true", text: "!" }), element("h2", { text: t("error.unableLoad") }), element("p", { class: "muted", text: message })]));
 }
 
 function emptyState(icon, title, message, action, handler) {
@@ -159,18 +185,18 @@ function emptyState(icon, title, message, action, handler) {
 
 function renderRoutes() {
   const routes = safeArray(state.snapshot.routes);
-  if (!routes.length) { content.replaceChildren(emptyState("⇄", "No routes yet", "Create a route to connect an input with an output.", "Create route", openRouteWizard)); return; }
+  if (!routes.length) { content.replaceChildren(emptyState("⇄", t("route.emptyTitle"), t("route.emptyBody"), t("route.create"), openRouteWizard)); return; }
   const grid = element("div", { class: "card-grid" });
   for (const route of routes) {
     const id = safeText(route.id);
-    const edit = element("button", { class: "text-button", type: "button", text: "Configure", "aria-label": `Configure ${safeText(route.name, "route")}`, onclick: () => openEntityEditor("route", route) });
-    const remove = element("button", { class: "text-button", type: "button", text: "Remove", "aria-label": `Remove ${safeText(route.name, "route")}`, onclick: () => confirmAction("Remove route?", `Remove ${safeText(route.name, "this route")}? Volume keys assigned to it will stop working.`, "route.delete", { id }) });
+    const edit = element("button", { class: "text-button", type: "button", text: t("common.configure"), onclick: () => openEntityEditor("route", route) });
+    const remove = element("button", { class: "text-button", type: "button", text: t("common.remove"), onclick: () => confirmAction(t("route.removeTitle"), t("route.removeMessage", { name: safeText(route.name, t("route.unnamed")) }), "route.delete", { id }) });
     const flow = element("div", { class: "route-flow" }, [
-      endpoint("Input", route.input), element("span", { class: "route-arrow", "aria-hidden": "true", text: "↓" }), endpoint("Output", route.output)
+      endpoint(t("route.input"), route.input), element("span", { class: "route-arrow", "aria-hidden": "true", text: "↓" }), endpoint(t("route.output"), route.output)
     ]);
     const card = element("article", { class: "card" }, [
-      element("div", { class: "card-body" }, [element("div", { class: "card-header" }, [element("div", {}, [element("h3", { text: safeText(route.name, "Unnamed route") }), element("p", { class: "muted", text: safeText(route.description, "Audio volume route") })]), element("div", { class: "card-actions" }, [edit, remove])]), flow]),
-      element("footer", { class: "card-footer" }, [element("span", { class: "muted", text: safeText(route.summary, "Ready") }), badge(route.enabled === false ? "Disabled" : "Active", route.enabled === false ? "muted" : "")])
+      element("div", { class: "card-body" }, [element("div", { class: "card-header" }, [element("div", {}, [element("h3", { text: safeText(route.name, t("route.unnamed")) }), element("p", { class: "muted", text: sourceText(safeText(route.description, t("route.description"))) })]), element("div", { class: "card-actions" }, [edit, remove])]), flow]),
+      element("footer", { class: "card-footer" }, [element("span", { class: "muted", text: sourceText(safeText(route.summary, t("common.ready"))) }), badge(route.enabled === false ? t("common.disabled") : t("common.active"), route.enabled === false ? "muted" : "")])
     ]);
     grid.append(card);
   }
@@ -216,30 +242,30 @@ async function invokeRouteWizardAction(endpoint, actionId, button) {
     renderRouteWizard();
   } catch (error) {
     const target = document.querySelector("#editor-error");
-    target.textContent = safeText(error.message, "Plugin discovery failed."); target.hidden = false; target.focus();
+    target.textContent = sourceText(safeText(error.message, t("error.pluginDiscovery"))); target.hidden = false; target.focus();
     button.disabled = false;
   }
 }
 
 function renderRouteWizard() {
   const wizard = state.editor;
-  const labels = ["Route name", "Type", "Input plugin", "Input configuration", "Output plugin", "Output configuration"];
+  const labels = ["wizard.name", "wizard.type", "wizard.inputPlugin", "wizard.inputConfig", "wizard.outputPlugin", "wizard.outputConfig"];
   const fields = routeWizardFields();
-  document.querySelector("#editor-kicker").textContent = `STEP ${wizard.step + 1} OF 6`;
-  document.querySelector("#editor-title").textContent = labels[wizard.step];
+  document.querySelector("#editor-kicker").textContent = t("wizard.step", { current: wizard.step + 1, total: 6 });
+  document.querySelector("#editor-title").textContent = t(labels[wizard.step]);
   const description = document.querySelector("#editor-description");
   description.textContent = ""; description.hidden = true;
   const container = document.querySelector("#editor-fields"); container.replaceChildren();
   const back = document.querySelector("#editor-back"); back.hidden = wizard.step === 0;
   const save = document.querySelector("#editor-save");
   save.hidden = wizard.step === 2 || wizard.step === 4;
-  save.textContent = wizard.step === 5 ? "Create route" : "Next";
+  save.textContent = wizard.step === 5 ? t("route.create") : t("wizard.next");
   if (wizard.step === 0 && fields.name) container.append(renderField(fields.name, wizard.values.name));
   if (wizard.step === 1 && fields.type) container.append(renderField(fields.type, wizard.values.route_type));
   if (wizard.step === 2 || wizard.step === 4) {
     const endpoint = wizard.step === 2 ? "input" : "output";
     const options = safeArray(endpoint === "input" ? fields.input?.options : fields.output?.options);
-    description.textContent = `Choose the ${endpoint} plugin for this route.`; description.hidden = false;
+    description.textContent = t(endpoint === "input" ? "wizard.chooseInput" : "wizard.chooseOutput"); description.hidden = false;
     for (const option of options) {
       container.append(element("button", { class: "choice-card", type: "button", onclick: async () => {
         try {
@@ -249,11 +275,11 @@ function renderRouteWizard() {
           wizard.step += 1; renderRouteWizard();
         } catch (error) {
           const target = document.querySelector("#editor-error");
-          target.textContent = safeText(error.message, "Plugin configuration is unavailable."); target.hidden = false; target.focus();
+          target.textContent = sourceText(safeText(error.message, t("error.pluginConfig"))); target.hidden = false; target.focus();
         }
       } }, [
-        element("strong", { text: safeText(option.label, String(option.value ?? "")) }),
-        element("span", { text: safeText(option.description, "No additional configuration is required.") }),
+        element("strong", { text: sourceText(safeText(option.label, String(option.value ?? ""))) }),
+        element("span", { text: sourceText(safeText(option.description, t("wizard.noConfig"))) }),
       ]));
     }
   }
@@ -261,7 +287,7 @@ function renderRouteWizard() {
     const endpoint = wizard.step === 3 ? "input" : "output";
     const formDocument = wizard.documents[endpoint];
     if (formDocument) {
-      description.textContent = safeText(formDocument.description); description.hidden = !description.textContent;
+      description.textContent = sourceText(safeText(formDocument.description)); description.hidden = !description.textContent;
       for (const field of safeArray(formDocument.fields)) {
         const typeMap = { integer: "number", choice: "select" };
         const current = wizard.values[`${endpoint}_parameters`]?.[field.id] ?? field.value;
@@ -271,7 +297,7 @@ function renderRouteWizard() {
       if (actions.length) {
         const buttons = element("div", { class: "button-row" });
         for (const action of actions) {
-          const button = element("button", { class: "secondary", type: "button", text: safeText(action.label, "Refresh") });
+          const button = element("button", { class: "secondary", type: "button", text: sourceText(safeText(action.label, t("common.refresh"))) });
           button.addEventListener("click", () => invokeRouteWizardAction(endpoint, safeText(action.id), button));
           buttons.append(button);
         }
@@ -291,7 +317,7 @@ function renderRouteWizard() {
           identifier.addEventListener("input", () => { identifier.dataset.autogenerated = "false"; });
         }
       }
-    } else container.append(element("p", { class: "muted", text: "This plugin has no additional configuration." }));
+    } else container.append(element("p", { class: "muted", text: t("wizard.none") }));
   }
   document.querySelector("#editor-error").hidden = true;
   window.setTimeout(() => container.querySelector("input, select, textarea")?.focus(), 0);
@@ -322,20 +348,28 @@ async function advanceRouteWizard() {
 
 function endpoint(label, data) {
   const value = data && typeof data === "object" ? data : {};
-  return element("div", { class: "endpoint" }, [element("small", { text: label }), element("strong", { text: safeText(value.name, "Not selected") }), element("span", { class: "muted", text: safeText(value.summary, "") })]);
+  return element("div", { class: "endpoint" }, [element("small", { text: label }), element("strong", { text: sourceText(safeText(value.name, t("common.notSelected"))) }), element("span", { class: "muted", text: sourceText(safeText(value.summary, "")) })]);
 }
 
 function renderActions() {
   const signals = safeArray(state.snapshot.signals);
-  if (!signals.length) { content.replaceChildren(emptyState("→", "No automations yet", "Choose one or more triggers, then add action and wait steps.", "Create automation", () => openEntityEditor("signal", null))); return; }
+  if (!signals.length) { content.replaceChildren(emptyState("→", t("automation.emptyTitle"), t("automation.emptyBody"), t("automation.create"), () => openEntityEditor("signal", null))); return; }
   const stack = element("div", { class: "stack" });
   for (const signal of signals) {
     const id = safeText(signal.id);
-    const steps = safeArray(signal.steps);
-    const summary = steps.length ? element("ol", { class: "automation-summary" }, steps.map(step => element("li", { text: safeText(step) }))) : element("p", { class: "muted", text: safeText(signal.description, "Ordered steps") });
+    const slots = safeArray(signal.values?.slots);
+    const steps = slots.map(slot => {
+      if (slot.kind === "wait") return `${t("editor.wait")} ${Number(slot.milliseconds || 0) / 1000} s`;
+      const pluginName = sourceText(safeText(slot.plugin_name));
+      const actionLabel = sourceText(safeText(slot.action_label, safeText(slot.target)));
+      const summary = slot.summary_translatable ? sourceText(safeText(slot.summary)) : safeText(slot.summary);
+      return `${pluginName ? `${pluginName}: ` : ""}${actionLabel}${summary ? ` (${summary})` : ""}`;
+    });
+    const summary = steps.length ? element("ol", { class: "automation-summary" }, steps.map(step => element("li", { text: step }))) : element("p", { class: "muted", text: sourceText(safeText(signal.description, t("automation.orderedSteps"))) });
+    const triggerParts = safeArray(signal.values?.triggers).map(trigger => trigger.kind === "app-start" ? sourceText("App start") : trigger.kind === "keyboard" ? hotkeyLabel(trigger.hotkey) : trigger.kind === "tray" ? `${sourceText("Tray menu option")}: ${safeText(trigger.label)}` : trigger.kind === "mqtt" ? sourceText("MQTT / Home Assistant") : "").filter(Boolean);
     stack.append(element("article", { class: "card setting-row" }, [
-      element("div", {}, [element("h3", { text: safeText(signal.name, "Automation") }), summary, element("p", { class: "signal-trigger", text: safeText(signal.trigger, "No trigger") })]),
-      element("div", { class: "button-row" }, [element("button", { class: "secondary", type: "button", text: "Run", onclick: () => execute("signal.run", { id }) }), element("button", { class: "secondary", type: "button", text: "Edit", onclick: () => openEntityEditor("signal", signal) }), element("button", { class: "text-button", type: "button", text: "Remove", onclick: () => confirmAction("Remove automation?", `Remove ${safeText(signal.name, "this automation")}? Its triggers will stop working.`, "signal.delete", { id }) })])
+      element("div", {}, [element("h3", { text: safeText(signal.name, t("automation.name")) }), summary, element("p", { class: "signal-trigger", text: triggerParts.join(" + ") || t("automation.noTrigger") })]),
+      element("div", { class: "button-row" }, [element("button", { class: "secondary", type: "button", text: t("common.run"), onclick: () => execute("signal.run", { id }) }), element("button", { class: "secondary", type: "button", text: t("common.edit"), onclick: () => openEntityEditor("signal", signal) }), element("button", { class: "text-button", type: "button", text: t("common.remove"), onclick: () => confirmAction(t("automation.removeTitle"), t("automation.removeMessage", { name: safeText(signal.name, t("automation.name")) }), "signal.delete", { id }) })])
     ]));
   }
   content.replaceChildren(stack);
@@ -345,19 +379,19 @@ function renderIntegrations() {
   const stack = element("div", { class: "stack" });
   const profiles = safeArray(state.snapshot.mqtt_profiles);
   stack.append(element("article", { class: "card setting-row" }, [
-    element("div", {}, [element("h3", { text: "MQTT / Home Assistant" }), element("p", { class: "muted", text: `${profiles.length} saved configuration${profiles.length === 1 ? "" : "s"}. Reuse broker connections for routes and automations.` })]),
-    element("button", { class: "secondary", type: "button", text: "Configure", onclick: openMqttIntegration })
+    element("div", {}, [element("h3", { text: sourceText("MQTT / Home Assistant") }), element("p", { class: "muted", text: t("integration.saved", { count: profiles.length }) })]),
+    element("button", { class: "secondary", type: "button", text: t("common.configure"), onclick: openMqttIntegration })
   ]));
   const integrations = safeArray(state.snapshot.integrations);
   for (const action of integrations) {
     const buttons = [];
-    if (safeArray(action.form?.fields).length || action.form?.ui_action) buttons.push(element("button", { class: "secondary", type: "button", text: "Configure", onclick: () => openEntityEditor("action", action) }));
+    if (safeArray(action.form?.fields).length || action.form?.ui_action) buttons.push(element("button", { class: "secondary", type: "button", text: t("common.configure"), onclick: () => openEntityEditor("action", action) }));
     for (const command of safeArray(action.ui_actions).filter(item => item.kind === "action")) {
       const params = { id: action.id, action_id: command.id, values: action.values || {} };
-      buttons.push(element("button", { class: "secondary", type: "button", text: safeText(command.label, "Run"), onclick: () => command.confirm ? confirmAction(safeText(command.label, "Confirm"), command.confirm, "plugin.action", params) : execute("plugin.action", params) }));
+      buttons.push(element("button", { class: "secondary", type: "button", text: sourceText(safeText(command.label, t("common.run"))), onclick: () => command.confirm ? confirmAction(sourceText(safeText(command.label, t("dialog.confirm"))), sourceText(command.confirm), "plugin.action", params) : execute("plugin.action", params) }));
     }
     stack.append(element("article", { class: "card setting-row" }, [
-      element("div", {}, [element("h3", { text: safeText(action.name, "Action") }), element("p", { class: "muted", text: safeText(action.description, "Trusted plugin action") })]),
+      element("div", {}, [element("h3", { text: sourceText(safeText(action.name, "Action")) }), element("p", { class: "muted", text: sourceText(safeText(action.description, "Trusted plugin action")) })]),
        element("div", { class: "button-row" }, buttons)
     ]));
   }
@@ -378,14 +412,14 @@ function showMqttProfileList() {
   list.replaceChildren();
   const profiles = safeArray(state.snapshot?.mqtt_profiles);
   if (!profiles.length) {
-    list.append(element("p", { class: "muted", text: "No configurations yet." }));
+    list.append(element("p", { class: "muted", text: t("integration.none") }));
     return;
   }
   for (const profile of profiles) {
     const id = safeText(profile.id);
     list.append(element("article", { class: "profile-row" }, [
       element("div", {}, [element("strong", { text: safeText(profile.name, "MQTT / HA") }), element("span", { class: "muted", text: safeText(profile.description) })]),
-      element("div", { class: "button-row" }, [element("button", { class: "secondary", type: "button", text: "Edit", onclick: () => editMqttProfile(profile) }), element("button", { class: "text-button", type: "button", text: "Remove", onclick: () => removeMqttProfile(id) })])
+      element("div", { class: "button-row" }, [element("button", { class: "secondary", type: "button", text: t("common.edit"), onclick: () => editMqttProfile(profile) }), element("button", { class: "text-button", type: "button", text: t("common.remove"), onclick: () => removeMqttProfile(id) })])
     ]));
   }
 }
@@ -398,7 +432,7 @@ function editMqttProfile(profile) {
   state.mqttProfileId = profile?.id || null;
   document.querySelector("#mqtt-list-view").hidden = true;
   mqttProfileForm.hidden = false;
-  document.querySelector("#mqtt-profile-title").textContent = profile ? `Edit ${safeText(profile.name, "configuration")}` : "Add configuration";
+  document.querySelector("#mqtt-profile-title").textContent = profile ? t("editor.edit", { name: safeText(profile.name, t("settings.configuration")) }) : t("integration.add");
   const container = document.querySelector("#mqtt-profile-fields");
   container.replaceChildren();
   for (const field of fields) container.append(renderField(field, values[field.key]));
@@ -411,15 +445,15 @@ async function saveMqttProfile(event) {
   event.preventDefault();
   if (!mqttProfileForm.reportValidity()) return;
   const save = document.querySelector("#mqtt-profile-save");
-  save.disabled = true; save.textContent = "Saving...";
+  save.disabled = true; save.textContent = t("common.saving");
   const values = {};
   for (const input of document.querySelector("#mqtt-profile-fields").querySelectorAll("[name]")) values[input.getAttribute("name")] = input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.value;
   try {
     await nativeRequest("mqtt.profile.save", { id: state.mqttProfileId, values });
     state.revision = -1; await pollSnapshot(); showMqttProfileList();
   } catch (error) {
-    const target = document.querySelector("#mqtt-error"); target.textContent = safeText(error.message, "The configuration could not be saved."); target.hidden = false; target.focus();
-  } finally { save.disabled = false; save.textContent = "Save configuration"; }
+    const target = document.querySelector("#mqtt-error"); target.textContent = sourceText(safeText(error.message, t("error.save"))); target.hidden = false; target.focus();
+  } finally { save.disabled = false; save.textContent = t("integration.save"); }
 }
 
 async function removeMqttProfile(id) {
@@ -427,7 +461,7 @@ async function removeMqttProfile(id) {
     await nativeRequest("mqtt.profile.delete", { id });
     state.revision = -1; await pollSnapshot(); showMqttProfileList();
   } catch (error) {
-    document.querySelector("#mqtt-list-view").prepend(element("div", { class: "inline-error", role: "alert", text: safeText(error.message, "The configuration could not be removed.") }));
+    document.querySelector("#mqtt-list-view").prepend(element("div", { class: "inline-error", role: "alert", text: sourceText(safeText(error.message, t("integration.removeError"))) }));
   }
 }
 
@@ -436,28 +470,33 @@ function renderAppearance() {
   const renderers = safeArray(appearance.renderers);
   const card = element("section", { class: "card" });
   const rows = renderers.map(renderer => element("div", { class: "setting-row" }, [
-    element("div", {}, [element("h3", { text: safeText(renderer.name, "Overlay") }), element("p", { class: "muted", text: safeText(renderer.description, "Volume change presentation") })]),
+    element("div", {}, [element("h3", { text: sourceText(safeText(renderer.name, t("appearance.overlay"))) }), element("p", { class: "muted", text: sourceText(safeText(renderer.description, t("appearance.description"))) })]),
      element("div", { class: "button-row" }, [
-       renderer.form ? element("button", { class: "secondary", type: "button", text: "Configure", onclick: () => openEntityEditor("action", renderer) }) : null,
-       ...safeArray(renderer.ui_actions).filter(item => item.kind === "action").map(action => element("button", { class: "secondary", type: "button", text: safeText(action.label, "Run"), onclick: () => action.confirm ? confirmAction(safeText(action.label, "Confirm"), action.confirm, "plugin.action", { id: renderer.id, action_id: action.id, values: renderer.values || {} }) : execute("plugin.action", { id: renderer.id, action_id: action.id, values: renderer.values || {} }) })),
-       element("button", { class: renderer.selected ? "primary" : "secondary", type: "button", text: renderer.selected ? "Selected" : "Use this", disabled: renderer.selected ? "" : null, onclick: () => execute("appearance.save", { renderer_id: renderer.id }) })
+       renderer.form ? element("button", { class: "secondary", type: "button", text: t("common.configure"), onclick: () => openEntityEditor("action", renderer) }) : null,
+       ...safeArray(renderer.ui_actions).filter(item => item.kind === "action").map(action => element("button", { class: "secondary", type: "button", text: sourceText(safeText(action.label, t("common.run"))), onclick: () => action.confirm ? confirmAction(sourceText(safeText(action.label, t("dialog.confirm"))), sourceText(action.confirm), "plugin.action", { id: renderer.id, action_id: action.id, values: renderer.values || {} }) : execute("plugin.action", { id: renderer.id, action_id: action.id, values: renderer.values || {} }) })),
+       element("button", { class: renderer.selected ? "primary" : "secondary", type: "button", text: renderer.selected ? t("common.selected") : t("common.useThis"), disabled: renderer.selected ? "" : null, onclick: () => execute("appearance.save", { renderer_id: renderer.id }) })
      ].filter(Boolean))
   ]));
-  if (rows.length) card.append(...rows); else card.append(element("div", { class: "setting-row" }, [element("p", { class: "muted", text: "No appearance renderers are available." })]));
+  if (rows.length) card.append(...rows); else card.append(element("div", { class: "setting-row" }, [element("p", { class: "muted", text: t("appearance.none") })]));
   content.replaceChildren(card);
 }
 
 function renderSettings() {
   const settings = state.snapshot.settings && typeof state.snapshot.settings === "object" ? state.snapshot.settings : {};
-  const startup = element("section", { class: "card" }, [element("div", { class: "setting-row" }, [element("div", {}, [element("h3", { text: safeText(settings.startup_label, "Start with Windows") }), element("p", { class: "muted", text: safeText(settings.startup_description, "Launch quietly in the notification area when you sign in.") })]), element("button", { class: settings.start_with_windows ? "primary" : "secondary", type: "button", role: "switch", "aria-checked": String(Boolean(settings.start_with_windows)), text: settings.start_with_windows ? "On" : "Off", onclick: () => execute("settings.save", { start_with_windows: !settings.start_with_windows }) })])]);
+  const startup = element("section", { class: "card" }, [element("div", { class: "setting-row" }, [element("div", {}, [element("h3", { text: sourceText(safeText(settings.startup_label, "Start with Windows")) }), element("p", { class: "muted", text: sourceText(safeText(settings.startup_description, "Launch quietly in the notification area when you sign in.")) })]), element("button", { class: settings.start_with_windows ? "primary" : "secondary", type: "button", role: "switch", "aria-checked": String(Boolean(settings.start_with_windows)), text: settings.start_with_windows ? t("common.on") : t("common.off"), onclick: () => execute("settings.save", { start_with_windows: !settings.start_with_windows }) })])]);
+  const languageSelect = element("select", { class: "settings-select", "aria-label": t("settings.language") });
+  for (const option of safeArray(settings.language_options)) languageSelect.append(element("option", { value: safeText(option.value), text: sourceText(safeText(option.label, option.value)), selected: option.value === settings.ui_language ? "" : null }));
+  languageSelect.addEventListener("change", () => execute("settings.save", { ui_language: languageSelect.value }));
+  const language = element("section", { class: "card" }, [element("div", { class: "setting-row" }, [element("div", {}, [element("h3", { text: t("settings.language") }), element("p", { class: "muted", text: t("settings.languageDescription") })]), languageSelect])]);
   const recent = safeArray(settings.recent_configurations);
   if (!recent.length) state.importMenuOpen = false;
-  const recentItems = element("div", { class: "split-menu-items", hidden: state.importMenuOpen ? null : "" }, recent.map(item => element("button", { type: "button", text: safeText(item.name, "Configuration"), onclick: () => { state.importMenuOpen = false; confirmAction("Import configuration?", `Import ${safeText(item.name, "this configuration")}? The application will restart.`, "config.import", { path: item.path }); } })));
-  const arrowButton = element("button", { class: "secondary split-arrow", type: "button", title: recent.length ? "Recent configurations" : "No recent configurations", "aria-label": recent.length ? "Recent configurations" : "No recent configurations", "aria-expanded": String(state.importMenuOpen), disabled: recent.length ? null : "", text: "▼", onclick: event => { event.stopPropagation(); state.importMenuOpen = !state.importMenuOpen; recentItems.hidden = !state.importMenuOpen; arrowButton.setAttribute("aria-expanded", String(state.importMenuOpen)); } });
+  const recentItems = element("div", { class: "split-menu-items", hidden: state.importMenuOpen ? null : "" }, recent.map(item => element("button", { type: "button", text: safeText(item.name, t("settings.configuration")), onclick: () => { state.importMenuOpen = false; confirmAction(t("settings.importTitle"), t("settings.importMessage", { name: safeText(item.name, t("settings.configuration")) }), "config.import", { path: item.path }); } })));
+  const recentLabel = recent.length ? t("settings.recent") : t("settings.noRecent");
+  const arrowButton = element("button", { class: "secondary split-arrow", type: "button", title: recentLabel, "aria-label": recentLabel, "aria-expanded": String(state.importMenuOpen), disabled: recent.length ? null : "", text: "▼", onclick: event => { event.stopPropagation(); state.importMenuOpen = !state.importMenuOpen; recentItems.hidden = !state.importMenuOpen; arrowButton.setAttribute("aria-expanded", String(state.importMenuOpen)); } });
   const recentMenu = element("div", { class: "split-menu" }, [arrowButton, recentItems]);
-  const importSplit = element("div", { class: "split-control", role: "group", "aria-label": "Import configuration" }, [element("button", { class: "secondary", type: "button", text: "Import", onclick: importConfiguration }), recentMenu]);
-  const configuration = element("section", { class: "card" }, [element("div", { class: "setting-row configuration-row" }, [element("div", {}, [element("h3", { text: "Configuration" }), element("p", { class: "muted", text: "Export a backup, import one, or restore bundled defaults. Protect exports because MQTT credentials are included." })]), element("div", { class: "button-row configuration-actions" }, [element("button", { class: "primary", type: "button", text: "Export", onclick: exportConfiguration }), importSplit, element("button", { class: "secondary", type: "button", text: "Restore", title: "Restore bundled defaults", onclick: () => confirmAction("Restore default configuration?", "Saved routes and plugin settings will be replaced, then the application may restart.", "config.restore-default", {}) })])])]);
-  content.replaceChildren(element("div", { class: "stack" }, [startup, configuration]));
+  const importSplit = element("div", { class: "split-control", role: "group", "aria-label": t("settings.importTitle") }, [element("button", { class: "secondary", type: "button", text: t("settings.import"), onclick: importConfiguration }), recentMenu]);
+  const configuration = element("section", { class: "card" }, [element("div", { class: "setting-row configuration-row" }, [element("div", {}, [element("h3", { text: t("settings.configuration") }), element("p", { class: "muted", text: t("settings.configurationDescription") })]), element("div", { class: "button-row configuration-actions" }, [element("button", { class: "primary", type: "button", text: t("settings.export"), onclick: exportConfiguration }), importSplit, element("button", { class: "secondary", type: "button", text: t("settings.restore"), title: t("settings.restoreTitle"), onclick: () => confirmAction(t("settings.restoreConfirm"), t("settings.restoreMessage"), "config.restore-default", {}) })])])]);
+  content.replaceChildren(element("div", { class: "stack" }, [startup, language, configuration]));
 }
 
 function renderDiagnostics() {
@@ -465,18 +504,18 @@ function renderDiagnostics() {
   const wasAtBottom = !previous || previous.scrollHeight - previous.scrollTop - previous.clientHeight <= 12;
   const previousScrollTop = previous?.scrollTop || 0;
   const diagnostics = state.snapshot.diagnostics && typeof state.snapshot.diagnostics === "object" ? state.snapshot.diagnostics : {};
-  const text = safeText(diagnostics.text, "No diagnostic entries.");
+  const text = safeText(diagnostics.text, t("diagnostics.empty"));
   if (previous) {
     const summary = content.querySelector(".diagnostic-summary");
     const statusBadge = content.querySelector(".diagnostic-status");
-    if (summary) summary.textContent = safeText(diagnostics.summary, "Diagnostics are available from the parent application.");
-    if (statusBadge) { statusBadge.textContent = safeText(diagnostics.status, "Unknown"); statusBadge.className = `badge diagnostic-status${diagnostics.status === "Error" ? " is-error" : ""}`; }
+    if (summary) summary.textContent = sourceText(safeText(diagnostics.summary, t("diagnostics.description")));
+    if (statusBadge) { statusBadge.textContent = sourceText(safeText(diagnostics.status, t("common.unknown"))); statusBadge.className = `badge diagnostic-status${diagnostics.status === "Error" ? " is-error" : ""}`; }
     if (previous.textContent !== text) previous.textContent = text;
     previous.scrollTop = wasAtBottom ? previous.scrollHeight : previousScrollTop;
     return;
   }
-  const status = element("section", { class: "card setting-row" }, [element("div", {}, [element("h3", { text: "Application health" }), element("p", { class: "muted diagnostic-summary", text: safeText(diagnostics.summary, "Diagnostics are available from the parent application.") })]), element("span", { class: `badge diagnostic-status${diagnostics.status === "Error" ? " is-error" : ""}`, text: safeText(diagnostics.status, "Unknown") })]);
-  const output = element("section", { class: "card" }, [element("pre", { class: "diagnostic-output", tabindex: "0", text })]);
+  const status = element("section", { class: "card setting-row" }, [element("div", {}, [element("h3", { text: t("diagnostics.health") }), element("p", { class: "muted diagnostic-summary", text: sourceText(safeText(diagnostics.summary, t("diagnostics.description"))) })]), element("span", { class: `badge diagnostic-status${diagnostics.status === "Error" ? " is-error" : ""}`, text: sourceText(safeText(diagnostics.status, t("common.unknown"))) })]);
+  const output = element("section", { class: "card" }, [element("pre", { class: "diagnostic-output", tabindex: "0", "aria-label": t("diagnostics.output"), text })]);
   content.replaceChildren(element("div", { class: "diagnostics-stack" }, [status, output]));
   const current = content.querySelector(".diagnostic-output");
   if (current) window.requestAnimationFrame(() => { current.scrollTop = wasAtBottom ? current.scrollHeight : Math.min(previousScrollTop, Math.max(0, current.scrollHeight - current.clientHeight)); });
@@ -489,10 +528,10 @@ function renderAbout() {
   content.replaceChildren(element("section", { class: "card about-card" }, [
     element("span", { class: "about-mark", "aria-hidden": "true", text: "F" }),
     element("div", { class: "about-copy" }, [
-      element("p", { class: "eyebrow", text: "WINDOWS AUDIO CONTROL" }),
+      element("p", { class: "eyebrow", text: t("about.eyebrow") }),
       element("h2", { text: name }),
-      element("p", { class: "about-version", text: `Version ${version}` }),
-      element("p", { class: "muted", text: "Monitor DDC/CI, audio routing, automations, and overlays in one current-user application." })
+      element("p", { class: "about-version", text: t("about.version", { version }) }),
+      element("p", { class: "muted", text: t("about.description") })
     ])
   ]));
 }
@@ -503,15 +542,16 @@ function openEntityEditor(kind, entity) {
   const fields = safeArray(schema?.fields);
   state.editor = { kind, id: entity?.id || null, method: safeText(schema?.method, kind === "route" ? "route.save" : kind === "signal" ? "signal.save" : kind === "mqtt-profile" ? "mqtt.profile.save" : "action.save") };
   editorDialog.dataset.kind = kind;
-  document.querySelector("#editor-kicker").textContent = kind === "signal" ? "AUTOMATION" : kind === "mqtt-profile" ? "MQTT / HA" : kind.toUpperCase();
-  document.querySelector("#editor-title").textContent = entity ? `Edit ${safeText(entity.name, kind)}` : `Create ${kind === "signal" ? "automation" : kind === "mqtt-profile" ? "MQTT/HA configuration" : kind}`;
+  const localizedKind = kind === "signal" ? t("automation.name") : kind === "mqtt-profile" ? t("editor.mqttConfig") : kind === "route" ? t("route.description") : sourceText("Action");
+  document.querySelector("#editor-kicker").textContent = localizedKind.toUpperCase();
+  document.querySelector("#editor-title").textContent = entity ? t("editor.edit", { name: sourceText(safeText(entity.name, localizedKind)) }) : t("editor.create", { kind: localizedKind.toLowerCase() });
   const editorDescription = document.querySelector("#editor-description");
-  editorDescription.textContent = safeText(schema?.description);
+  editorDescription.textContent = sourceText(safeText(schema?.description));
   editorDescription.hidden = !editorDescription.textContent;
   document.querySelector("#editor-error").hidden = true;
   document.querySelector("#editor-back").hidden = true;
   document.querySelector("#editor-save").hidden = false;
-  document.querySelector("#editor-save").textContent = kind === "route" && !entity ? "Save & Configure" : "Save changes";
+  document.querySelector("#editor-save").textContent = kind === "route" && !entity ? t("editor.saveConfigure") : t("common.save");
   const container = document.querySelector("#editor-fields");
   container.replaceChildren();
   const values = entity?.values && typeof entity.values === "object" ? entity.values : {};
@@ -522,7 +562,7 @@ function openEntityEditor(kind, entity) {
   }
   syncConditionalFields(container);
   for (const controller of container.querySelectorAll('input[type="checkbox"], select')) controller.addEventListener("change", () => syncConditionalFields(container));
-  if (!fields.length) container.append(element("p", { class: "muted", text: "This item has no configurable fields." }));
+  if (!fields.length) container.append(element("p", { class: "muted", text: t("editor.noFields") }));
   editorDialog.showModal();
   window.setTimeout(() => container.querySelector("input, select, textarea")?.focus(), 0);
 }
@@ -554,7 +594,7 @@ function renderField(field, current) {
       input.replaceChildren();
       for (const option of available) {
         const encoded = JSON.stringify(option.value);
-        input.append(element("option", { value: encoded, text: safeText(option.label, String(option.value ?? "")), selected: encoded === previous ? "" : null, "data-json": "true" }));
+        input.append(element("option", { value: encoded, text: optionText(field, option), selected: encoded === previous ? "" : null, "data-json": "true" }));
       }
     };
     if (field.depends_on) input.dataset.dependsOn = safeText(field.depends_on); else input._renderOptions("");
@@ -568,9 +608,9 @@ function renderField(field, current) {
       input.value = typeof initial === "string" || typeof initial === "number" ? initial : "";
     }
   }
-  const label = element("label", { for: `field-${key}`, text: safeText(field.label, key) });
+  const label = element("label", { for: `field-${key}`, text: sourceText(safeText(field.label, key)) });
   if (type === "boolean") wrapper.append(input, label); else wrapper.append(label, input);
-  if (field.description) wrapper.append(element("small", { text: safeText(field.description) }));
+  if (field.description) wrapper.append(element("small", { text: sourceText(safeText(field.description)) }));
   return wrapper;
 }
 
@@ -583,11 +623,11 @@ function groupEditorFields(container, keys, extraClass) {
 }
 
 function renderHotkeyInput(id, current) {
-  const input = element("input", { id, type: "text", readonly: "", value: hotkeyLabel(current), "data-hotkey": JSON.stringify(current ?? null), placeholder: "Press a key combination" });
+  const input = element("input", { id, type: "text", readonly: "", value: hotkeyLabel(current), "data-hotkey": JSON.stringify(current ?? null), placeholder: t("editor.pressKeys") });
   input.addEventListener("keydown", event => {
     event.preventDefault();
     event.stopPropagation();
-    if (event.key === "Backspace" || event.key === "Delete") { input.dataset.hotkey = "null"; input.value = "Not set"; return; }
+    if (event.key === "Backspace" || event.key === "Delete") { input.dataset.hotkey = "null"; input.value = t("common.notSet"); return; }
     if (event.code === "AltRight") { input.dataset.rightAlt = "true"; return; }
     const virtualKey = virtualKeyFromEvent(event);
     if (!virtualKey || [16, 17, 18, 91, 92].includes(virtualKey)) return;
@@ -624,9 +664,9 @@ function openChoiceDialog(kicker, title, description, options, onSelect) {
       state.choice = null;
       if (callback) callback(option.value);
     } }, [
-      element("strong", { text: safeText(option.label, String(option.value ?? "")) }),
-      element("span", { text: safeText(option.description, "No additional configuration is required.") }),
-      ...(option.disabled ? [element("small", { text: safeText(option.disabled_reason, "Unavailable") })] : []),
+      element("strong", { text: sourceText(safeText(option.label, String(option.value ?? ""))) }),
+      element("span", { text: sourceText(safeText(option.description, t("wizard.noConfig"))) }),
+      ...(option.disabled ? [element("small", { text: sourceText(safeText(option.disabled_reason, t("common.unavailable"))) })] : []),
     ]);
     container.append(button);
   }
@@ -648,21 +688,21 @@ function renderSequenceField(key, field, current) {
     let control;
     let configurable = false;
     if (kind === "wait") {
-      control = element("label", { class: "sequence-wait" }, [element("span", { text: "Wait" }), element("input", { type: "number", min: "0", max: "300000", step: "100", value: Number.isInteger(slot.milliseconds) ? slot.milliseconds : 1000, "aria-label": "Wait milliseconds" }), element("span", { text: "ms" })]);
+      control = element("label", { class: "sequence-wait" }, [element("span", { text: t("editor.wait") }), element("input", { type: "number", min: "0", max: "300000", step: "100", value: Number.isInteger(slot.milliseconds) ? slot.milliseconds : 1000, "aria-label": t("editor.waitMs") }), element("span", { text: "ms" })]);
     } else {
       const option = optionByTarget.get(safeText(slot.target));
-      const label = safeText(option?.label, `Unavailable: ${safeText(slot.target)}`);
-      const description = safeText(option?.description, "This saved action is currently unavailable.");
+      const label = sourceText(safeText(option?.label, t("common.unavailable")));
+      const description = sourceText(safeText(option?.description, t("error.operation")));
       configurable = option?.configurable === true;
       row.dataset.target = safeText(slot.target);
       control = element("div", { class: "sequence-action" }, [element("strong", { text: label }), element("small", { text: description })]);
     }
-    const configure = element("button", { class: "secondary sequence-config", type: "button", text: "Configure", hidden: !configurable ? "" : null, onclick: () => openSlotEditor(row, row.dataset.target) });
-    const summary = element("small", { class: "sequence-summary", text: safeText(slot.summary) });
+    const configure = element("button", { class: "secondary sequence-config", type: "button", text: t("common.configure"), hidden: !configurable ? "" : null, onclick: () => openSlotEditor(row, row.dataset.target) });
+    const summary = element("small", { class: "sequence-summary", text: sourceText(safeText(slot.summary)) });
     summary.hidden = !summary.textContent;
-    const moveUp = element("button", { class: "icon-button", type: "button", text: "↑", title: "Move up", "aria-label": "Move step up", onclick: () => { row.previousElementSibling?.before(row); refresh(); } });
-    const moveDown = element("button", { class: "icon-button", type: "button", text: "↓", title: "Move down", "aria-label": "Move step down", onclick: () => { row.nextElementSibling?.after(row); refresh(); } });
-    const remove = element("button", { class: "icon-button", type: "button", text: "×", title: "Remove step", "aria-label": "Remove step", onclick: () => { row.remove(); refresh(); } });
+    const moveUp = element("button", { class: "icon-button", type: "button", text: "↑", title: t("editor.moveUp"), "aria-label": t("editor.moveUp"), onclick: () => { row.previousElementSibling?.before(row); refresh(); } });
+    const moveDown = element("button", { class: "icon-button", type: "button", text: "↓", title: t("editor.moveDown"), "aria-label": t("editor.moveDown"), onclick: () => { row.nextElementSibling?.after(row); refresh(); } });
+    const remove = element("button", { class: "icon-button", type: "button", text: "×", title: t("editor.removeStep"), "aria-label": t("editor.removeStep"), onclick: () => { row.remove(); refresh(); } });
     row._parameters = slot.parameters && typeof slot.parameters === "object" ? slot.parameters : {};
     row._summary = summary;
     row.append(index, control, configure, moveUp, moveDown, remove, summary); list.append(row); refresh();
@@ -670,11 +710,11 @@ function renderSequenceField(key, field, current) {
   function refresh() { [...list.children].forEach((row, index) => { row.querySelector(".sequence-index").textContent = String(index + 1); }); }
   root._sequenceValue = () => [...list.children].map(row => row.dataset.kind === "wait" ? { kind: "wait", milliseconds: Number(row.querySelector("input").value) } : { kind: "action", target: row.dataset.target, parameters: row._parameters || {} });
   for (const slot of safeArray(current)) addSlot(slot);
-  const addAction = element("button", { class: "secondary", type: "button", text: "Add action", onclick: () => openChoiceDialog(
-    "ADD ACTION",
-    "Choose an action",
-    "Select the next step to append to this automation.",
-    [...options, { value: "__wait__", label: "Wait", description: "Pauses the automation before running the following step." }],
+  const addAction = element("button", { class: "secondary", type: "button", text: t("editor.addAction"), onclick: () => openChoiceDialog(
+    t("dialog.addItem"),
+    t("editor.chooseAction"),
+    t("editor.actionDescription"),
+    [...options, { value: "__wait__", label: t("editor.wait"), description: t("editor.actionDescription") }],
     value => addSlot(value === "__wait__" ? { kind: "wait", milliseconds: 1000 } : { kind: "action", target: value, parameters: {} }),
   ) });
   root.append(list, element("div", { class: "button-row sequence-add" }, [addAction]));
@@ -686,13 +726,13 @@ function renderTriggerListField(key, field, current) {
   const list = element("div", { class: "trigger-list" });
   const options = safeArray(field.options);
   const optionByKind = new Map(options.map(option => [safeText(option.value), option]));
-  const addButton = element("button", { class: "secondary", type: "button", text: "Add trigger", onclick: () => {
+  const addButton = element("button", { class: "secondary", type: "button", text: t("editor.addTrigger"), onclick: () => {
     const used = new Set([...list.children].map(row => row.dataset.kind));
     openChoiceDialog(
-      "ADD TRIGGER",
-      "Choose a trigger",
-      "Select an event that should run this automation.",
-      options.map(option => used.has(option.value) ? { ...option, disabled: true, disabled_reason: "Already added" } : option),
+      t("dialog.addItem"),
+      t("editor.chooseTrigger"),
+      t("editor.triggerDescription"),
+      options.map(option => used.has(option.value) ? { ...option, disabled: true, disabled_reason: t("editor.alreadyAdded") } : option),
       kind => {
         const automationName = safeText(document.querySelector("#field-name")?.value);
         addTrigger(kind === "mqtt" ? { kind, ha_name: automationName } : kind === "tray" ? { kind, label: automationName } : { kind });
@@ -714,32 +754,32 @@ function renderTriggerListField(key, field, current) {
     const row = element("div", { class: "trigger-row", "data-kind": kind });
     const index = element("strong", { class: "trigger-index" });
     const body = element("div", { class: "trigger-body" });
-    body.append(element("strong", { text: safeText(option.label, kind) }));
+    body.append(element("strong", { text: sourceText(safeText(option.label, kind)) }));
     if (kind === "app-start") {
-      body.append(element("small", { text: "Runs once after the application is ready." }));
+      body.append(element("small", { text: t("editor.appStart") }));
       row._triggerValue = () => ({ kind });
     } else if (kind === "keyboard") {
       const hotkey = renderHotkeyInput(`trigger-${kind}-hotkey`, trigger.hotkey);
       const forward = element("input", { id: `trigger-${kind}-forward`, type: "checkbox" });
       forward.checked = trigger.forward_keys !== false;
-      body.append(element("label", { for: hotkey.id, text: "Key combination" }), hotkey, element("label", { class: "trigger-check", for: forward.id }, [forward, element("span", { text: "Forward keys to other applications" })]));
+      body.append(element("label", { for: hotkey.id, text: t("editor.keyCombination") }), hotkey, element("label", { class: "trigger-check", for: forward.id }, [forward, element("span", { text: t("editor.forwardKeys") })]));
       row._triggerValue = () => ({ kind, hotkey: JSON.parse(hotkey.dataset.hotkey), forward_keys: forward.checked });
     } else if (kind === "tray") {
-      const label = element("input", { id: `trigger-${kind}-label`, type: "text", maxlength: "80", value: safeText(trigger.label), placeholder: "Menu option text" });
-      body.append(element("label", { for: label.id, text: "Tray menu option text" }), label);
+      const label = element("input", { id: `trigger-${kind}-label`, type: "text", maxlength: "80", value: safeText(trigger.label), placeholder: t("editor.trayText") });
+      body.append(element("label", { for: label.id, text: t("editor.trayText") }), label);
       row._triggerValue = () => ({ kind, label: label.value });
     } else {
       const profile = element("select", { id: `trigger-${kind}-profile` });
       for (const profileOption of safeArray(field.mqtt_profiles)) profile.append(element("option", { value: safeText(profileOption.value), text: safeText(profileOption.label, profileOption.value), selected: profileOption.value === trigger.profile_id ? "" : null }));
-      const name = element("input", { id: `trigger-${kind}-name`, type: "text", maxlength: "80", value: safeText(trigger.ha_name), placeholder: "Home Assistant name" });
+      const name = element("input", { id: `trigger-${kind}-name`, type: "text", maxlength: "80", value: safeText(trigger.ha_name), placeholder: t("editor.haName") });
       const savedIdentifier = safeText(trigger.ha_id).trim();
-      const identifier = element("input", { id: `trigger-${kind}-id`, type: "text", maxlength: "64", value: savedIdentifier || homeAssistantId(name.value), placeholder: "Home Assistant ID", "data-autogenerated": savedIdentifier ? "false" : "true" });
+      const identifier = element("input", { id: `trigger-${kind}-id`, type: "text", maxlength: "64", value: savedIdentifier || homeAssistantId(name.value), placeholder: t("editor.haId"), "data-autogenerated": savedIdentifier ? "false" : "true" });
       name.addEventListener("input", () => { if (identifier.dataset.autogenerated === "true") identifier.value = homeAssistantId(name.value); });
       identifier.addEventListener("input", () => { identifier.dataset.autogenerated = "false"; });
-      body.append(element("label", { for: profile.id, text: "MQTT/HA configuration" }), profile, element("label", { for: name.id, text: "Home Assistant name" }), name, element("label", { for: identifier.id, text: "Home Assistant ID" }), identifier);
+      body.append(element("label", { for: profile.id, text: t("editor.mqttConfig") }), profile, element("label", { for: name.id, text: t("editor.haName") }), name, element("label", { for: identifier.id, text: t("editor.haId") }), identifier);
       row._triggerValue = () => ({ kind, profile_id: profile.value, ha_name: name.value, ha_id: identifier.value });
     }
-    const remove = element("button", { class: "icon-button", type: "button", text: "×", title: "Remove trigger", "aria-label": `Remove ${safeText(option.label, kind)} trigger`, onclick: () => { row.remove(); refresh(); } });
+    const remove = element("button", { class: "icon-button", type: "button", text: "×", title: t("editor.removeTrigger"), "aria-label": t("editor.removeTrigger"), onclick: () => { row.remove(); refresh(); } });
     row.append(index, body, remove);
     list.append(row);
     refresh();
@@ -754,9 +794,9 @@ function renderTriggerListField(key, field, current) {
 
 async function openSlotEditor(row, target) {
   state.slotEditor = { row, target, actionId: "", refreshActionId: "" };
-  document.querySelector("#slot-title").textContent = "Configure step";
+  document.querySelector("#slot-title").textContent = t("dialog.configureStep");
   document.querySelector("#slot-description").hidden = true;
-  document.querySelector("#slot-fields").replaceChildren(element("p", { class: "muted", text: "Discovering monitor inputs. Please wait..." }));
+  document.querySelector("#slot-fields").replaceChildren(element("p", { class: "muted", text: t("editor.discovering") }));
   document.querySelector("#slot-error").hidden = true;
   document.querySelector("#slot-refresh").hidden = true;
   document.querySelector("#slot-save").hidden = true;
@@ -772,16 +812,16 @@ async function loadSlotEditor() {
     if (state.slotEditor !== editor) return;
     editor.actionId = safeText(form.action_id);
     editor.refreshActionId = safeText(safeArray(form.actions).find(action => action.kind === "action")?.id);
-    document.querySelector("#slot-title").textContent = safeText(form.title, "Configure step");
+    document.querySelector("#slot-title").textContent = sourceText(safeText(form.title, t("dialog.configureStep")));
     const loading = form.state === "loading";
     const ready = form.state === "ready";
     const description = document.querySelector("#slot-description");
-    description.textContent = safeText(form.description);
+    description.textContent = sourceText(safeText(form.description));
     description.hidden = loading || !description.textContent;
     const container = document.querySelector("#slot-fields");
     container.replaceChildren();
     if (loading) {
-      container.append(element("p", { class: "muted", text: "Discovering monitor inputs. Please wait..." }));
+      container.append(element("p", { class: "muted", text: t("editor.discovering") }));
     } else if (ready) {
       const values = form.values && typeof form.values === "object" ? form.values : {};
       for (const field of safeArray(form.fields)) container.append(renderField(field, values[field.key]));
@@ -798,7 +838,7 @@ async function loadSlotEditor() {
   } catch (error) {
     if (state.slotEditor !== editor) return;
     const target = document.querySelector("#slot-error");
-    target.textContent = safeText(error.message, "Step configuration is unavailable.");
+    target.textContent = sourceText(safeText(error.message, t("error.pluginConfig")));
     target.hidden = false;
     target.focus();
   }
@@ -810,12 +850,12 @@ async function refreshSlotEditor() {
   const refresh = document.querySelector("#slot-refresh");
   refresh.disabled = true;
   document.querySelector("#slot-save").hidden = true;
-  document.querySelector("#slot-fields").replaceChildren(element("p", { class: "muted", text: "Discovering monitor inputs. Please wait..." }));
+  document.querySelector("#slot-fields").replaceChildren(element("p", { class: "muted", text: t("editor.discovering") }));
   try {
     await nativeRequest("slot.action", { target: editor.target, action_id: editor.refreshActionId, values: {} });
     await loadSlotEditor();
   } catch (error) {
-    const target = document.querySelector("#slot-error"); target.textContent = safeText(error.message, "Monitor discovery could not start."); target.hidden = false; target.focus();
+    const target = document.querySelector("#slot-error"); target.textContent = sourceText(safeText(error.message, t("error.pluginDiscovery"))); target.hidden = false; target.focus();
     refresh.disabled = false;
   }
 }
@@ -825,18 +865,18 @@ async function saveSlotEditor(event) {
   if (event.submitter?.value === "cancel") { slotDialog.close("cancel"); state.slotEditor = null; return; }
   if (!state.slotEditor || !slotForm.reportValidity()) return;
   const save = document.querySelector("#slot-save");
-  save.disabled = true; save.textContent = "Saving…";
+  save.disabled = true; save.textContent = t("common.saving");
   const values = {};
   for (const input of document.querySelector("#slot-fields").querySelectorAll("[name]")) values[input.getAttribute("name")] = input.dataset.hotkey !== undefined ? JSON.parse(input.dataset.hotkey) : input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.selectedOptions?.[0]?.dataset.json === "true" ? JSON.parse(input.value) : input.value;
   try {
     const result = await nativeRequest("slot.save", { target: state.slotEditor.target, action_id: state.slotEditor.actionId, values });
     state.slotEditor.row._parameters = result.parameters || {};
-    state.slotEditor.row._summary.textContent = safeText(result.summary);
+    state.slotEditor.row._summary.textContent = sourceText(safeText(result.summary));
     state.slotEditor.row._summary.hidden = !state.slotEditor.row._summary.textContent;
     slotDialog.close(); state.slotEditor = null;
   } catch (error) {
-    const target = document.querySelector("#slot-error"); target.textContent = safeText(error.message, "The step could not be saved."); target.hidden = false; target.focus();
-  } finally { save.disabled = false; save.textContent = "Save step"; }
+    const target = document.querySelector("#slot-error"); target.textContent = sourceText(safeText(error.message, t("error.save"))); target.hidden = false; target.focus();
+  } finally { save.disabled = false; save.textContent = t("dialog.saveStep"); }
 }
 
 async function saveEditor(event) {
@@ -848,47 +888,47 @@ async function saveEditor(event) {
   }
   if (!state.editor || !editorForm.reportValidity()) return;
   const save = document.querySelector("#editor-save");
-  save.disabled = true; save.textContent = "Saving…";
+  save.disabled = true; save.textContent = t("common.saving");
   if (state.editor.kind === "route-wizard") {
     try { await advanceRouteWizard(); }
     catch (error) {
       const target = document.querySelector("#editor-error");
-      target.textContent = safeText(error.message, "Route configuration could not be saved."); target.hidden = false; target.focus();
+      target.textContent = sourceText(safeText(error.message, t("error.save"))); target.hidden = false; target.focus();
     } finally { save.disabled = false; }
     return;
   }
   const values = collectEditorValues();
   if (state.editor.kind === "signal" && !safeArray(values.triggers).length) {
     const target = document.querySelector("#editor-error");
-    target.textContent = "Add at least one trigger."; target.hidden = false; target.focus();
-    save.disabled = false; save.textContent = "Save changes";
+    target.textContent = t("error.addTrigger"); target.hidden = false; target.focus();
+    save.disabled = false; save.textContent = t("common.save");
     return;
   }
   const keyboardTrigger = safeArray(values.triggers).find(trigger => trigger.kind === "keyboard");
   if (state.editor.kind === "signal" && keyboardTrigger && !keyboardTrigger.hotkey) {
     const target = document.querySelector("#editor-error");
-    target.textContent = "Press the key combination that should run this automation."; target.hidden = false; target.focus();
-    save.disabled = false; save.textContent = "Save changes";
+    target.textContent = t("error.addHotkey"); target.hidden = false; target.focus();
+    save.disabled = false; save.textContent = t("common.save");
     return;
   }
   const trayTrigger = safeArray(values.triggers).find(trigger => trigger.kind === "tray");
   if (state.editor.kind === "signal" && trayTrigger && !safeText(trayTrigger.label).trim()) {
     const target = document.querySelector("#editor-error");
-    target.textContent = "Enter the tray menu option text."; target.hidden = false; target.focus();
-    save.disabled = false; save.textContent = "Save changes";
+    target.textContent = t("error.trayText"); target.hidden = false; target.focus();
+    save.disabled = false; save.textContent = t("common.save");
     return;
   }
   const mqttTrigger = safeArray(values.triggers).find(trigger => trigger.kind === "mqtt");
   if (state.editor.kind === "signal" && mqttTrigger && (!safeText(mqttTrigger.profile_id).trim() || !safeText(mqttTrigger.ha_name).trim() || !safeText(mqttTrigger.ha_id).trim())) {
     const target = document.querySelector("#editor-error");
-    target.textContent = "Choose an MQTT/HA configuration and enter the Home Assistant name and ID."; target.hidden = false; target.focus();
-    save.disabled = false; save.textContent = "Save changes";
+    target.textContent = t("error.mqttTrigger"); target.hidden = false; target.focus();
+    save.disabled = false; save.textContent = t("common.save");
     return;
   }
   if (state.editor.kind === "signal" && !safeArray(values.slots).length) {
     const target = document.querySelector("#editor-error");
-    target.textContent = "Add at least one action or wait step."; target.hidden = false; target.focus();
-    save.disabled = false; save.textContent = "Save changes";
+    target.textContent = t("error.addStep"); target.hidden = false; target.focus();
+    save.disabled = false; save.textContent = t("common.save");
     return;
   }
   try {
@@ -900,8 +940,8 @@ async function saveEditor(event) {
       if (createdRoute) openEntityEditor("route", createdRoute);
     }
   } catch (error) {
-    const target = document.querySelector("#editor-error"); target.textContent = safeText(error.message, "Changes could not be saved."); target.hidden = false; target.focus();
-  } finally { save.disabled = false; save.textContent = "Save changes"; }
+    const target = document.querySelector("#editor-error"); target.textContent = sourceText(safeText(error.message, t("error.save"))); target.hidden = false; target.focus();
+  } finally { save.disabled = false; save.textContent = t("common.save"); }
 }
 
 function confirmAction(title, message, method, params) {
@@ -913,27 +953,27 @@ function confirmAction(title, message, method, params) {
 }
 
 async function execute(method, params) {
-  showNotice("Applying changes…");
+  showNotice(t("common.applying"));
   try { await nativeRequest(method, params); state.revision = -1; await pollSnapshot(); }
-  catch (error) { showNotice(safeText(error.message, "The operation failed."), true); }
+  catch (error) { showNotice(sourceText(safeText(error.message, t("error.operation"))), true); }
 }
 
 async function exportConfiguration() {
   try {
     const picker = window.pywebview?.api?.pick_save_file;
-    if (typeof picker !== "function") throw new Error("The native save dialog is unavailable.");
+    if (typeof picker !== "function") throw new Error(t("error.bridge"));
     const directory = safeText(state.snapshot?.settings?.configuration_directory);
-    const choice = await window.pywebview.api.pick_save_file({ title: "Export FenSoundSwitch configuration", directory, filename: "FenSoundSwitch.fsc", file_types: ["FenSoundSwitch configuration (*.fsc)"] });
+    const choice = await window.pywebview.api.pick_save_file({ title: `${t("settings.export")} FenSoundSwitch`, directory, filename: "FenSoundSwitch.fsc", file_types: [`FenSoundSwitch ${t("settings.configuration")} (*.fsc)`] });
     if (choice?.ok && choice.result) await execute("config.export", { path: choice.result });
-    else if (choice?.ok === false) showNotice(choice.error?.message || "The file dialog failed.", true);
-  } catch (error) { showNotice(safeText(error?.message, "The native save dialog could not be opened."), true); }
+    else if (choice?.ok === false) showNotice(t("error.fileDialog"), true);
+  } catch (error) { showNotice(sourceText(safeText(error?.message, t("error.operation"))), true); }
 }
 
 async function importConfiguration() {
   const directory = safeText(state.snapshot?.settings?.configuration_directory);
-  const choice = await window.pywebview.api.pick_open_file({ title: "Import FenSoundSwitch configuration", directory, file_types: ["FenSoundSwitch configuration (*.fsc)"] });
-  if (choice?.ok && choice.result) confirmAction("Import configuration?", "Saved routes and plugin settings will be replaced, then the application may restart.", "config.import", { path: choice.result });
-  else if (choice?.ok === false) showNotice(choice.error?.message || "The file dialog failed.", true);
+  const choice = await window.pywebview.api.pick_open_file({ title: `${t("settings.import")} FenSoundSwitch`, directory, file_types: [`FenSoundSwitch ${t("settings.configuration")} (*.fsc)`] });
+  if (choice?.ok && choice.result) confirmAction(t("settings.importTitle"), t("settings.restoreMessage"), "config.import", { path: choice.result });
+  else if (choice?.ok === false) showNotice(t("error.fileDialog"), true);
 }
 
 document.querySelector("#navigation").addEventListener("click", event => { const button = event.target.closest("[data-page]"); if (button) switchPage(button.dataset.page); });
@@ -970,6 +1010,11 @@ document.addEventListener("click", event => {
     if (arrow) arrow.setAttribute("aria-expanded", "false");
   }
 });
+setLanguage(["en", "de", "es", "fr", "it"].includes(navigator.language?.split("-")[0]) ? navigator.language.split("-")[0] : "en");
+applyStaticTranslations();
+document.querySelector("#page-title").textContent = t(pages[state.page][0]);
+document.querySelector("#page-description").textContent = t(pages[state.page][1]);
+primaryAction.textContent = t(pages[state.page][2]);
 window.addEventListener("pywebviewready", pollSnapshot, { once: true });
 // WebKit can expose the bridge shortly after document load without reliably
 // delivering pywebviewready to inline documents. Retry the initial snapshot

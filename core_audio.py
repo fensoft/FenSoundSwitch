@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import ntpath
 import uuid
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -34,11 +35,23 @@ class RenderEndpoint:
     display_name: str
 
 
+@dataclass(frozen=True)
+class RenderAudioSession:
+    endpoint_id: str
+    endpoint_name: str
+    executable_path: str
+    process_name: str
+    display_name: str
+
+
 CLSID_MMDEVICE_ENUMERATOR = GUID.parse("BCDE0395-E52F-467C-8E3D-C4579291692E")
 IID_IMMDEVICE_ENUMERATOR = GUID.parse("A95664D2-9614-4F35-A746-DE8DB63617E6")
 IID_IAUDIO_ENDPOINT_VOLUME = GUID.parse("5CDF2C82-841E-4546-9722-0CF74078229A")
 IID_IAUDIO_CLIENT = GUID.parse("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2")
 IID_IAUDIO_RENDER_CLIENT = GUID.parse("F294ACFC-3146-4483-A7BF-ADDCA7C260E2")
+IID_IAUDIO_SESSION_MANAGER2 = GUID.parse("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F")
+IID_IAUDIO_SESSION_CONTROL2 = GUID.parse("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D")
+IID_ISIMPLE_AUDIO_VOLUME = GUID.parse("87CE5498-68D6-44E5-9215-6DA47EF883D8")
 CLSID_POLICY_CONFIG_CLIENT = GUID.parse("870AF99C-171D-4F9E-AF0D-E63DF40C2BC9")
 IID_IPOLICY_CONFIG = GUID.parse("F8679F50-850A-41CF-9C72-430F290290C8")
 CLSID_POLICY_CONFIG_VISTA_CLIENT = GUID.parse("294935CE-F637-4E7C-A41B-AB255460B862")
@@ -69,6 +82,17 @@ IAUDIO_CLIENT_STOP = 11
 IAUDIO_CLIENT_GET_SERVICE = 14
 IAUDIO_RENDER_CLIENT_GET_BUFFER = 3
 IAUDIO_RENDER_CLIENT_RELEASE_BUFFER = 4
+IAUDIO_SESSION_MANAGER_GET_ENUMERATOR = 5
+IAUDIO_SESSION_ENUMERATOR_GET_COUNT = 3
+IAUDIO_SESSION_ENUMERATOR_GET_SESSION = 4
+IAUDIO_SESSION_CONTROL_GET_STATE = 3
+IAUDIO_SESSION_CONTROL_GET_DISPLAY_NAME = 4
+IAUDIO_SESSION_CONTROL2_GET_PROCESS_ID = 14
+ISIMPLE_AUDIO_VOLUME_SET_MASTER = 3
+ISIMPLE_AUDIO_VOLUME_GET_MASTER = 4
+ISIMPLE_AUDIO_VOLUME_SET_MUTE = 5
+ISIMPLE_AUDIO_VOLUME_GET_MUTE = 6
+AUDIO_SESSION_STATE_ACTIVE = 1
 AUDCLNT_SHAREMODE_SHARED = 0
 AUDCLNT_BUFFERFLAGS_SILENT = 0x00000002
 REGDB_E_CLASSNOTREG = 0x80040154
@@ -78,6 +102,13 @@ ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
 ole32.CoInitializeEx.restype = ctypes.c_long
 ole32.CoUninitialize.argtypes = []
 ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 
 def _check(result: int, operation: str) -> None:
@@ -97,6 +128,19 @@ def _method(pointer: ctypes.c_void_p, index: int, restype: object, argtypes: lis
 def _release(pointer: ctypes.c_void_p | None) -> None:
     if pointer:
         _method(pointer, 2, wintypes.ULONG, [])(pointer)
+
+
+def _query_interface(pointer: ctypes.c_void_p, interface_id: GUID, operation: str) -> ctypes.c_void_p:
+    result = ctypes.c_void_p()
+    _check(
+        int(
+            _method(pointer, 0, ctypes.c_long, [ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)])(
+                pointer, ctypes.byref(interface_id), ctypes.byref(result)
+            )
+        ),
+        operation,
+    )
+    return result
 
 
 class _Apartment:
@@ -348,6 +392,201 @@ def toggle_endpoint_mute(endpoint_id: str) -> bool:
             return target
         finally:
             _release(volume); _release(device)
+
+
+def _session_manager(device: ctypes.c_void_p) -> ctypes.c_void_p:
+    manager = ctypes.c_void_p()
+    result = int(
+        _method(
+            device,
+            3,
+            ctypes.c_long,
+            [ctypes.POINTER(GUID), wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)],
+        )(device, ctypes.byref(IID_IAUDIO_SESSION_MANAGER2), CLSCTX_ALL, None, ctypes.byref(manager))
+    )
+    _check(result, "IMMDevice.Activate(IAudioSessionManager2)")
+    return manager
+
+
+def _process_image_path(process_id: int) -> str | None:
+    if process_id <= 0:
+        return None
+    process = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id)
+    if not process:
+        return None
+    try:
+        capacity = 32768
+        buffer = ctypes.create_unicode_buffer(capacity)
+        length = wintypes.DWORD(capacity)
+        if not kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(length)):
+            return None
+        return buffer.value.strip() or None
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def _session_identity(control: ctypes.c_void_p, *, strict: bool = False) -> tuple[str, str, str] | None:
+    control2 = None
+    display_pointer = ctypes.c_void_p()
+    try:
+        state = wintypes.DWORD()
+        _check(
+            int(_method(control, IAUDIO_SESSION_CONTROL_GET_STATE, ctypes.c_long, [ctypes.POINTER(wintypes.DWORD)])(control, ctypes.byref(state))),
+            "IAudioSessionControl.GetState",
+        )
+        if state.value != AUDIO_SESSION_STATE_ACTIVE:
+            return None
+        control2 = _query_interface(control, IID_IAUDIO_SESSION_CONTROL2, "IAudioSessionControl.QueryInterface(IAudioSessionControl2)")
+        process_id = wintypes.DWORD()
+        _check(
+            int(_method(control2, IAUDIO_SESSION_CONTROL2_GET_PROCESS_ID, ctypes.c_long, [ctypes.POINTER(wintypes.DWORD)])(control2, ctypes.byref(process_id))),
+            "IAudioSessionControl2.GetProcessId",
+        )
+        if process_id.value == 0:
+            return None
+        executable_path = _process_image_path(int(process_id.value))
+        if executable_path is None:
+            if strict:
+                raise CoreAudioError("An active audio session's executable identity could not be verified.")
+            return None
+        display_result = int(
+            _method(control, IAUDIO_SESSION_CONTROL_GET_DISPLAY_NAME, ctypes.c_long, [ctypes.POINTER(ctypes.c_void_p)])(
+                control, ctypes.byref(display_pointer)
+            )
+        )
+        display_name = ""
+        if display_result >= 0 and display_pointer.value:
+            display_name = ctypes.wstring_at(display_pointer.value).strip()
+        process_name = ntpath.basename(executable_path)
+        return executable_path, process_name, display_name or process_name
+    finally:
+        if display_pointer.value:
+            ole32.CoTaskMemFree(display_pointer)
+        _release(control2)
+
+
+def _session_controls(device: ctypes.c_void_p) -> list[ctypes.c_void_p]:
+    manager = None
+    enumerator = ctypes.c_void_p()
+    try:
+        manager = _session_manager(device)
+        _check(
+            int(_method(manager, IAUDIO_SESSION_MANAGER_GET_ENUMERATOR, ctypes.c_long, [ctypes.POINTER(ctypes.c_void_p)])(manager, ctypes.byref(enumerator))),
+            "IAudioSessionManager2.GetSessionEnumerator",
+        )
+        count = wintypes.INT()
+        _check(
+            int(_method(enumerator, IAUDIO_SESSION_ENUMERATOR_GET_COUNT, ctypes.c_long, [ctypes.POINTER(wintypes.INT)])(enumerator, ctypes.byref(count))),
+            "IAudioSessionEnumerator.GetCount",
+        )
+        controls: list[ctypes.c_void_p] = []
+        try:
+            for index in range(count.value):
+                control = ctypes.c_void_p()
+                _check(
+                    int(_method(enumerator, IAUDIO_SESSION_ENUMERATOR_GET_SESSION, ctypes.c_long, [wintypes.INT, ctypes.POINTER(ctypes.c_void_p)])(enumerator, index, ctypes.byref(control))),
+                    "IAudioSessionEnumerator.GetSession",
+                )
+                controls.append(control)
+            return controls
+        except Exception:
+            for control in controls:
+                _release(control)
+            raise
+    finally:
+        _release(enumerator)
+        _release(manager)
+
+
+def normalize_application_executable_path(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise CoreAudioError("An application executable path is required.")
+    return ntpath.normcase(ntpath.normpath(value.strip()))
+
+
+def enumerate_render_audio_sessions() -> list[RenderAudioSession]:
+    """Enumerate controllable active render sessions; call only from configuration workers."""
+    sessions: list[RenderAudioSession] = []
+    with _Apartment():
+        for endpoint in _enumerate_endpoints(E_RENDER):
+            device = _device_for_id(endpoint.endpoint_id)
+            controls: list[ctypes.c_void_p] = []
+            try:
+                controls = _session_controls(device)
+                for control in controls:
+                    identity = _session_identity(control)
+                    if identity is not None:
+                        executable_path, process_name, display_name = identity
+                        sessions.append(RenderAudioSession(endpoint.endpoint_id, endpoint.display_name, executable_path, process_name, display_name))
+            finally:
+                for control in controls:
+                    _release(control)
+                _release(device)
+    return sessions
+
+
+def _with_application_session(endpoint_id: str, executable_path: str, operation: object) -> object:
+    expected = normalize_application_executable_path(executable_path)
+    with _Apartment():
+        device = _device_for_id(endpoint_id)
+        controls: list[ctypes.c_void_p] = []
+        try:
+            controls = _session_controls(device)
+            matches = []
+            for control in controls:
+                identity = _session_identity(control, strict=True)
+                if identity is not None and normalize_application_executable_path(identity[0]) == expected:
+                    matches.append(control)
+            if not matches:
+                raise CoreAudioError("The selected application has no active audio session on the configured output.")
+            if len(matches) != 1:
+                raise CoreAudioError("The selected application audio session is ambiguous on the configured output.")
+            volume = _query_interface(matches[0], IID_ISIMPLE_AUDIO_VOLUME, "IAudioSessionControl.QueryInterface(ISimpleAudioVolume)")
+            try:
+                return operation(volume)  # type: ignore[operator]
+            finally:
+                _release(volume)
+        finally:
+            for control in controls:
+                _release(control)
+            _release(device)
+
+
+def read_application_session_volume(endpoint_id: str, executable_path: str) -> int:
+    def read(volume: ctypes.c_void_p) -> int:
+        value = ctypes.c_float()
+        _check(int(_method(volume, ISIMPLE_AUDIO_VOLUME_GET_MASTER, ctypes.c_long, [ctypes.POINTER(ctypes.c_float)])(volume, ctypes.byref(value))), "ISimpleAudioVolume.GetMasterVolume")
+        return max(0, min(100, round(float(value.value) * 100)))
+
+    return int(_with_application_session(endpoint_id, executable_path, read))
+
+
+def write_application_session_volume(endpoint_id: str, executable_path: str, target_volume: int) -> int:
+    target = max(0, min(100, int(target_volume)))
+
+    def write(volume: ctypes.c_void_p) -> int:
+        _check(int(_method(volume, ISIMPLE_AUDIO_VOLUME_SET_MASTER, ctypes.c_long, [ctypes.c_float, ctypes.c_void_p])(volume, target / 100.0, None)), "ISimpleAudioVolume.SetMasterVolume")
+        confirmed = ctypes.c_float()
+        _check(int(_method(volume, ISIMPLE_AUDIO_VOLUME_GET_MASTER, ctypes.c_long, [ctypes.POINTER(ctypes.c_float)])(volume, ctypes.byref(confirmed))), "ISimpleAudioVolume.GetMasterVolume")
+        return max(0, min(100, round(float(confirmed.value) * 100)))
+
+    return int(_with_application_session(endpoint_id, executable_path, write))
+
+
+def toggle_application_session_mute(endpoint_id: str, executable_path: str) -> bool:
+    def toggle(volume: ctypes.c_void_p) -> bool:
+        muted = wintypes.BOOL()
+        get_mute = _method(volume, ISIMPLE_AUDIO_VOLUME_GET_MUTE, ctypes.c_long, [ctypes.POINTER(wintypes.BOOL)])
+        _check(int(get_mute(volume, ctypes.byref(muted))), "ISimpleAudioVolume.GetMute")
+        target = not bool(muted.value)
+        _check(int(_method(volume, ISIMPLE_AUDIO_VOLUME_SET_MUTE, ctypes.c_long, [wintypes.BOOL, ctypes.c_void_p])(volume, target, None)), "ISimpleAudioVolume.SetMute")
+        confirmed = wintypes.BOOL()
+        _check(int(get_mute(volume, ctypes.byref(confirmed))), "ISimpleAudioVolume.GetMute")
+        if bool(confirmed.value) != target:
+            raise CoreAudioError("The application audio session did not confirm its mute state.")
+        return target
+
+    return bool(_with_application_session(endpoint_id, executable_path, toggle))
 
 
 def keep_endpoint_active(endpoint_id: str, stop_event: object, poll_seconds: float = 0.1) -> None:

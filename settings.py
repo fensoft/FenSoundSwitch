@@ -11,9 +11,12 @@ from ddc import MonitorIdentity, SavedMonitorSelection
 from plugin_api import ActionHotkeyBinding, HotkeySpec
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 DEFAULT_CHANGE_SPEED = "slow"
 CHANGE_SPEEDS = frozenset(("slow", "medium", "fast"))
+DEFAULT_UI_LANGUAGE = "auto"
+UI_LANGUAGES = frozenset(("auto", "en", "de", "es", "fr", "it"))
+TRANSLATED_UI_LANGUAGES = frozenset(UI_LANGUAGES - {DEFAULT_UI_LANGUAGE})
 USER_DATA_DIRECTORY = Path(os.environ.get("APPDATA") or Path.home()) / "fensoundswitch"
 LEGACY_USER_DATA_DIRECTORY = Path(os.environ.get("APPDATA") or Path.home()) / "windows-ddc"
 SETTINGS_PATH = USER_DATA_DIRECTORY / "settings.json"
@@ -240,6 +243,21 @@ def _normalized_change_speed(value: object) -> str | None:
     return speed
 
 
+def _normalized_ui_language(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    language = value.strip().lower()
+    return language if language in UI_LANGUAGES else None
+
+
+def resolve_ui_language(preference: str, locale_name: str | None) -> str:
+    normalized = _normalized_ui_language(preference) or DEFAULT_UI_LANGUAGE
+    if normalized != DEFAULT_UI_LANGUAGE:
+        return normalized
+    primary = (locale_name or "").replace("_", "-").partition("-")[0].lower()
+    return primary if primary in TRANSLATED_UI_LANGUAGES else "en"
+
+
 def _write_settings_object(payload: dict[str, object]) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     temp_path = SETTINGS_PATH.with_suffix(".tmp")
@@ -262,6 +280,24 @@ def save_change_speed(change_speed: str) -> None:
     existing = _read_settings_object()
     payload = dict(existing) if existing is not None else {"schema_version": SCHEMA_VERSION}
     payload["change_speed"] = normalized_speed
+    _write_settings_object(payload)
+
+
+def load_ui_language() -> str:
+    data = _read_settings_object()
+    if data is None:
+        return DEFAULT_UI_LANGUAGE
+    return _normalized_ui_language(data.get("ui_language")) or DEFAULT_UI_LANGUAGE
+
+
+def save_ui_language(ui_language: str) -> None:
+    normalized = _normalized_ui_language(ui_language)
+    if normalized is None:
+        raise ValueError("UI language must be auto, en, de, es, fr, or it.")
+    existing = _read_settings_object()
+    payload = dict(existing) if existing is not None else {}
+    payload["schema_version"] = SCHEMA_VERSION
+    payload["ui_language"] = normalized
     _write_settings_object(payload)
 
 
@@ -579,7 +615,7 @@ def load_selected_monitor_key() -> SavedMonitorSelection | None:
         return None
 
     schema_version = data.get("schema_version")
-    if schema_version in (2, 3, 4, 5, 6, 7, 8, 9, 10, SCHEMA_VERSION):
+    if schema_version in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, SCHEMA_VERSION):
         identity_data = selected_monitor.get("identity")
         if not isinstance(identity_data, dict):
             return None

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Mapping
 
 from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageTk
+from localization import tr, translate_source
 
 from plugin_api import (
     PLUGIN_API_VERSION,
@@ -372,13 +373,13 @@ class MacOSVolumeOverlay(VolumeOverlay):
         self._show_window(AUTO_HIDE_MS, preferred_display_device_name)
 
     def show_error(self, message: str, preferred_display_device_name: str | None = None) -> None:
-        message = message.strip() or "Selected monitor is unavailable."
+        message = message.strip() or tr("overlay.monitor_unavailable")
         self._presentation = ("error", message)
         self._draw_message_hud(message, error=True)
         self._show_window(ERROR_AUTO_HIDE_MS, preferred_display_device_name)
 
     def show_text(self, text: str, preferred_display_device_name: str | None = None) -> None:
-        text = text.strip() or "Done"
+        text = text.strip() or tr("common.done")
         self._presentation = ("text", text)
         self._draw_message_hud(text, error=False)
         self._show_window(AUTO_HIDE_MS, preferred_display_device_name)
@@ -391,12 +392,12 @@ class MacOSVolumeOverlay(VolumeOverlay):
     ) -> None:
         statuses = self.select_statuses(statuses, current_provider_id)
         if not statuses:
-            self.show_error("No routed volume providers are available.", preferred_display_device_name)
+            self.show_error(tr("overlay.no_providers"), preferred_display_device_name)
             return
         status = statuses[0]
         self._presentation = ("statuses", statuses, current_provider_id)
         if status.confirmed_volume is None:
-            detail = status.reason or "Unavailable"
+            detail = translate_source(status.reason) if status.reason else tr("common.unavailable")
             self._draw_message_hud(f"{status.display_name}\n{detail}", error=True)
         else:
             self._draw_volume_hud(status.confirmed_volume, status.route_type)
@@ -428,7 +429,7 @@ class MacOSVolumeOverlay(VolumeOverlay):
             status = statuses[0]
             if status.confirmed_volume is None:
                 self._draw_message_hud(
-                    f"{status.display_name}\n{status.reason or 'Unavailable'}",
+                    f"{status.display_name}\n{translate_source(status.reason) if status.reason else tr('common.unavailable')}",
                     error=True,
                 )
             else:

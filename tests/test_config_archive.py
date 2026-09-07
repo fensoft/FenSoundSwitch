@@ -104,6 +104,8 @@ class ConfigurationArchiveTests(unittest.TestCase):
         import_configuration(archive, imported_settings, imported_plugins)
 
         payload = json.loads(imported_settings.read_text(encoding="utf-8"))
+        self.assertEqual(payload["schema_version"], 12)
+        self.assertEqual(payload["ui_language"], "auto")
         routes = payload["volume_routes"]
         self.assertEqual([route["name"] for route in routes], ["Output", "Voice"])
         self.assertEqual([route["route_type"] for route in routes], ["speakers", "voice"])

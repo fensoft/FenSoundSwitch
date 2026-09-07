@@ -351,6 +351,36 @@ class SettingsTests(unittest.TestCase):
         payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
         self.assertEqual(payload, {"schema_version": settings.SCHEMA_VERSION, "change_speed": "medium"})
 
+    def test_ui_language_defaults_resolves_and_round_trips(self) -> None:
+        self.assertEqual(settings.load_ui_language(), "auto")
+        for language in ("auto", "en", "de", "es", "fr", "it"):
+            with self.subTest(language=language):
+                settings.save_ui_language(f" {language.upper()} ")
+                self.assertEqual(settings.load_ui_language(), language)
+        self.assertEqual(settings.resolve_ui_language("auto", "de-DE"), "de")
+        self.assertEqual(settings.resolve_ui_language("auto", "es_MX"), "es")
+        self.assertEqual(settings.resolve_ui_language("auto", "pt-BR"), "en")
+        self.assertEqual(settings.resolve_ui_language("fr", "de-DE"), "fr")
+
+    def test_ui_language_rejects_invalid_values_and_preserves_old_settings(self) -> None:
+        selection = SavedMonitorSelection("Monitor", MonitorIdentity("path", "DEL", 1, "SERIAL"))
+        settings.save_selected_monitor_key(selection)
+        settings.save_change_speed("fast")
+        for value in (None, True, 1, "", "pt", "de-DE"):
+            with self.subTest(value=value):
+                payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
+                payload["ui_language"] = value
+                self.write_json(payload)
+                self.assertEqual(settings.load_ui_language(), "auto")
+        with self.assertRaises(ValueError):
+            settings.save_ui_language("pt")
+        settings.save_ui_language("it")
+        settings.save_change_speed("medium")
+        self.assertEqual(settings.load_ui_language(), "it")
+        self.assertEqual(settings.load_selected_monitor_key(), selection)
+        self.assertEqual(settings.load_change_speed(), "medium")
+        self.assertEqual(json.loads(self.settings_path.read_text(encoding="utf-8"))["schema_version"], 12)
+
     def test_active_volume_provider_round_trip_preserves_legacy_selection(self) -> None:
         self.write_json({"schema_version": 2, "selected_monitor": {"description": "Monitor", "identity": {"device_path": "path"}}})
         settings.save_active_volume_provider_id("ddc-volume")

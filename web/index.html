@@ -7,15 +7,16 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
   <title>FenSoundSwitch Command Center</title>
   <link rel="stylesheet" href="app.css">
+  <script src="i18n.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
-  <a class="skip-link" href="#workspace">Skip to content</a>
+  <a class="skip-link" href="#workspace" data-i18n="app.skip">Skip to content</a>
   <div class="shell">
-    <aside class="rail" aria-label="Primary navigation">
+    <aside class="rail" aria-label="Primary navigation" data-i18n-aria="app.primaryNav">
       <div class="brand" aria-label="FenSoundSwitch">
         <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 256 256"><defs><linearGradient id="brand-background" x1="28" y1="20" x2="228" y2="236" gradientUnits="userSpaceOnUse"><stop stop-color="#111d24"/><stop offset="1" stop-color="#080d11"/></linearGradient><linearGradient id="brand-speaker" x1="36" y1="64" x2="116" y2="192" gradientUnits="userSpaceOnUse"><stop stop-color="#8deaff"/><stop offset=".38" stop-color="#49cef3"/><stop offset="1" stop-color="#1596cf"/></linearGradient><linearGradient id="brand-route" x1="118" y1="128" x2="218" y2="128" gradientUnits="userSpaceOnUse"><stop stop-color="#dff8ff"/><stop offset="1" stop-color="#69ddfa"/></linearGradient></defs><rect width="256" height="256" fill="url(#brand-background)"/><rect x="2" y="2" width="252" height="252" fill="none" stroke="#263943" stroke-width="4"/><path d="M36 105H69L115 64V192L69 151H36Z" fill="url(#brand-speaker)"/><path d="M43 111H74L106 82V96L78 121H43Z" fill="#b2f2ff" opacity=".55"/><g fill="none" stroke="url(#brand-route)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"><path d="M120 128H151"/><path d="M148 128L187 85H211"/><path d="M148 128L187 171H211"/></g><circle cx="215" cy="85" r="14" fill="#ffd34d"/><circle cx="215" cy="171" r="14" fill="#ffd34d"/><circle cx="211" cy="81" r="4" fill="#fff3ad" opacity=".8"/><circle cx="211" cy="167" r="4" fill="#fff3ad" opacity=".8"/></svg></span>
-        <span><strong>FenSoundSwitch</strong><small>Command Center</small></span>
+        <span><strong>FenSoundSwitch</strong><small data-i18n="app.commandCenter">Command Center</small></span>
       </div>
       <nav id="navigation">
         <button class="nav-item is-active" type="button" data-page="routes" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h13m0 0-3-3m3 3-3 3M20 17H7m0 0 3-3m-3 3 3 3"/></svg></span>Routes</button>
@@ -26,66 +27,66 @@
         <button class="nav-item diagnostics-link" type="button" data-page="diagnostics"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3"/></svg></span>Diagnostics</button>
         <button class="nav-item" type="button" data-page="about"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/></svg></span>About</button>
       </nav>
-      <div class="connection" id="connection-status" role="status"><span class="status-dot"></span><span>Connecting</span></div>
+      <div class="connection" id="connection-status" role="status"><span class="status-dot"></span><span data-i18n="common.connecting">Connecting</span></div>
     </aside>
 
     <main id="workspace" tabindex="-1">
       <header class="topbar">
-        <div><p class="eyebrow">AUDIO CONTROL</p><h1 id="page-title">Routes</h1><p id="page-description">Connect an input to the volume output it controls.</p></div>
+        <div><p class="eyebrow" data-i18n="app.audioControl">AUDIO CONTROL</p><h1 id="page-title">Routes</h1><p id="page-description">Connect an input to the volume output it controls.</p></div>
         <button class="primary" id="primary-action" type="button">New route</button>
       </header>
       <div id="notice-region" class="notice-region" aria-live="polite"></div>
       <section id="content" aria-labelledby="page-title" aria-busy="true">
-        <div class="loading-card"><span class="spinner" aria-hidden="true"></span><p>Loading command center…</p></div>
+        <div class="loading-card"><span class="spinner" aria-hidden="true"></span><p data-i18n="common.loading">Loading command center…</p></div>
       </section>
     </main>
   </div>
 
   <dialog id="editor-dialog" aria-labelledby="editor-title">
     <form method="dialog" id="editor-form">
-      <header><div><p class="eyebrow" id="editor-kicker">EDIT</p><h2 id="editor-title">Edit item</h2></div><button class="icon-button" id="editor-close" type="button" aria-label="Close">×</button></header>
+      <header><div><p class="eyebrow" id="editor-kicker" data-i18n="dialog.edit">EDIT</p><h2 id="editor-title" data-i18n="dialog.editItem">Edit item</h2></div><button class="icon-button" id="editor-close" type="button" aria-label="Close" data-i18n-aria="common.close">×</button></header>
       <p id="editor-description" class="dialog-description tutorial"></p>
       <div id="editor-fields" class="dialog-body"></div>
       <div id="editor-error" class="inline-error" role="alert" hidden></div>
-      <footer><button class="secondary" id="editor-back" type="button" hidden>Back</button><span class="spacer"></span><button class="secondary" id="editor-cancel" type="button">Cancel</button><button class="primary" id="editor-save" value="default">Save changes</button></footer>
+      <footer><button class="secondary" id="editor-back" type="button" hidden data-i18n="common.back">Back</button><span class="spacer"></span><button class="secondary" id="editor-cancel" type="button" data-i18n="common.cancel">Cancel</button><button class="primary" id="editor-save" value="default" data-i18n="common.save">Save changes</button></footer>
     </form>
   </dialog>
   <dialog id="confirm-dialog" aria-labelledby="confirm-title">
     <form method="dialog">
-      <header><div><p class="eyebrow">CONFIRM</p><h2 id="confirm-title">Are you sure?</h2></div></header>
+      <header><div><p class="eyebrow" data-i18n="dialog.confirm">CONFIRM</p><h2 id="confirm-title" data-i18n="dialog.areYouSure">Are you sure?</h2></div></header>
       <p id="confirm-message" class="dialog-body"></p>
-      <footer><button class="secondary" value="cancel">Cancel</button><button class="danger" value="confirm">Continue</button></footer>
+      <footer><button class="secondary" value="cancel" data-i18n="common.cancel">Cancel</button><button class="danger" value="confirm" data-i18n="common.continue">Continue</button></footer>
     </form>
   </dialog>
   <dialog id="choice-dialog" aria-labelledby="choice-title">
     <div class="dialog-shell">
-      <header><div><p class="eyebrow" id="choice-kicker">ADD ITEM</p><h2 id="choice-title">Choose an item</h2></div><button class="icon-button" id="choice-close" type="button" aria-label="Close">×</button></header>
+      <header><div><p class="eyebrow" id="choice-kicker" data-i18n="dialog.addItem">ADD ITEM</p><h2 id="choice-title" data-i18n="dialog.chooseItem">Choose an item</h2></div><button class="icon-button" id="choice-close" type="button" aria-label="Close" data-i18n-aria="common.close">×</button></header>
       <p id="choice-description" class="dialog-description"></p>
       <div id="choice-options" class="dialog-body choice-options"></div>
-      <footer><button class="secondary" id="choice-cancel" type="button">Cancel</button></footer>
+      <footer><button class="secondary" id="choice-cancel" type="button" data-i18n="common.cancel">Cancel</button></footer>
     </div>
   </dialog>
   <dialog id="slot-dialog" aria-labelledby="slot-title">
     <form method="dialog" id="slot-form">
-      <header><div><p class="eyebrow">AUTOMATION STEP</p><h2 id="slot-title">Configure step</h2></div><button class="icon-button" id="slot-close" type="button" aria-label="Close">×</button></header>
+      <header><div><p class="eyebrow" data-i18n="dialog.automationStep">AUTOMATION STEP</p><h2 id="slot-title" data-i18n="dialog.configureStep">Configure step</h2></div><button class="icon-button" id="slot-close" type="button" aria-label="Close" data-i18n-aria="common.close">×</button></header>
       <p id="slot-description" class="dialog-description"></p>
       <div id="slot-fields" class="dialog-body"></div>
       <div id="slot-error" class="inline-error" role="alert" hidden></div>
-      <footer><button class="secondary" id="slot-refresh" type="button" hidden>Refresh monitors</button><span class="spacer"></span><button class="secondary" id="slot-cancel" type="button">Cancel</button><button class="primary" id="slot-save" value="default">Save step</button></footer>
+      <footer><button class="secondary" id="slot-refresh" type="button" hidden data-i18n="dialog.refreshMonitors">Refresh monitors</button><span class="spacer"></span><button class="secondary" id="slot-cancel" type="button" data-i18n="common.cancel">Cancel</button><button class="primary" id="slot-save" value="default" data-i18n="dialog.saveStep">Save step</button></footer>
     </form>
   </dialog>
   <dialog id="mqtt-dialog" aria-labelledby="mqtt-title">
     <div class="dialog-shell">
-      <header><div><p class="eyebrow">INTEGRATION</p><h2 id="mqtt-title">MQTT / Home Assistant</h2></div><button class="icon-button" id="mqtt-close" type="button" aria-label="Close">×</button></header>
+      <header><div><p class="eyebrow" data-i18n="dialog.integration">INTEGRATION</p><h2 id="mqtt-title">MQTT / Home Assistant</h2></div><button class="icon-button" id="mqtt-close" type="button" aria-label="Close" data-i18n-aria="common.close">×</button></header>
       <section id="mqtt-list-view" class="dialog-body">
-        <div class="section-heading"><div><h3>Configurations</h3><p class="muted">Reusable broker connections for routes and automations.</p></div><button class="primary" id="mqtt-add" type="button">Add configuration</button></div>
+        <div class="section-heading"><div><h3 data-i18n="integration.configurations">Configurations</h3><p class="muted" data-i18n="integration.description">Reusable broker connections for routes and automations.</p></div><button class="primary" id="mqtt-add" type="button" data-i18n="integration.add">Add configuration</button></div>
         <div id="mqtt-profile-list" class="stack compact-stack"></div>
       </section>
       <form id="mqtt-profile-form" hidden>
-        <div class="dialog-subheader"><button class="text-button" id="mqtt-back" type="button">Back</button><h3 id="mqtt-profile-title">Add configuration</h3></div>
+        <div class="dialog-subheader"><button class="text-button" id="mqtt-back" type="button" data-i18n="common.back">Back</button><h3 id="mqtt-profile-title" data-i18n="integration.add">Add configuration</h3></div>
         <div id="mqtt-profile-fields" class="dialog-body"></div>
         <div id="mqtt-error" class="inline-error" role="alert" hidden></div>
-        <footer><button class="secondary" id="mqtt-profile-cancel" type="button">Cancel</button><button class="primary" id="mqtt-profile-save" type="submit">Save configuration</button></footer>
+        <footer><button class="secondary" id="mqtt-profile-cancel" type="button" data-i18n="common.cancel">Cancel</button><button class="primary" id="mqtt-profile-save" type="submit" data-i18n="integration.save">Save configuration</button></footer>
       </form>
     </div>
   </dialog>

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import inspect
 import json
 import os
 import queue
@@ -33,7 +34,7 @@ REQUEST_TIMEOUT_SECONDS = 8.0
 PIPE_PATTERN = re.compile(r"^\\\\\.\\pipe\\[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 METHOD_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$")
 ASSET_ROOT = Path(__file__).resolve().with_name("web")
-ASSET_NAMES = frozenset(("index.html", "app.css", "app.js"))
+ASSET_NAMES = frozenset(("index.html", "app.css", "i18n.js", "app.js"))
 WINDOW_ICON_PATH = Path(__file__).resolve().with_name("FenSoundSwitch.ico")
 AUTHKEY_ENVIRONMENT_VARIABLE = "FENSOUNDSWITCH_PRESENTATION_AUTHKEY"
 
@@ -97,7 +98,12 @@ def render_document(*, allow_native_bridge: bool = False) -> str:
     """Inline trusted local assets so pywebview never starts its HTTP server."""
     html = resolve_asset("index.html").read_text(encoding="utf-8")
     css = resolve_asset("app.css").read_text(encoding="utf-8")
-    script = resolve_asset("app.js").read_text(encoding="utf-8")
+    script = "\n".join(
+        (
+            resolve_asset("i18n.js").read_text(encoding="utf-8"),
+            resolve_asset("app.js").read_text(encoding="utf-8"),
+        )
+    )
 
     def digest(value: str) -> str:
         return base64.b64encode(hashlib.sha256(value.encode("utf-8")).digest()).decode("ascii")
@@ -105,6 +111,7 @@ def render_document(*, allow_native_bridge: bool = False) -> str:
     html = html.replace("style-src 'self'", f"style-src 'sha256-{digest(css)}'")
     html = html.replace("script-src 'self'", f"script-src 'sha256-{digest(script)}'")
     html = html.replace('  <link rel="stylesheet" href="app.css">', f"  <style>{css}</style>")
+    html = html.replace('  <script src="i18n.js" defer></script>', "")
     html = html.replace('  <script src="app.js" defer></script>', "")
     html = html.replace("</body>", f"  <script>{script}</script>\n</body>")
     if allow_native_bridge:
@@ -427,12 +434,18 @@ class WebApi:
             kind = self._webview.FileDialog.SAVE if save else self._webview.FileDialog.OPEN
             self._window.restore()
             self._window.show()
-            result = self._window.create_file_dialog(
-                kind,
-                directory=directory,
-                save_filename=filename if save else "",
-                file_types=tuple(file_types),
-            )
+            dialog_options = {
+                "directory": directory,
+                "save_filename": filename if save else "",
+                "file_types": tuple(file_types),
+            }
+            try:
+                parameters = inspect.signature(self._window.create_file_dialog).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            if "title" in parameters:
+                dialog_options["title"] = title
+            result = self._window.create_file_dialog(kind, **dialog_options)
         except Exception:
             return {"ok": False, "error": {"code": "dialog_error", "message": "The native file dialog could not be opened."}}
         selected = result[0] if isinstance(result, (list, tuple)) and result else result
@@ -468,7 +481,7 @@ def run(bootstrap: Bootstrap) -> int:
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False
     webview.settings["REMOTE_DEBUGGING_PORT"] = None
     window = webview.create_window(
-        "FenSoundSwitch Command Center",
+        "FenSoundSwitch",
         html=render_document(allow_native_bridge=sys.platform != "win32"),
         js_api=api,
         width=1456,

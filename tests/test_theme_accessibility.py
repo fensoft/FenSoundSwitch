@@ -19,7 +19,9 @@ from theme import (
 )
 from windows_platform import (
     HCF_HIGHCONTRASTON,
+    LOCALE_NAME_MAX_LENGTH,
     USER_DEFAULT_SCREEN_DPI,
+    get_user_default_locale_name,
     get_window_dpi,
     is_high_contrast_enabled,
 )
@@ -138,6 +140,17 @@ class WindowsThemeTests(unittest.TestCase):
 
 
 class NativeAccessibilityTests(unittest.TestCase):
+    def test_user_locale_name_uses_the_bounded_native_buffer(self) -> None:
+        def populate_locale(buffer: object, length: int) -> int:
+            self.assertEqual(length, LOCALE_NAME_MAX_LENGTH)
+            buffer.value = "fr-CA"  # type: ignore[attr-defined]
+            return len("fr-CA") + 1
+
+        with patch("windows_platform.kernel32.GetUserDefaultLocaleName", side_effect=populate_locale):
+            self.assertEqual(get_user_default_locale_name(), "fr-CA")
+        with patch("windows_platform.kernel32.GetUserDefaultLocaleName", return_value=0):
+            self.assertIsNone(get_user_default_locale_name())
+
     def test_high_contrast_query_reads_the_native_flag(self) -> None:
         def populate_high_contrast(
             _action: int,

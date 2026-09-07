@@ -8,13 +8,16 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from plugin_api import PLUGIN_API_VERSION, PluginHostContext, plugin_ui_document, plugin_ui_result
+from plugin_api import PLUGIN_API_VERSION, PluginHostContext, SlotAction, plugin_ui_document, plugin_ui_result
 
 
 DEFAULT_PORT = 1883
 DEFAULT_DISCOVERY_PREFIX = "homeassistant"
 DEFAULT_TOPIC_PREFIX = "fensoundswitch"
 MAX_PROFILES = 32
+MQTT_SLOT_ACTION_ID = "publish"
+MQTT_OPERATION_TIMEOUT = 5.0
+MAX_PUBLISH_PAYLOAD = 65536
 _ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _TOPIC_PART = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _PROFILE_FIELDS = (
@@ -42,7 +45,7 @@ def _text(value: object, label: str, *, required: bool = True, maximum: int = 25
 
 def _topic(value: object, label: str) -> str:
     result = _text(value, label).strip("/")
-    if not result or any(part in {"", "+", "#"} for part in result.split("/")):
+    if not result or "\0" in result or "+" in result or "#" in result or any(not part for part in result.split("/")):
         raise ValueError(f"MQTT {label} must be a concrete topic path.")
     return result
 
@@ -56,6 +59,47 @@ def _integer(value: object, label: str, minimum: int, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
         raise ValueError(f"MQTT {label} must be from {minimum} to {maximum}.")
     return value
+
+
+def _boolean(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"MQTT {label} must be true or false.")
+    return value
+
+
+def _publish_parameters(parameters: Mapping[str, object]) -> dict[str, object]:
+    allowed = {"profile_id", "mode", "topic", "payload", "qos", "retain"}
+    if set(parameters) != allowed:
+        raise ValueError("MQTT publish settings are invalid.")
+    profile_id = parameters.get("profile_id")
+    if not isinstance(profile_id, str) or _ID_PATTERN.fullmatch(profile_id) is None:
+        raise ValueError("MQTT profile ID is invalid.")
+    mode = parameters.get("mode")
+    if mode not in {"raw", "home-assistant"}:
+        raise ValueError("MQTT publish mode is invalid.")
+    topic = _topic(parameters.get("topic"), "publish topic")
+    payload = parameters.get("payload")
+    if not isinstance(payload, str) or len(payload.encode("utf-8")) > MAX_PUBLISH_PAYLOAD:
+        raise ValueError("MQTT publish payload must be text up to 65536 UTF-8 bytes.")
+    if mode == "home-assistant":
+        try:
+            decoded = json.loads(payload)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("MQTT Home Assistant payload must be valid JSON.") from exc
+        if not isinstance(decoded, dict):
+            raise ValueError("MQTT Home Assistant payload must be a JSON object.")
+        try:
+            payload = json.dumps(decoded, allow_nan=False, separators=(",", ":"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("MQTT Home Assistant payload contains an invalid JSON value.") from exc
+    return {
+        "profile_id": profile_id,
+        "mode": mode,
+        "topic": topic,
+        "payload": payload,
+        "qos": _integer(parameters.get("qos"), "publish QoS", 0, 2),
+        "retain": _boolean(parameters.get("retain"), "publish retain setting"),
+    }
 
 
 def _ha_metadata(parameters: Mapping[str, object]) -> tuple[str, str]:
@@ -484,6 +528,81 @@ class MqttInputPlugin:
         ha_name, ha_id = _ha_metadata(parameters)
         runtime = {**profile, "ha_name": ha_name, "ha_id": ha_id}
         return MqttSignalTrigger(signal_id, runtime, self._mqtt_client_factory(), dispatch, self._require_host().logger)
+
+    def get_slot_actions(self) -> list[SlotAction]:
+        return [SlotAction(
+            MQTT_SLOT_ACTION_ID,
+            "Publish MQTT message",
+            "Publishes one bounded message through an existing MQTT profile.",
+        )]
+
+    def get_slot_ui(self, action_id: str, parameters: Mapping[str, object]) -> dict[str, object]:
+        if action_id != MQTT_SLOT_ACTION_ID:
+            raise ValueError(f"Unknown MQTT signal action {action_id!r}.")
+        fields = [
+            {"id": "profile_id", "type": "choice", "label": "MQTT profile", "value": parameters.get("profile_id", ""), "options": list(self.mqtt_profile_options()), "required": True},
+            {"id": "mode", "type": "choice", "label": "Message format", "value": parameters.get("mode", "raw"), "options": [{"label": "Raw MQTT", "value": "raw"}, {"label": "Home Assistant JSON", "value": "home-assistant"}], "required": True},
+            {"id": "topic", "type": "text", "label": "Topic", "value": parameters.get("topic", ""), "required": True},
+            {"id": "payload", "type": "text", "label": "Payload", "value": parameters.get("payload", ""), "description": "Home Assistant mode requires a JSON object."},
+            {"id": "qos", "type": "integer", "label": "QoS", "value": parameters.get("qos", 1), "minimum": 0, "maximum": 2},
+            {"id": "retain", "type": "boolean", "label": "Retain message", "value": parameters.get("retain", False)},
+        ]
+        return plugin_ui_document("Configure MQTT publish", fields, [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Uses a saved broker profile. Passwords are never included in signal parameters or summaries.")
+
+    def invoke_slot_ui_action(self, action_id: str, ui_action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        if action_id != MQTT_SLOT_ACTION_ID or ui_action_id != "save":
+            raise ValueError("Unknown MQTT publish step configuration action.")
+        normalized = _publish_parameters(values)
+        self._profile(normalized["profile_id"])
+        return plugin_ui_result("save", values=normalized, message="MQTT publish step configured.")
+
+    def slot_summary(self, action_id: str, parameters: Mapping[str, object]) -> str:
+        if action_id != MQTT_SLOT_ACTION_ID:
+            return ""
+        try:
+            values = _publish_parameters(parameters)
+            profile = self._profile(values["profile_id"])
+        except ValueError:
+            return "Not configured"
+        return f"{profile['name']} / {values['topic']}"
+
+    def run_slot(self, action_id: str, parameters: Mapping[str, object]) -> None:
+        if action_id != MQTT_SLOT_ACTION_ID:
+            raise ValueError(f"Unknown MQTT signal action {action_id!r}.")
+        values = _publish_parameters(parameters)
+        profile = self._profile(values["profile_id"])
+        client = self._mqtt_client_factory()(client_id=f"fensoundswitch-publish-{uuid.uuid4().hex}")
+        username = str(profile["username"])
+        if username:
+            client.username_pw_set(username, str(profile["password"]))
+        connected = threading.Event()
+        connection_result: list[int] = []
+
+        def on_connect(_client: Any, _userdata: Any, _flags: Any, reason_code: Any, *_args: Any) -> None:
+            try:
+                connection_result.append(int(getattr(reason_code, "value", reason_code)))
+            except (TypeError, ValueError):
+                connection_result.append(-1)
+            connected.set()
+
+        client.on_connect = on_connect
+        try:
+            client.connect_async(str(profile["host"]), int(profile["port"]), keepalive=10)
+            client.loop_start()
+            if not connected.wait(MQTT_OPERATION_TIMEOUT):
+                raise TimeoutError("MQTT broker connection timed out.")
+            if connection_result != [0]:
+                result = connection_result[0] if connection_result else -1
+                raise RuntimeError(f"MQTT broker connection failed with result {result}.")
+            published = client.publish(str(values["topic"]), str(values["payload"]), qos=int(values["qos"]), retain=bool(values["retain"]))
+            completed = published.wait_for_publish(timeout=MQTT_OPERATION_TIMEOUT)
+            result_code = getattr(published, "rc", 0)
+            if result_code != 0:
+                raise RuntimeError(f"MQTT publish failed with result {result_code}.")
+            if completed is False or not bool(published.is_published()):
+                raise TimeoutError("MQTT publish was not acknowledged before the timeout.")
+        finally:
+            _shutdown_client(client, MQTT_OPERATION_TIMEOUT)
 
     def route_input_summary(self, parameters: dict[str, object]) -> str:
         try:
