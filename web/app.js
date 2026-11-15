@@ -562,6 +562,39 @@ function openEntityEditor(kind, entity) {
   }
   syncConditionalFields(container);
   for (const controller of container.querySelectorAll('input[type="checkbox"], select')) controller.addEventListener("change", () => syncConditionalFields(container));
+  if (kind === "route") {
+    const actions = safeArray(entity?.endpoint_actions);
+    if (actions.length) {
+      const buttons = element("div", { class: "button-row" });
+      for (const action of actions) {
+        const endpoint = safeText(action.endpoint);
+        const actionId = safeText(action.id);
+        const button = element("button", { class: "secondary", type: "button", text: sourceText(safeText(action.label, t("common.refresh"))) });
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            const values = collectEditorValues();
+            const endpointValues = {};
+            for (const [key, value] of Object.entries(values)) if (key.startsWith(`${endpoint}__`)) endpointValues[key.slice(endpoint.length + 2)] = value;
+            const result = await nativeRequest("route.endpoint-action", { id: state.editor.id, endpoint, action_id: actionId, values: endpointValues });
+            if (result?.status === "update" && result.document) {
+              for (const field of safeArray(result.document.fields)) {
+                const key = `${endpoint}__${safeText(field.id)}`;
+                const old = container.querySelector(`[name="${CSS.escape(key)}"]`);
+                if (old) old.closest(".field, .check-field")?.replaceWith(renderField({ ...field, key, type: { integer: "number", choice: "select" }[field.type] || field.type }, field.value));
+              }
+              const message = result.message ? sourceText(safeText(result.message)) : "";
+              if (message) { const target = document.querySelector("#editor-error"); target.textContent = message; target.hidden = false; }
+            }
+          } catch (error) {
+            const target = document.querySelector("#editor-error"); target.textContent = sourceText(safeText(error.message, t("error.request"))); target.hidden = false; target.focus();
+          } finally { button.disabled = false; }
+        });
+        buttons.append(button);
+      }
+      container.append(buttons);
+    }
+  }
   if (!fields.length) container.append(element("p", { class: "muted", text: t("editor.noFields") }));
   editorDialog.showModal();
   window.setTimeout(() => container.querySelector("input, select, textarea")?.focus(), 0);

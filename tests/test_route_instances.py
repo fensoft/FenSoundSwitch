@@ -177,6 +177,32 @@ class RouteInstanceTests(unittest.TestCase):
             finally:
                 settings.SETTINGS_PATH = old_settings
 
+    def test_editing_a_route_without_changes_is_successful(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_settings = settings.SETTINGS_PATH
+            settings.SETTINGS_PATH = Path(directory) / "settings.json"
+            try:
+                manager = PluginManager(Mock(), lambda callback: callback(), lambda message: None, hotkey_factory=Mock)
+                inputs, output = _Input(), _Output()
+                with patch("plugin_manager.discover_plugins", return_value=[_record(inputs), _record(output, True)]), patch("plugin_manager.load_input_routes", return_value=()):
+                    manager.start()
+
+                self.assertTrue(manager.add_route("test-input", "test-output", "Discord route"))
+                route = manager.input_routes[0]
+                self.assertTrue(
+                    manager.update_route(
+                        route.route_id,
+                        route.input_id,
+                        route.provider_id,
+                        route.name,
+                        route.input.parameters,
+                        route.output.parameters,
+                        route.route_type,
+                    )
+                )
+            finally:
+                settings.SETTINGS_PATH = old_settings
+
     def test_active_route_input_receives_route_id_and_stops_on_rebuild(self):
         with tempfile.TemporaryDirectory() as directory:
             old_settings = settings.SETTINGS_PATH

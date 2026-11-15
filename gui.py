@@ -1070,6 +1070,7 @@ class MonitorVolumeApp:
             type_options = [{"value": value, "label": label} for value, label in ROUTE_TYPE_LABELS.items()]
             route_fields = [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "route_type", "type": "select", "label": "Type", "required": True, "options": type_options}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]
             route_values: dict[str, object] = {"name": route.name, "route_type": route.route_type, "input_id": route.input_id, "provider_id": route.provider_id}
+            route_actions: list[dict[str, object]] = []
             for endpoint in ("input", "output"):
                 try: document = manager.get_route_ui(route.route_id, endpoint)
                 except Exception: document = None
@@ -1079,7 +1080,8 @@ class MonitorVolumeApp:
                     key = f"{endpoint}__{field['id']}"; type_map = {"integer": "number", "choice": "select"}
                     route_fields.append({"key": key, "type": type_map.get(str(field["type"]), field["type"]), "label": f"{endpoint.title()}: {field['label']}", "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", [])})
                     if not field.get("write_only"): route_values[key] = field.get("value")
-            routes.append({"id": route.route_id, "name": route.name, "description": ROUTE_TYPE_LABELS[route.route_type], "input": {"name": input_name, "summary": ""}, "output": {"name": output_name, "summary": ""}, "summary": f"{status.confirmed_volume}%" if status and status.confirmed_volume is not None else (status.reason if status else "Checking"), "enabled": bool(status and status.confirmed_volume is not None), "values": route_values, "form": {"method": "route.save", "fields": route_fields}})
+                route_actions.extend({"endpoint": endpoint, "id": action["id"], "label": action["label"]} for action in document["actions"] if isinstance(action, dict) and action.get("kind") == "action")
+            routes.append({"id": route.route_id, "name": route.name, "description": ROUTE_TYPE_LABELS[route.route_type], "input": {"name": input_name, "summary": ""}, "output": {"name": output_name, "summary": ""}, "summary": f"{status.confirmed_volume}%" if status and status.confirmed_volume is not None else (status.reason if status else "Checking"), "enabled": bool(status and status.confirmed_volume is not None), "values": route_values, "endpoint_actions": route_actions, "form": {"method": "route.save", "fields": route_fields}})
         integrations = []
         for record in manager.records:
             if not manager._is_action_plugin(record) or not record.plugin_id or not callable(getattr(record.plugin, "get_plugin_ui", None)):
@@ -1242,9 +1244,14 @@ class MonitorVolumeApp:
         if action == "route.endpoint-action":
             endpoint = arguments.get("endpoint")
             plugin_id = arguments.get("plugin_id")
+            route_id = arguments.get("id")
             action_id = arguments.get("action_id")
             values = arguments.get("values", {})
-            if endpoint not in {"input", "output"} or not isinstance(plugin_id, str) or not isinstance(action_id, str) or not isinstance(values, dict):
+            if endpoint not in {"input", "output"} or not isinstance(action_id, str) or not isinstance(values, dict):
+                raise UserActionError("Route endpoint action is invalid.")
+            if isinstance(route_id, str):
+                return manager.invoke_route_ui_action(route_id, endpoint, action_id, values)
+            if not isinstance(plugin_id, str):
                 raise UserActionError("Route endpoint action is invalid.")
             return manager.invoke_new_route_endpoint_ui_action(plugin_id, endpoint, action_id, values)
         if action == "route.save":

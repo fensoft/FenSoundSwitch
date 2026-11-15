@@ -1264,7 +1264,11 @@ class PluginManager:
             self._notice(str(exc))
             return False
         if routes == self._input_routes:
-            return False
+            # Treat an idempotent edit as a successful save. The web command
+            # center reports False as a route-save validation error, so a
+            # user reopening a route and confirming it unchanged must not
+            # receive a failure.
+            return True
         return self._save_routes(routes)
 
     def remove_route(self, route_id: str) -> bool:

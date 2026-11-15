@@ -5,6 +5,7 @@ nuitka-crash-report*.xml
 fensoundswitch-version.txt
 old/
 .kilo/
-.venv
-.venv-win/
 new/
+.venv*
+.vscode/settings.json
+.vscode/tasks.json
