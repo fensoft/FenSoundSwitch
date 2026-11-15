@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from ctypes import wintypes
 from typing import Callable
 
-from plugin_api import MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, HotkeySpec
+from plugin_api import MOD_ALT, MOD_ALTGR, MOD_CONTROL, MOD_SHIFT, MOD_WIN, HotkeySpec
 from windows_platform import (
     HC_ACTION,
     HOOKPROC,
@@ -101,6 +101,9 @@ class PluginHotkeyController:
         self._routes_by_hotkey: dict[HotkeySpec, str] = {}
         self._held_route_keys: dict[int, tuple[str, HotkeySpec, bool]] = {}
         self._held_action_keys: dict[int, bool] = {}
+        self._held_action_hotkeys: dict[int, HotkeySpec] = {}
+        self._pending_modifier_actions: dict[int, tuple[str, bool]] = {}
+        self._altgr_synthetic_ctrl: set[int] = set()
         self._held_modifier_keys: set[int] = set()
         self._pressed_keys: set[int] = set()
         self._dispatch_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
@@ -226,11 +229,31 @@ class PluginHotkeyController:
         flags = 0
         for virtual_key in self._held_modifier_keys:
             flags |= _MODIFIER_FLAGS[virtual_key]
+        # Windows keyboards normally emit a synthetic Ctrl press before the
+        # right-Alt press for AltGr. Once right Alt is held, expose that
+        # physical chord as AltGr instead of Ctrl+Alt. A real left/right
+        # Ctrl+Alt chord never has VK_RMENU held and remains unchanged.
+        if 0xA5 in self._held_modifier_keys:
+            flags &= ~(MOD_ALT | MOD_CONTROL)
+            flags |= MOD_ALTGR
         return flags
 
     @staticmethod
     def _canonical_virtual_key(virtual_key: int) -> int:
         return _CANONICAL_MODIFIER_KEYS.get(virtual_key, virtual_key)
+
+    def _resolve_pending_modifier_action(self, virtual_key: int, w_param: int) -> bool:
+        """Resolve a Ctrl key action once we know whether Ctrl was AltGr's synthetic prefix."""
+        pending = self._pending_modifier_actions.pop(0xA2, None)
+        if pending is None:
+            return False
+        if virtual_key == 0xA5 and w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
+            self._altgr_synthetic_ctrl.add(0xA2)
+            return True
+        plugin_id, consume = pending
+        self._held_action_keys[0xA2] = consume
+        self._dispatch_queue.put(plugin_id)
+        return False
 
     def _keyboard_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         if n_code != HC_ACTION:
@@ -239,6 +262,7 @@ class PluginHotkeyController:
             consume = False
             key_info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
             virtual_key = int(key_info.vkCode)
+            suppress_right_alt = self._resolve_pending_modifier_action(virtual_key, w_param)
             modifier_flag = _MODIFIER_FLAGS.get(virtual_key)
             if w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
                 was_modifier = modifier_flag is not None
@@ -253,6 +277,7 @@ class PluginHotkeyController:
                     self._pressed_keys.add(virtual_key)
                     if not was_modifier:
                         hotkey = HotkeySpec(self._current_modifiers(), virtual_key)
+                    self._held_action_hotkeys[virtual_key] = hotkey
                     with self._binding_lock:
                         plugin_id = self._plugins_by_hotkey.get((hotkey, "keypress"))
                         route_binding = self._routes_by_hotkey.get(hotkey)
@@ -266,7 +291,11 @@ class PluginHotkeyController:
                             self._held_action_keys[virtual_key] = action.consume
                             consume = action.consume
                             if action.event == "keypress":
-                                self._dispatch_queue.put(plugin_id)
+                                if virtual_key == 0xA2 and not suppress_right_alt:
+                                    self._pending_modifier_actions[virtual_key] = (plugin_id, action.consume)
+                                    self._held_action_keys.pop(virtual_key, None)
+                                else:
+                                    self._dispatch_queue.put(plugin_id)
                     if route_binding is not None and self._active.is_set():
                         self.on_route_key(route_binding, True)
                 else:
@@ -277,6 +306,7 @@ class PluginHotkeyController:
                     if held is not None and self._active.is_set():
                         self.on_route_key(held[0], True)
             elif w_param in (WM_KEYUP, WM_SYSKEYUP):
+                synthetic_ctrl = False
                 if modifier_flag is not None:
                     # Modifiers are tracked separately for combinations, but
                     # must also leave the pressed-key set after every release
@@ -286,6 +316,9 @@ class PluginHotkeyController:
                     with self._binding_lock:
                         held = self._held_route_keys.pop(virtual_key, None)
                         action_consume = self._held_action_keys.pop(virtual_key, False)
+                    held_action_hotkey = self._held_action_hotkeys.pop(virtual_key, None)
+                    synthetic_ctrl = virtual_key in self._altgr_synthetic_ctrl
+                    self._altgr_synthetic_ctrl.discard(virtual_key)
                     if held is not None:
                         self.on_route_key(held[0], False)
                         consume = held[2]
@@ -297,6 +330,7 @@ class PluginHotkeyController:
                     with self._binding_lock:
                         held = self._held_route_keys.pop(virtual_key, None)
                         action_consume = self._held_action_keys.pop(virtual_key, False)
+                    held_action_hotkey = self._held_action_hotkeys.pop(virtual_key, None)
                     if held is not None:
                         self.on_route_key(held[0], False)
                         consume = held[2]
@@ -304,9 +338,9 @@ class PluginHotkeyController:
                 # Modifier-only shortcuts are registered with no modifier bit
                 # (the key itself is the virtual key). Remove the released
                 # modifier before matching its key-release binding.
-                release_hotkey = HotkeySpec(self._current_modifiers(), self._canonical_virtual_key(virtual_key))
+                release_hotkey = held_action_hotkey or HotkeySpec(self._current_modifiers(), self._canonical_virtual_key(virtual_key))
                 with self._binding_lock:
-                    release_plugin = self._plugins_by_hotkey.get((release_hotkey, "keyrelease"))
+                    release_plugin = self._plugins_by_hotkey.get((release_hotkey, "keyrelease")) if not synthetic_ctrl else None
                     action = self._bindings_by_plugin.get(release_plugin) if release_plugin else None
                 if action is not None and action.event == "keyrelease" and self._active.is_set():
                     self._dispatch_queue.put((release_plugin, "keyrelease"))
@@ -363,7 +397,10 @@ class PluginHotkeyController:
                 self._route_bindings.clear()
                 self._routes_by_hotkey.clear()
                 self._held_action_keys.clear()
+                self._held_action_hotkeys.clear()
+                self._pending_modifier_actions.clear()
             self._held_modifier_keys.clear()
+            self._altgr_synthetic_ctrl.clear()
             self._pressed_keys.clear()
             if self._hook_handle is not None:
                 user32.UnhookWindowsHookEx(self._hook_handle)

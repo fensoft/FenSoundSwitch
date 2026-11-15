@@ -159,7 +159,8 @@ MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
 MOD_WIN = 0x0008
-ALLOWED_MODIFIERS = MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN
+MOD_ALTGR = 0x0010
+ALLOWED_MODIFIERS = MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN | MOD_ALTGR
 MODIFIER_VIRTUAL_KEYS = frozenset((0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5))
 
 
@@ -245,7 +246,7 @@ class HotkeySpec:
             or self.modifiers < 0
             or self.modifiers & ~ALLOWED_MODIFIERS
         ):
-            raise ValueError("Plugin shortcut modifiers may use only Ctrl, Alt, Shift, or Win.")
+            raise ValueError("Plugin shortcut modifiers may use only Ctrl, Alt, AltGr, Shift, or Win.")
         if (
             isinstance(self.virtual_key, bool)
             or not isinstance(self.virtual_key, int)
@@ -259,6 +260,7 @@ class HotkeySpec:
         for flag, label in (
             (MOD_CONTROL, "Ctrl"),
             (MOD_ALT, "Alt"),
+            (MOD_ALTGR, "AltGr"),
             (MOD_SHIFT, "Shift"),
             (MOD_WIN, "Win"),
         ):

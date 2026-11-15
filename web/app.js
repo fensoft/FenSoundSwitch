@@ -75,6 +75,7 @@ function hotkeyLabel(value) {
   if (value.modifiers & 1) parts.push(sourceText("Alt"));
   if (value.modifiers & 4) parts.push(sourceText("Shift"));
   if (value.modifiers & 8) parts.push(sourceText("Win"));
+  if (value.modifiers & 16) parts.push(sourceText("AltGr"));
   const key = Number(value.virtual_key);
   const names = { 8: "Backspace", 9: "Tab", 13: "Enter", 16: "Shift", 17: "Ctrl", 18: "Alt", 19: "Pause", 20: "Caps Lock", 27: "Escape", 32: "Space", 33: "Page Up", 34: "Page Down", 35: "End", 36: "Home", 37: "Left", 38: "Up", 39: "Right", 40: "Down", 44: "Print Screen", 45: "Insert", 46: "Delete", 91: "Left Win", 92: "Right Win", 93: "Menu", 144: "Num Lock", 145: "Scroll Lock" };
   parts.push(sourceText(names[key]) || (key >= 65 && key <= 90 ? String.fromCharCode(key) : key >= 48 && key <= 57 ? String.fromCharCode(key) : key >= 96 && key <= 105 ? `${sourceText("Numpad")} ${key - 96}` : key >= 112 && key <= 135 ? `F${key - 111}` : `VK 0x${key.toString(16).toUpperCase().padStart(2, "0")}`));
@@ -778,15 +779,14 @@ function renderHotkeyInput(id, current) {
     event.preventDefault();
     event.stopPropagation();
     if (event.key === "Backspace" || event.key === "Delete") { input.dataset.hotkey = "null"; input.value = t("common.notSet"); return; }
-    if (event.code === "AltRight") { input.dataset.rightAlt = "true"; return; }
     const virtualKey = virtualKeyFromEvent(event);
     if (!virtualKey) return;
-    const altGraph = input.dataset.rightAlt === "true" || event.getModifierState?.("AltGraph") === true;
+    const altGraph = event.getModifierState?.("AltGraph") === true;
     const isModifierKey = [16, 17, 18, 91, 92].includes(virtualKey);
-    const value = { modifiers: isModifierKey ? 0 : (event.altKey || altGraph ? 1 : 0) | (event.ctrlKey || altGraph ? 2 : 0) | (event.shiftKey ? 4 : 0) | (event.metaKey ? 8 : 0), virtual_key: virtualKey };
+    const value = { modifiers: isModifierKey ? 0 : (altGraph ? 16 : 0) | (!altGraph && event.altKey ? 1 : 0) | (!altGraph && event.ctrlKey ? 2 : 0) | (event.shiftKey ? 4 : 0) | (event.metaKey ? 8 : 0), virtual_key: virtualKey };
     input.dataset.hotkey = JSON.stringify(value); input.value = hotkeyLabel(value);
   }, true);
-  input.addEventListener("keyup", event => { event.preventDefault(); event.stopPropagation(); if (event.code === "AltRight") input.dataset.rightAlt = "false"; }, true);
+  input.addEventListener("keyup", event => { event.preventDefault(); event.stopPropagation(); }, true);
   return input;
 }
 
