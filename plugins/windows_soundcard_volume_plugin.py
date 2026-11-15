@@ -33,14 +33,20 @@ class WindowsSoundcardVolumePlugin:
         return WindowsSoundcardVolumePlugin(validate_parameters(parameters))
 
     def get_route_output_ui(self, parameters: Mapping[str, object]) -> dict[str, object]:
+        try:
+            endpoints = [core_audio.RenderEndpoint(core_audio.DEFAULT_ENDPOINT_ID, "Default output"), core_audio.RenderEndpoint(core_audio.VOICE_ENDPOINT_ID, "Voice output"), *core_audio.enumerate_render_endpoints()]
+        except Exception:
+            endpoints = []
         selected = None
         if isinstance(parameters.get("endpoint_id"), str) and isinstance(parameters.get("display_name"), str):
             selected = {"endpoint_id": parameters["endpoint_id"], "display_name": parameters["display_name"]}
-        options = [{"label": str(selected["display_name"]), "value": selected}] if selected is not None else []
+        options = [{"label": endpoint.display_name, "value": {"endpoint_id": endpoint.endpoint_id, "display_name": endpoint.display_name}} for endpoint in endpoints]
+        if selected is not None and not any(option["value"] == selected for option in options):
+            options.append({"label": str(selected["display_name"]), "value": selected})
         return plugin_ui_document("Configure Windows soundcard volume", [
             {"id": "endpoint", "type": "select", "label": "Render soundcard", "value": selected, "options": options, "required": True},
         ], [
-            {"id": "discover", "label": "Refresh", "kind": "action", "async": True},
+            {"id": "discover", "label": "Refresh", "kind": "action", "async": True, "hidden": True},
             {"id": "save", "label": "Save", "kind": "submit", "async": False},
         ], "Select the Windows render endpoint controlled by this route.")
 

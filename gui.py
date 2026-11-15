@@ -1039,7 +1039,7 @@ class MonitorVolumeApp:
             post_to_ui=self._post_to_ui,
             get_snapshot=self._web_snapshot,
             dispatch_action=self._dispatch_localized_web_action,
-            allowed_actions={"route.save", "route.endpoint-form", "route.endpoint-action", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
+            allowed_actions={"route.save", "route.endpoint-form", "route.endpoint-action", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "avr.profile.save", "avr.profile.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
             on_exit=self.on_close,
             on_minimize=self._on_web_minimize,
             on_visibility=self._on_web_visibility,
@@ -1083,8 +1083,11 @@ class MonitorVolumeApp:
                 route_actions.extend({"endpoint": endpoint, "id": action["id"], "label": action["label"]} for action in document["actions"] if isinstance(action, dict) and action.get("kind") == "action")
             routes.append({"id": route.route_id, "name": route.name, "description": ROUTE_TYPE_LABELS[route.route_type], "input": {"name": input_name, "summary": ""}, "output": {"name": output_name, "summary": ""}, "summary": f"{status.confirmed_volume}%" if status and status.confirmed_volume is not None else (status.reason if status else "Checking"), "enabled": bool(status and status.confirmed_volume is not None), "values": route_values, "endpoint_actions": route_actions, "form": {"method": "route.save", "fields": route_fields}})
         integrations = []
+        avr_plugin_ids = {"denon-marantz-volume", "onkyo-volume", "pioneer-elite-volume", "sony-volume", "yamaha-volume"}
         for record in manager.records:
-            if not manager._is_action_plugin(record) or not record.plugin_id or not callable(getattr(record.plugin, "get_plugin_ui", None)):
+            if record.plugin_id in avr_plugin_ids:
+                continue
+            if (not manager._is_action_plugin(record) and not record.is_volume_provider) or not record.plugin_id or not callable(getattr(record.plugin, "get_plugin_ui", None)):
                 continue
             try:
                 document = manager.get_plugin_ui(record.plugin_id)
@@ -1103,7 +1106,7 @@ class MonitorVolumeApp:
                     if not field.get("write_only"): values[str(field["id"])] = field.get("value")
                 submit = next((item for item in document["actions"] if isinstance(item, dict) and item.get("kind") == "submit"), None)
                 ui_action = str(submit.get("id", "")) if isinstance(submit, dict) else ""
-            integrations.append({"id": record.plugin_id, "name": record.name, "description": record.display_status, "values": values, "ui_actions": document["actions"] if document else [], "form": {"method": "action.save", "ui_action": ui_action, "description": document.get("description", "") if document else "", "fields": fields}})
+            integrations.append({"id": record.plugin_id, "name": record.name, "group": "AVR" if record.plugin_id in {"denon-marantz-volume", "onkyo-volume", "pioneer-elite-volume", "sony-volume", "yamaha-volume"} else "", "description": record.display_status, "values": values, "ui_actions": document["actions"] if document else [], "form": {"method": "action.save", "ui_action": ui_action, "description": document.get("description", "") if document else "", "fields": fields}})
         signal_options = list(manager.signal_action_options())
         try:
             mqtt_profile_options = list(manager.mqtt_profile_options())
@@ -1143,7 +1146,7 @@ class MonitorVolumeApp:
                     label = next((str(option["label"]) for option in signal_options if option["value"] == target), target)
                     option = next((option for option in signal_options if option["value"] == target), None)
                     summary = manager.slot_summary(slot.plugin_id, slot.action_id, slot.parameters)
-                    slot_values.append({"kind": "action", "target": target, "parameters": slot.parameters, "summary": summary, "summary_translatable": summary in {"Not configured", "Configuration unavailable", "Unavailable"}, "plugin_name": option.get("plugin_name", "") if option else "", "action_label": option.get("action_label", "") if option else ""})
+                    slot_values.append({"kind": "action", "target": target, "parameters": slot.parameters, "summary": summary, "summary_translatable": summary in {"Not configured", "Configuration unavailable", "Unavailable"}, "plugin_name": option.get("plugin_name", "") if option else "", "action_label": option.get("action_label", "") if option else "", "icon": "application" if slot.plugin_id == "windows-application-volume" else "action", "icon_data": manager.slot_icon(slot.plugin_id, slot.action_id, slot.parameters)})
                     slot_labels.append(f"{label} ({summary})" if summary else label)
             trigger_labels = []
             if signal.hotkey.hotkey is not None: trigger_labels.append(signal.hotkey.hotkey.label)
@@ -1156,7 +1159,7 @@ class MonitorVolumeApp:
             if signal.on_start:
                 trigger_values.append({"kind": "app-start"})
             if signal.hotkey.hotkey is not None:
-                trigger_values.append({"kind": "keyboard", "hotkey": signal.hotkey.hotkey.to_json(), "forward_keys": signal.hotkey.forward_keys})
+                trigger_values.append({"kind": "keyboard", "hotkey": signal.hotkey.hotkey.to_json(), "forward_keys": signal.hotkey.forward_keys, "event": signal.keyboard_event})
             if signal.tray_label is not None:
                 trigger_values.append({"kind": "tray", "label": signal.tray_label})
             if mqtt_trigger is not None:
@@ -1202,13 +1205,42 @@ class MonitorVolumeApp:
                 mqtt_profiles.append({"id": profile_id, "name": str(profile.get("name", profile_id)), "description": f"{profile.get('host', '')}:{profile.get('port', '')}", **entity})
         except ValueError:
             pass
+        avr_profiles = []
+        avr_profile_form = None
+        avr_types = []
+        try:
+            for profile in manager.avr_profiles():
+                plugin_id = str(profile["plugin_id"])
+                profile_id = str(profile["profile_id"])
+                document = manager.get_avr_profile_ui(plugin_id, profile_id)
+                profile_fields = []
+                profile_values: dict[str, object] = {}
+                for field in document["fields"]:
+                    if not isinstance(field, dict): continue
+                    profile_fields.append({"key": field["id"], "type": {"integer": "number", "choice": "select"}.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", []), "default": field.get("value")})
+                    if not field.get("write_only"): profile_values[str(field["id"])] = field.get("value")
+                avr_profiles.append({"id": profile_id, "plugin_id": plugin_id, "type": profile["type"], "name": profile["name"], "description": f"{profile['host']}:{profile['port']}", "values": profile_values, "form": {"method": "avr.profile.save", "ui_action": "save", "fields": profile_fields}})
+            seen_types = set()
+            for record in manager.records:
+                if record.plugin_id in avr_plugin_ids and record.initialized and record.plugin_id not in seen_types:
+                    avr_types.append({"value": record.plugin_id, "label": record.name})
+                    seen_types.add(record.plugin_id)
+            if avr_types:
+                document = manager.get_avr_profile_ui(str(avr_types[0]["value"]), None)
+                profile_fields = [{"key": "plugin_id", "type": "select", "label": "AVR type", "required": True, "options": avr_types}]
+                for field in document["fields"]:
+                    if isinstance(field, dict):
+                        profile_fields.append({"key": field["id"], "type": {"integer": "number", "choice": "select"}.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", []), "default": field.get("value")})
+                avr_profile_form = {"method": "avr.profile.save", "ui_action": "save", "fields": profile_fields}
+        except ValueError:
+            pass
         startup_label = "Start at Login" if sys.platform == "darwin" else "Start with Windows"
         startup_description = (
             "Launch FenSoundSwitch when you sign in."
             if sys.platform == "darwin"
             else "Launch quietly in the notification area when you sign in."
         )
-        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "integrations": integrations, "mqtt_profiles": mqtt_profiles, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "startup_label": startup_label, "startup_description": startup_description, "ui_language": self.ui_language_preference, "resolved_ui_language": self.ui_language, "language_options": [{"value": "auto", "label": "Automatic (Windows language)"}, {"value": "en", "label": "English"}, {"value": "de", "label": "Deutsch"}, {"value": "es", "label": "Español"}, {"value": "fr", "label": "Français"}, {"value": "it", "label": "Italiano"}], "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "route_type", "type": "select", "label": "Type", "required": True, "default": "other", "options": [{"value": value, "label": label} for value, label in ROUTE_TYPE_LABELS.items()]}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form, "mqtt_profile": mqtt_profile_form}}
+        snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "integrations": integrations, "mqtt_profiles": mqtt_profiles, "avr_profiles": avr_profiles, "avr_profile_form": avr_profile_form, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "startup_label": startup_label, "startup_description": startup_description, "ui_language": self.ui_language_preference, "resolved_ui_language": self.ui_language, "language_options": [{"value": "auto", "label": "Automatic (Windows language)"}, {"value": "en", "label": "English"}, {"value": "de", "label": "Deutsch"}, {"value": "es", "label": "Español"}, {"value": "fr", "label": "Français"}, {"value": "it", "label": "Italiano"}], "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "route_type", "type": "select", "label": "Type", "required": True, "default": "other", "options": [{"value": value, "label": label} for value, label in ROUTE_TYPE_LABELS.items()]}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form, "mqtt_profile": mqtt_profile_form}}
         return PresentationSnapshot(self._presentation_revision, snapshot)
 
     def _dispatch_localized_web_action(self, action: str, arguments: Mapping[str, Any]) -> Any:
@@ -1328,6 +1360,7 @@ class MonitorVolumeApp:
             on_start = False
             hotkey = None
             forward_keys = True
+            keyboard_event = "keypress"
             tray_label = None
             plugin_triggers = []
             for trigger in triggers:
@@ -1342,9 +1375,12 @@ class MonitorVolumeApp:
                 elif kind == "keyboard":
                     hotkey = trigger.get("hotkey")
                     forward_keys = trigger.get("forward_keys", True)
+                    keyboard_event = trigger.get("event", "keypress")
                     if hotkey is None:
                         raise UserActionError("Press the key combination that should run this automation.")
                     if not isinstance(forward_keys, bool):
+                        raise UserActionError("The keyboard forwarding setting is invalid.")
+                    if keyboard_event not in {"keypress", "keyrelease"}:
                         raise UserActionError("The keyboard forwarding setting is invalid.")
                 elif kind == "tray":
                     tray_label = trigger.get("label")
@@ -1357,7 +1393,10 @@ class MonitorVolumeApp:
                     plugin_triggers.append({"target": "mqtt-input/mqtt-ha", "parameters": {"profile_id": mqtt_values[0], "ha_name": mqtt_values[1], "ha_id": mqtt_values[2]}})
             signal_id = arguments.get("id")
             if signal_id is not None and not isinstance(signal_id, str): raise ValueError("Automation ID is invalid.")
-            if not manager.save_action_signal(signal_id, values.get("name"), hotkey, forward_keys, tray_label, values.get("slots"), on_start, plugin_triggers):
+            save_args = (signal_id, values.get("name"), hotkey, forward_keys, tray_label, values.get("slots"), on_start, plugin_triggers)
+            if keyboard_event != "keypress":
+                save_args += (keyboard_event,)
+            if not manager.save_action_signal(*save_args):
                 raise ValueError("The automation could not be saved.")
         elif action == "signal.delete":
             if not manager.remove_action_signal(str(arguments.get("id", ""))): raise ValueError("The automation could not be removed.")
@@ -1366,12 +1405,13 @@ class MonitorVolumeApp:
         elif action == "slot.ui":
             target = arguments.get("target")
             parameters = arguments.get("parameters", {})
-            if not isinstance(target, str) or not isinstance(parameters, dict):
+            refresh = arguments.get("refresh", False)
+            if not isinstance(target, str) or not isinstance(parameters, dict) or not isinstance(refresh, bool):
                 raise ValueError("Automation step configuration is invalid.")
             plugin_id, separator, action_id = target.partition("/")
             if not separator:
                 raise ValueError("Automation step target is invalid.")
-            document = manager.get_slot_ui(plugin_id, action_id, parameters)
+            document = manager.get_slot_ui(plugin_id, action_id, parameters, refresh=refresh)
             if document is None:
                 raise ValueError("That automation step has no configuration.")
             type_map = {"integer": "number", "choice": "select"}
@@ -1380,7 +1420,7 @@ class MonitorVolumeApp:
             for field in document["fields"]:
                 if not isinstance(field, dict):
                     continue
-                fields.append({"key": field["id"], "type": type_map.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", []), "depends_on": field.get("depends_on")})
+                fields.append({"key": field["id"], "type": type_map.get(str(field["type"]), field["type"]), "label": field["label"], "required": field.get("required", False), "min": field.get("minimum"), "max": field.get("maximum"), "options": field.get("options", []), "depends_on": field.get("depends_on"), "icon": field.get("icon")})
                 if not field.get("write_only"):
                     values[str(field["id"])] = field.get("value")
             submit = next((item for item in document["actions"] if isinstance(item, dict) and item.get("kind") == "submit"), None)
@@ -1422,6 +1462,16 @@ class MonitorVolumeApp:
         elif action == "mqtt.profile.delete":
             if not manager.remove_mqtt_profile(str(arguments.get("id", ""))):
                 raise UserActionError("The MQTT/HA configuration is unavailable or still in use.")
+        elif action == "avr.profile.save":
+            values = arguments.get("values", {})
+            profile_id = arguments.get("id")
+            if not isinstance(values, dict) or (profile_id is not None and not isinstance(profile_id, str)):
+                raise UserActionError("AVR configuration values are invalid.")
+            plugin_id = values.pop("plugin_id", None)
+            manager.invoke_avr_profile_ui(profile_id, plugin_id if isinstance(plugin_id, str) else None, values)
+        elif action == "avr.profile.delete":
+            if not manager.remove_avr_profile(str(arguments.get("id", ""))):
+                raise UserActionError("The AVR profile is unavailable, still in use, or is the last remaining profile.")
         elif action == "action.save":
             values = arguments.get("values", {})
             plugin_id = str(arguments.get("id", ""))

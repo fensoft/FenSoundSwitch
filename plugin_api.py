@@ -58,7 +58,7 @@ def validate_plugin_ui_document(value: object) -> PluginUiDocument:
         raise ValueError("Plugin UI document fields and actions must be arrays.")
     field_ids: set[str] = set()
     for field in fields:
-        if not isinstance(field, dict) or set(field) - {"id", "type", "label", "value", "required", "minimum", "maximum", "options", "description", "write_only", "depends_on"}:
+        if not isinstance(field, dict) or set(field) - {"id", "type", "label", "value", "required", "minimum", "maximum", "options", "description", "write_only", "depends_on", "icon"}:
             raise ValueError("Plugin UI fields contain an invalid property.")
         field_id = _ui_id(field.get("id"), "Plugin UI field ID")
         if field_id in field_ids:
@@ -97,7 +97,7 @@ def validate_plugin_ui_document(value: object) -> PluginUiDocument:
             raise ValueError("Only choice and select fields may declare options.")
     action_ids: set[str] = set()
     for action in actions:
-        if not isinstance(action, dict) or set(action) - {"id", "label", "kind", "async", "auto", "confirm"}:
+        if not isinstance(action, dict) or set(action) - {"id", "label", "kind", "async", "auto", "confirm", "hidden"}:
             raise ValueError("Plugin UI actions contain an invalid property.")
         action_id = _ui_id(action.get("id"), "Plugin UI action ID")
         if action_id in action_ids:
@@ -111,6 +111,8 @@ def validate_plugin_ui_document(value: object) -> PluginUiDocument:
             raise ValueError("Plugin UI action auto declaration is invalid.")
         if "confirm" in action and (not isinstance(action["confirm"], str) or not action["confirm"].strip()):
             raise ValueError("Plugin UI action confirmation must be non-empty text.")
+        if "hidden" in action and not isinstance(action["hidden"], bool):
+            raise ValueError("Plugin UI action hidden declaration is invalid.")
     return document
 
 
@@ -162,6 +164,11 @@ MODIFIER_VIRTUAL_KEYS = frozenset((0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA
 
 
 _VIRTUAL_KEY_LABELS = {
+    0x10: "Shift",
+    0x11: "Ctrl",
+    0x12: "Alt",
+    0x5B: "Left Win",
+    0x5C: "Right Win",
     0x08: "Backspace",
     0x09: "Tab",
     0x0D: "Enter",
@@ -243,11 +250,8 @@ class HotkeySpec:
             isinstance(self.virtual_key, bool)
             or not isinstance(self.virtual_key, int)
             or not _valid_virtual_key(self.virtual_key)
-            or self.virtual_key in MODIFIER_VIRTUAL_KEYS
         ):
-            raise ValueError(
-                "Plugin shortcut key must be a non-modifier Windows virtual key."
-            )
+            raise ValueError("Plugin shortcut key must be a valid Windows virtual key.")
 
     @property
     def label(self) -> str:

@@ -108,12 +108,9 @@ class PluginUiApiTests(unittest.TestCase):
             (yamaha_volume_plugin.create_plugin(), yamaha_volume_plugin),
         )
         for plugin, _module in receiver_cases:
-            result = plugin.invoke_ui_action("save", {"host": " receiver.local ", "port": "1234"})
-            self.assertEqual(
-                {"host": "receiver.local", "port": 1234, "power_on": False, "startup_input": ""},
-                result["values"],
-            )
-            self.assertEqual(result, _json_round_trip(result))
+            document = plugin.get_plugin_ui()
+            self.assertIn("profile_id", {field["id"] for field in document["fields"]})
+            self.assertIn({"label": "New profile", "value": ""}, next(field for field in document["fields"] if field["id"] == "profile_id")["options"])
 
         keyboard_values = {
             "volume_down": {"modifiers": 2, "virtual_key": 0xAE},

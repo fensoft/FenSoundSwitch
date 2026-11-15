@@ -75,6 +75,21 @@
       <footer><button class="secondary" id="slot-refresh" type="button" hidden data-i18n="dialog.refreshMonitors">Refresh monitors</button><span class="spacer"></span><button class="secondary" id="slot-cancel" type="button" data-i18n="common.cancel">Cancel</button><button class="primary" id="slot-save" value="default" data-i18n="dialog.saveStep">Save step</button></footer>
     </form>
   </dialog>
+  <dialog id="avr-dialog" aria-labelledby="avr-title">
+    <div class="dialog-shell">
+      <header><div><p class="eyebrow" data-i18n="dialog.integration">INTEGRATION</p><h2 id="avr-title">AVR</h2></div><button class="icon-button" id="avr-close" type="button" aria-label="Close" data-i18n-aria="common.close">&times;</button></header>
+      <section id="avr-list-view" class="dialog-body">
+        <div class="section-heading"><div><h3 data-i18n="integration.configurations">Configurations</h3><p class="muted">Named AVR receivers reusable by routes.</p></div><button class="primary" id="avr-add" type="button">Add AVR</button></div>
+        <div id="avr-profile-list" class="stack compact-stack"></div>
+      </section>
+      <form id="avr-profile-form" hidden>
+        <div class="dialog-subheader"><button class="text-button" id="avr-back" type="button" data-i18n="common.back">Back</button><h3 id="avr-profile-title">Add AVR</h3></div>
+        <div id="avr-profile-fields" class="dialog-body"></div>
+        <div id="avr-error" class="inline-error" role="alert" hidden></div>
+        <footer><button class="secondary" id="avr-profile-cancel" type="button" data-i18n="common.cancel">Cancel</button><button class="primary" id="avr-profile-save" type="submit" data-i18n="integration.save">Save configuration</button></footer>
+      </form>
+    </div>
+  </dialog>
   <dialog id="mqtt-dialog" aria-labelledby="mqtt-title">
     <div class="dialog-shell">
       <header><div><p class="eyebrow" data-i18n="dialog.integration">INTEGRATION</p><h2 id="mqtt-title">MQTT / Home Assistant</h2></div><button class="icon-button" id="mqtt-close" type="button" aria-label="Close" data-i18n-aria="common.close">×</button></header>

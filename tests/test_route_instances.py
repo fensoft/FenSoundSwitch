@@ -92,18 +92,51 @@ class RouteInstanceTests(unittest.TestCase):
                 self.assertEqual(plugin.route_output_form_values({}), defaults)
                 self.assertEqual(plugin.route_output_form_values({"host": "receiver.local", "port": 1234}), configured)
                 self.assertEqual(plugin.validate_route_output_form(" receiver.local ", "1234"), saved)
-                module = __import__(plugin.__class__.__module__, fromlist=["INPUT_OPTIONS"])
-                input_value = next(value for _label, value in module.INPUT_OPTIONS if value)
-                activated = plugin.validate_route_output_form("receiver.local", "1234", True, input_value)
-                self.assertEqual(activated["power_on"], True)
-                self.assertEqual(activated["startup_input"], input_value)
                 fields = {field["id"]: field for field in plugin.get_route_output_ui({})["fields"]}
-                self.assertEqual(fields["power_on"]["type"], "boolean")
-                self.assertEqual(fields["startup_input"]["type"], "select")
+                self.assertEqual(set(fields), {"profile_id"})
+                integration_fields = {field["id"]: field for field in plugin.get_plugin_ui()["fields"]}
+                self.assertEqual(set(integration_fields), {"profile_id", "name", "host", "port"})
                 self.assertEqual(plugin.route_output_summary({"host": "receiver.local", "port": 1234}), "Configured: receiver.local:1234")
                 self.assertEqual(plugin.route_output_summary({}), "Not configured.")
                 with self.assertRaises(ValueError):
                     plugin.validate_route_output_form("", "0")
+
+    def test_avr_integrations_support_multiple_named_profiles(self):
+        plugin_classes = (
+            denon_marantz_volume_plugin.DenonMarantzVolumePlugin,
+            onkyo_volume_plugin.OnkyoVolumePlugin,
+            yamaha_volume_plugin.YamahaVolumePlugin,
+            pioneer_elite_volume_plugin.PioneerEliteVolumePlugin,
+            sony_volume_plugin.SonyVolumePlugin,
+        )
+        for plugin_class in plugin_classes:
+            with self.subTest(plugin=plugin_class.plugin_id):
+                host = Mock()
+                host.load_plugin_settings.return_value = {}
+                plugin = plugin_class()
+                plugin.initialize(host)
+                plugin.invoke_plugin_ui_action("save", {"name": "Living room", "host": "avr-a.local", "port": "1234"})
+                plugin.invoke_plugin_ui_action("save", {"name": "Office", "host": "avr-b.local", "port": "2345"})
+                self.assertEqual(len(plugin._profiles), 2)
+                profile_ids = list(plugin._profiles)
+                instance = plugin.create_output({"profile_id": profile_ids[1]})
+                self.assertEqual(instance._config.host, "avr-b.local")
+                self.assertEqual(instance._config.port, 2345)
+                self.assertEqual(host.save_plugin_settings.call_count, 2)
+
+    def test_avr_profile_manager_updates_an_existing_profile_name(self):
+        plugin = denon_marantz_volume_plugin.DenonMarantzVolumePlugin()
+        host = Mock()
+        host.load_plugin_settings.return_value = {}
+        plugin.initialize(host)
+        record = PluginRecord("avr", "test", plugin.plugin_id, plugin.name, plugin.description, plugin, initialized=True, is_volume_provider=True)
+        manager = PluginManager(Mock(), lambda callback: callback(), lambda _message: None, hotkey_factory=Mock)
+        manager._records = [record]
+        manager._records_by_id = {plugin.plugin_id: record}
+        created = manager.invoke_avr_profile_ui(None, plugin.plugin_id, {"name": "Old name", "host": "avr.local", "port": "1234"})
+        profile_id = str(created["values"]["profile_id"])
+        manager.invoke_avr_profile_ui(profile_id, None, {"name": "New name", "host": "avr.local", "port": "1234"})
+        self.assertEqual(plugin._profiles[profile_id]["name"], "New name")
 
     def test_ddc_route_editor_reports_friendly_selected_monitor_status(self):
         plugin = ddc_volume_plugin.DdcVolumePlugin()

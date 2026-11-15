@@ -114,6 +114,15 @@ class ControllerRequestTests(unittest.TestCase):
         self.assertEqual(ready["result"], {"revision": 7, "changed": True, "snapshot": {"volume": 42}})
         self.assertEqual(unchanged["result"], {"revision": 7, "changed": False})
 
+    def test_repeated_ready_handshake_resynchronizes_an_existing_child(self) -> None:
+        controller, callbacks, _ = self.make_controller()
+
+        first = self.request(controller, "ready")
+        second = self.request(controller, "ready")
+
+        self.assertEqual(second, first)
+        self.assertEqual(callbacks, [("visible", True), ("visible", True)])
+
     def test_unknown_method_and_action_are_rejected(self) -> None:
         controller, _, dispatcher = self.make_controller()
         self.request(controller, "ready")

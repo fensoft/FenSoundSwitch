@@ -22,6 +22,7 @@ CHILD_MODE_ARGUMENT = "--fensoundswitch-presentation-child"
 PIPE_ARGUMENT = "--pipe"
 AUTHKEY_ENVIRONMENT_VARIABLE = "FENSOUNDSWITCH_PRESENTATION_AUTHKEY"
 MAX_MESSAGE_BYTES = 64 * 1024
+MAX_RESPONSE_BYTES = 256 * 1024
 MAX_MESSAGE_DEPTH = 12
 MAX_COLLECTION_ITEMS = 256
 MAX_STRING_LENGTH = 16 * 1024
@@ -469,6 +470,13 @@ class WebPresentationController:
         if method == "ready":
             self._require_params(params, set())
             with self._lock:
+                if self._state is PresentationState.READY:
+                    # A WebView reload can recreate the JavaScript bridge while
+                    # the authenticated child pipe remains connected. Treat a
+                    # repeated ready handshake as a harmless resynchronization.
+                    result = self._snapshot_result(None)
+                    self._on_visibility(True)
+                    return result
                 if self._state is not PresentationState.CONNECTED:
                     raise InvalidPresentationMessage("Child is not awaiting ready.")
             result = self._snapshot_result(None)
@@ -558,7 +566,7 @@ class WebPresentationController:
         encoded = json.dumps(
             response, separators=(",", ":"), ensure_ascii=True, allow_nan=False
         ).encode("utf-8")
-        if len(encoded) > MAX_MESSAGE_BYTES:
+        if len(encoded) > MAX_RESPONSE_BYTES:
             fallback = WebPresentationController._error_response(
                 response.get("id"), "response_too_large", "Response exceeds the size limit."
             )
@@ -609,6 +617,7 @@ __all__ = [
     "InvalidPresentationMessage",
     "UserActionError",
     "MAX_MESSAGE_BYTES",
+    "MAX_RESPONSE_BYTES",
     "PIPE_ARGUMENT",
     "PIPE_FAMILY",
     "PresentationError",

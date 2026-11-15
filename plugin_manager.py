@@ -634,12 +634,121 @@ class PluginManager:
                     "configurable": callable(getattr(record.plugin, "get_slot_ui", None)),
                     "description": action.description or f"Runs {action.label.lower()} using {record.name}.",
                 })
+        category_order = {"AVR": 0, "Audio & Windows": 1, "Display & monitors": 2, "Integrations": 3, "System": 4, "Other": 5}
+        options.sort(key=lambda option: (
+            category_order.get(self._signal_action_category(str(option["value"]).split("/", 1)[0]), 99),
+            str(option["plugin_name"]).casefold(),
+            str(option["action_label"]).casefold(),
+        ))
         return tuple(options)
+
+    @staticmethod
+    def _signal_action_category(plugin_id: str | None) -> str:
+        normalized = (plugin_id or "").casefold()
+        if any(token in normalized for token in ("denon", "onkyo", "pioneer", "sony", "yamaha", "avr")):
+            return "AVR"
+        if any(token in normalized for token in ("windows", "audio", "discord", "bluetooth", "soundcard", "microphone")):
+            return "Audio & Windows"
+        if any(token in normalized for token in ("ddc", "monitor", "overlay", "display")):
+            return "Display & monitors"
+        if any(token in normalized for token in ("mqtt", "http", "midi", "obs", "osc", "sonos", "voicemeeter")):
+            return "Integrations"
+        if any(token in normalized for token in ("system", "power")):
+            return "System"
+        return "Other"
 
     def mqtt_profile_options(self) -> tuple[dict[str, str], ...]:
         record = self._records_by_id.get("mqtt-input")
         getter = getattr(record.plugin, "mqtt_profile_options", None) if record is not None and record.initialized else None
         return tuple(getter()) if callable(getter) else ()
+
+    def avr_profiles(self) -> tuple[dict[str, object], ...]:
+        profiles: list[dict[str, object]] = []
+        avr_ids = {"denon-marantz-volume", "onkyo-volume", "pioneer-elite-volume", "sony-volume", "yamaha-volume"}
+        for record in self.records:
+            if not record.initialized or record.plugin_id not in avr_ids:
+                continue
+            stored = getattr(record.plugin, "_profiles", {})
+            if not isinstance(stored, dict):
+                continue
+            for profile_id, profile in stored.items():
+                if not isinstance(profile_id, str) or not isinstance(profile, dict):
+                    continue
+                config = profile.get("config")
+                if not isinstance(config, dict):
+                    continue
+                profiles.append({
+                    "profile_id": profile_id,
+                    "plugin_id": record.plugin_id,
+                    "type": record.name,
+                    "name": str(profile.get("name", profile_id)),
+                    "host": str(config.get("host", "")),
+                    "port": config.get("port"),
+                })
+        return tuple(profiles)
+
+    def get_avr_profile_ui(self, plugin_id: str, profile_id: str | None) -> dict[str, object]:
+        document = self.get_plugin_ui(plugin_id)
+        if document is None:
+            raise ValueError("The AVR integration is unavailable.")
+        record = self._records_by_id.get(plugin_id)
+        plugin = record.plugin if record is not None else None
+        profile = getattr(plugin, "_profiles", {}).get(profile_id) if plugin is not None and isinstance(profile_id, str) else None
+        values = {}
+        if isinstance(profile, dict):
+            config = profile.get("config", {})
+            values = {"name": profile.get("name", ""), "host": config.get("host", ""), "port": config.get("port", "")}
+        fields = []
+        for field in document.get("fields", []):
+            if not isinstance(field, dict) or field.get("id") == "profile_id":
+                continue
+            item = dict(field)
+            field_id = str(field.get("id"))
+            item["value"] = values.get(field_id, "") if profile is None else values.get(field_id, field.get("value", ""))
+            fields.append(item)
+        return {"schema_version": 1, "title": document.get("title", "Configure AVR"), "description": document.get("description", ""), "fields": fields, "actions": [{"id": "save", "label": "Save", "kind": "submit", "async": False}]}
+
+    def invoke_avr_profile_ui(self, profile_id: str | None, plugin_id: str | None, values: Mapping[str, object]) -> dict[str, object]:
+        selected_plugin_id = plugin_id
+        if profile_id is not None:
+            selected = next((item for item in self.avr_profiles() if item["profile_id"] == profile_id), None)
+            selected_plugin_id = str(selected["plugin_id"]) if selected is not None else None
+        if not isinstance(selected_plugin_id, str):
+            raise ValueError("Select an AVR type.")
+        payload = dict(values)
+        if profile_id is not None:
+            payload["profile_id"] = profile_id
+        record = self._records_by_id.get(selected_plugin_id)
+        invoke = getattr(record.plugin, "invoke_plugin_ui_action", None) if record is not None and record.initialized else None
+        if not callable(invoke):
+            raise ValueError("The AVR integration has no profile configuration action.")
+        result = self._localize_ui_result(validate_plugin_ui_result(invoke("save", payload)))
+        if record is not None and "message" in result:
+            record.status = str(result["message"])
+        self._rebuild_route_instances()
+        self._on_volume_routes_changed()
+        return result
+
+    def remove_avr_profile(self, profile_id: str) -> bool:
+        profiles = self.avr_profiles()
+        if len(profiles) <= 1:
+            self._notice("Keep at least one AVR profile configured.")
+            return False
+        selected = next((item for item in profiles if item["profile_id"] == profile_id), None)
+        if selected is None:
+            return False
+        in_use = any(route.output.parameters.get("profile_id") == profile_id for route in self._input_routes)
+        if in_use:
+            self._notice("That AVR profile is still used by a route.")
+            return False
+        record = self._records_by_id.get(str(selected["plugin_id"]))
+        invoke = getattr(record.plugin, "invoke_plugin_ui_action", None) if record is not None and record.initialized else None
+        if not callable(invoke):
+            return False
+        result = self._localize_ui_result(validate_plugin_ui_result(invoke("delete", {"profile_id": profile_id})))
+        self._rebuild_route_instances()
+        self._on_volume_routes_changed()
+        return result.get("status") == "complete"
 
     def mqtt_profiles(self) -> tuple[dict[str, object], ...]:
         record = self._records_by_id.get("mqtt-input")
@@ -691,12 +800,18 @@ class PluginManager:
         plugin_id: str,
         action_id: str,
         parameters: Mapping[str, object],
+        *,
+        refresh: bool = False,
     ) -> dict[str, object] | None:
         record = self._records_by_id.get(plugin_id)
         if record is None or not record.initialized or not any(
             action.action_id == action_id for action in record.slot_actions
         ):
             raise ValueError("That automation action is unavailable.")
+        if refresh:
+            refresh_ui = getattr(record.plugin, "refresh_slot_ui", None)
+            if callable(refresh_ui):
+                refresh_ui(action_id, parameters)
         getter = getattr(record.plugin, "get_slot_ui", None)
         return self._localize_ui_document(validate_plugin_ui_document(getter(action_id, parameters))) if callable(getter) else None
 
@@ -738,6 +853,25 @@ class PluginManager:
             return "Configuration unavailable"
         return summary[:160]
 
+    def slot_icon(
+        self,
+        plugin_id: str,
+        action_id: str,
+        parameters: Mapping[str, object],
+    ) -> str | None:
+        record = self._records_by_id.get(plugin_id)
+        if record is None or not record.initialized or not any(action.action_id == action_id for action in record.slot_actions):
+            return None
+        getter = getattr(record.plugin, "slot_icon", None)
+        if not callable(getter):
+            return None
+        try:
+            icon = getter(action_id, parameters)
+        except Exception as exc:
+            LOGGER.error("Automation slot icon failed: plugin=%s, error=%s.", plugin_id, exc.__class__.__name__)
+            return None
+        return icon if isinstance(icon, str) and icon.startswith("data:image/png;base64,") else None
+
     def save_action_signal(
         self,
         signal_id: str | None,
@@ -748,6 +882,7 @@ class PluginManager:
         slots_value: object,
         on_start_value: object = False,
         plugin_triggers_value: object = None,
+        keyboard_event: object = "keypress",
     ) -> bool:
         normalized_name = normalize_signal_label(name)
         tray_label = None if tray_label_value in (None, "") else normalize_signal_label(tray_label_value)
@@ -781,6 +916,8 @@ class PluginManager:
                 if not isinstance(parameters, dict):
                     raise ValueError("Automation action parameters must be an object.")
                 slots.append(ActionSlot(plugin_id, action_id, parameters))
+            if keyboard_event not in {"keypress", "keyrelease"}:
+                raise ValueError("Automation keyboard event is invalid.")
             binding = ActionHotkeyBinding(HotkeySpec.from_json(hotkey_value), bool(forward_keys))
             plugin_triggers: list[PluginSignalTrigger] = []
             raw_triggers = [] if plugin_triggers_value is None else plugin_triggers_value
@@ -801,7 +938,7 @@ class PluginManager:
                     raise ValueError("A selected automation trigger is unavailable.")
                 plugin_triggers.append(PluginSignalTrigger(plugin_id, trigger_id, parameters))
             resolved_id = signal_id if isinstance(signal_id, str) else f"signal-{uuid.uuid4().hex}"
-            signal = ActionSignal(resolved_id, normalized_name, binding, tray_label, tuple(slots), on_start_value, tuple(plugin_triggers))
+            signal = ActionSignal(resolved_id, normalized_name, binding, tray_label, tuple(slots), on_start_value, tuple(plugin_triggers), keyboard_event)
         except ValueError as exc:
             self._notice(self._format_error(exc))
             return False
@@ -829,7 +966,7 @@ class PluginManager:
         try:
             self._replace_signal_hotkeys(previous, signals)
             save_action_signals(signals)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, RuntimeError) as exc:
             try:
                 self._replace_signal_hotkeys(signals, previous)
             except Exception:
@@ -874,6 +1011,7 @@ class PluginManager:
                 self._signal_binding_id(signal.signal_id),
                 hotkey,
                 consume=signal.hotkey.consume,
+                event=signal.keyboard_event,
             )
         except TypeError:
             self._hotkeys.set_binding(self._signal_binding_id(signal.signal_id), hotkey)
@@ -898,6 +1036,12 @@ class PluginManager:
         result = self._localize_ui_result(validate_plugin_ui_result(invoke(action_id, values)))
         if record is not None and "message" in result:
             record.status = str(result["message"])
+        if result.get("status") in {"save", "complete"} and record is not None and record.is_volume_provider:
+            # Volume-provider integrations own their connection settings. Rebuild
+            # route instances after an integration save so every route sees the
+            # new shared configuration without storing a duplicate copy.
+            self._rebuild_route_instances()
+            self._on_volume_routes_changed()
         return result
 
     def get_route_ui(self, route_id: str, endpoint: str) -> dict[str, object] | None:
@@ -1921,7 +2065,7 @@ class PluginManager:
             tree.focus_set()
         window.wait_window()
 
-    def _dispatch_trigger(self, binding_id: str) -> None:
+    def _dispatch_trigger(self, binding_id: str, event: str = "keypress") -> None:
         if self._closing.is_set():
             return
         direction = self._route_hotkeys.get(binding_id)
@@ -1937,7 +2081,9 @@ class PluginManager:
                     self._on_route_input(parts[1], delta)
             return
         if binding_id.startswith("signal/"):
-            self.dispatch_action_signal(binding_id.removeprefix("signal/"))
+            signal = next((item for item in self._action_signals if item.signal_id == binding_id.removeprefix("signal/")), None)
+            if signal is not None and signal.keyboard_event == event:
+                self.dispatch_action_signal(signal.signal_id)
             return
         plugin_id, separator, action_id = binding_id.partition("/")
         if not separator:

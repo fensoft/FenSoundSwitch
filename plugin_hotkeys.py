@@ -44,6 +44,15 @@ _MODIFIER_FLAGS = {
     0x5B: MOD_WIN,
     0x5C: MOD_WIN,
 }
+_CANONICAL_MODIFIER_KEYS = {
+    0xA0: 0x10,  # Left Shift -> Shift
+    0xA1: 0x10,  # Right Shift -> Shift
+    0xA2: 0x11,  # Left Ctrl -> Ctrl
+    0xA3: 0x11,  # Right Ctrl -> Ctrl
+    0xA4: 0x12,  # Left Alt -> Alt
+    0xA5: 0x12,  # Right Alt -> Alt
+    0x5C: 0x5B,  # Right Win -> Win
+}
 
 
 class HotkeyRegistrationError(PlatformError):
@@ -64,6 +73,7 @@ class _RouteBinding:
 class _ActionBinding:
     hotkey: HotkeySpec
     consume: bool
+    event: str = "keypress"
 
 
 class PluginHotkeyController:
@@ -86,14 +96,14 @@ class PluginHotkeyController:
         self._start_error: Exception | None = None
         self._binding_lock = threading.Lock()
         self._bindings_by_plugin: dict[str, _ActionBinding] = {}
-        self._plugins_by_hotkey: dict[HotkeySpec, str] = {}
+        self._plugins_by_hotkey: dict[tuple[HotkeySpec, str], str] = {}
         self._route_bindings: dict[str, _RouteBinding] = {}
         self._routes_by_hotkey: dict[HotkeySpec, str] = {}
         self._held_route_keys: dict[int, tuple[str, HotkeySpec, bool]] = {}
         self._held_action_keys: dict[int, bool] = {}
         self._held_modifier_keys: set[int] = set()
         self._pressed_keys: set[int] = set()
-        self._dispatch_queue: queue.Queue[str | None] = queue.Queue()
+        self._dispatch_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
         self._thread = threading.Thread(
             target=self._hook_loop,
             name="plugin-hotkey-loop",
@@ -133,6 +143,7 @@ class PluginHotkeyController:
         hotkey: HotkeySpec | None,
         *,
         consume: bool = False,
+        event: str = "keypress",
         timeout: float = START_TIMEOUT_SECONDS,
     ) -> None:
         if timeout <= 0:
@@ -141,7 +152,9 @@ class PluginHotkeyController:
             raise HotkeyRegistrationError("Plugin hotkeys are not running.")
         if not isinstance(consume, bool):
             raise ValueError("Action shortcut consume setting must be true or false.")
-        self._apply_binding(plugin_id, hotkey, consume)
+        if event not in {"keypress", "keyrelease"}:
+            raise ValueError("Action shortcut event must be keypress or keyrelease.")
+        self._apply_binding(plugin_id, hotkey, consume, event)
 
     def set_route_binding(self, binding_id: str, hotkey: HotkeySpec | None, *, consume: bool = False) -> None:
         """Register a repeatable route key with an explicit consumption policy."""
@@ -154,7 +167,7 @@ class PluginHotkeyController:
             if old_binding is not None and old_binding.hotkey == hotkey and old_binding.consume == consume:
                 return
             if hotkey is not None:
-                other = self._routes_by_hotkey.get(hotkey) or self._plugins_by_hotkey.get(hotkey)
+                other = self._routes_by_hotkey.get(hotkey) or self._action_owner_for_hotkey(hotkey)
                 if other is not None and other != binding_id:
                     raise HotkeyConflictError(f"{hotkey.label} is already used by {other}.")
             if old_binding is not None:
@@ -185,29 +198,39 @@ class PluginHotkeyController:
                 del self._held_route_keys[virtual_key]
                 self.on_route_key(binding_id, False)
 
-    def _apply_binding(self, plugin_id: str, hotkey: HotkeySpec | None, consume: bool = False) -> None:
+    def _apply_binding(self, plugin_id: str, hotkey: HotkeySpec | None, consume: bool = False, event: str = "keypress") -> None:
         with self._binding_lock:
             old_hotkey = self._bindings_by_plugin.get(plugin_id)
-            if old_hotkey is not None and old_hotkey.hotkey == hotkey and old_hotkey.consume == consume:
+            if old_hotkey is not None and old_hotkey.hotkey == hotkey and old_hotkey.consume == consume and old_hotkey.event == event:
                 return
             if hotkey is not None:
-                other_plugin = self._plugins_by_hotkey.get(hotkey) or self._routes_by_hotkey.get(hotkey)
+                other_plugin = self._plugins_by_hotkey.get((hotkey, event)) or self._routes_by_hotkey.get(hotkey)
                 if other_plugin is not None and other_plugin != plugin_id:
                     raise HotkeyConflictError(
                         f"{hotkey.label} is already used by plugin {other_plugin}."
                     )
             if old_hotkey is not None:
-                self._plugins_by_hotkey.pop(old_hotkey.hotkey, None)
+                self._plugins_by_hotkey.pop((old_hotkey.hotkey, old_hotkey.event), None)
                 del self._bindings_by_plugin[plugin_id]
             if hotkey is not None:
-                self._bindings_by_plugin[plugin_id] = _ActionBinding(hotkey, consume)
-                self._plugins_by_hotkey[hotkey] = plugin_id
+                self._bindings_by_plugin[plugin_id] = _ActionBinding(hotkey, consume, event)
+                self._plugins_by_hotkey[(hotkey, event)] = plugin_id
+
+    def _action_owner_for_hotkey(self, hotkey: HotkeySpec) -> str | None:
+        for (bound_hotkey, _event), plugin_id in self._plugins_by_hotkey.items():
+            if bound_hotkey == hotkey:
+                return plugin_id
+        return None
 
     def _current_modifiers(self) -> int:
         flags = 0
         for virtual_key in self._held_modifier_keys:
             flags |= _MODIFIER_FLAGS[virtual_key]
         return flags
+
+    @staticmethod
+    def _canonical_virtual_key(virtual_key: int) -> int:
+        return _CANONICAL_MODIFIER_KEYS.get(virtual_key, virtual_key)
 
     def _keyboard_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         if n_code != HC_ACTION:
@@ -218,13 +241,20 @@ class PluginHotkeyController:
             virtual_key = int(key_info.vkCode)
             modifier_flag = _MODIFIER_FLAGS.get(virtual_key)
             if w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                was_modifier = modifier_flag is not None
+                if was_modifier:
+                    # Capture Ctrl/Alt/Shift/Win themselves as a key, while
+                    # keeping Ctrl+X semantics based on the modifiers held
+                    # before X arrives.
+                    hotkey = HotkeySpec(self._current_modifiers(), self._canonical_virtual_key(virtual_key))
                 if modifier_flag is not None:
                     self._held_modifier_keys.add(virtual_key)
-                elif virtual_key not in self._pressed_keys:
+                if virtual_key not in self._pressed_keys:
                     self._pressed_keys.add(virtual_key)
-                    hotkey = HotkeySpec(self._current_modifiers(), virtual_key)
+                    if not was_modifier:
+                        hotkey = HotkeySpec(self._current_modifiers(), virtual_key)
                     with self._binding_lock:
-                        plugin_id = self._plugins_by_hotkey.get(hotkey)
+                        plugin_id = self._plugins_by_hotkey.get((hotkey, "keypress"))
                         route_binding = self._routes_by_hotkey.get(hotkey)
                         if route_binding is not None and self._active.is_set():
                             route = self._route_bindings[route_binding]
@@ -235,7 +265,8 @@ class PluginHotkeyController:
                         if action is not None:
                             self._held_action_keys[virtual_key] = action.consume
                             consume = action.consume
-                        self._dispatch_queue.put(plugin_id)
+                            if action.event == "keypress":
+                                self._dispatch_queue.put(plugin_id)
                     if route_binding is not None and self._active.is_set():
                         self.on_route_key(route_binding, True)
                 else:
@@ -247,6 +278,18 @@ class PluginHotkeyController:
                         self.on_route_key(held[0], True)
             elif w_param in (WM_KEYUP, WM_SYSKEYUP):
                 if modifier_flag is not None:
+                    # Modifiers are tracked separately for combinations, but
+                    # must also leave the pressed-key set after every release
+                    # so the next Ctrl/Alt/Shift/Win press is not mistaken for
+                    # an auto-repeat.
+                    self._pressed_keys.discard(virtual_key)
+                    with self._binding_lock:
+                        held = self._held_route_keys.pop(virtual_key, None)
+                        action_consume = self._held_action_keys.pop(virtual_key, False)
+                    if held is not None:
+                        self.on_route_key(held[0], False)
+                        consume = held[2]
+                    consume = consume or action_consume
                     self._held_modifier_keys.discard(virtual_key)
                     self._release_inactive_route_keys()
                 else:
@@ -258,6 +301,15 @@ class PluginHotkeyController:
                         self.on_route_key(held[0], False)
                         consume = held[2]
                     consume = consume or action_consume
+                # Modifier-only shortcuts are registered with no modifier bit
+                # (the key itself is the virtual key). Remove the released
+                # modifier before matching its key-release binding.
+                release_hotkey = HotkeySpec(self._current_modifiers(), self._canonical_virtual_key(virtual_key))
+                with self._binding_lock:
+                    release_plugin = self._plugins_by_hotkey.get((release_hotkey, "keyrelease"))
+                    action = self._bindings_by_plugin.get(release_plugin) if release_plugin else None
+                if action is not None and action.event == "keyrelease" and self._active.is_set():
+                    self._dispatch_queue.put((release_plugin, "keyrelease"))
         except Exception as exc:
             self._release_all_route_keys()
             # A hook/dispatch error must fail open for the current event too.
@@ -320,11 +372,18 @@ class PluginHotkeyController:
 
     def _dispatch_loop(self) -> None:
         while True:
-            plugin_id = self._dispatch_queue.get()
-            if plugin_id is None:
+            item = self._dispatch_queue.get()
+            if item is None:
                 return
+            if isinstance(item, tuple):
+                plugin_id, event = item
+            else:
+                plugin_id, event = item, "keypress"
             try:
-                self.on_hotkey(plugin_id)
+                try:
+                    self.on_hotkey(plugin_id, event)
+                except TypeError:
+                    self.on_hotkey(plugin_id)
             except Exception as exc:
                 try:
                     self.on_error(exc)

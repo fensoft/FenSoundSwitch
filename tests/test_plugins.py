@@ -1183,7 +1183,7 @@ class PluginGuiIntegrationTests(unittest.TestCase):
             "values": {"target": 2},
         })
 
-        manager.get_slot_ui.assert_called_once_with("plugin", "action", {"target": 1})
+        manager.get_slot_ui.assert_called_once_with("plugin", "action", {"target": 1}, refresh=False)
         manager.invoke_slot_ui_action.assert_called_once_with("plugin", "action", "save", {"target": 2})
         self.assertEqual(form["fields"][0]["key"], "target")
         self.assertEqual(saved["parameters"], {"target": 2})
@@ -1357,6 +1357,25 @@ class PassiveHotkeyTests(unittest.TestCase):
         self.assertEqual(next_hook.call_count, 2)
         self.assertTrue(all(call.args[0] == 99 for call in next_hook.call_args_list))
 
+    def test_ctrl_alone_can_trigger_keypress_and_keyrelease_actions(self) -> None:
+        controller = self.make_controller()
+        controller._hook_handle = 99
+        controller._active.set()
+        controller._apply_binding("keypress", HotkeySpec(0, 0x11), event="keypress")
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=47):
+            self._key_event(controller, WM_KEYDOWN, 0xA2)
+            self._key_event(controller, WM_KEYUP, 0xA2)
+        self.assertEqual(controller._dispatch_queue.get_nowait(), "keypress")
+
+        controller = self.make_controller()
+        controller._hook_handle = 99
+        controller._active.set()
+        controller._apply_binding("keyrelease", HotkeySpec(0, 0x11), event="keyrelease")
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=47):
+            self._key_event(controller, WM_KEYDOWN, 0xA3)
+            self._key_event(controller, WM_KEYUP, 0xA3)
+        self.assertEqual(controller._dispatch_queue.get_nowait(), ("keyrelease", "keyrelease"))
+
     def test_inter_plugin_conflict_is_rejected_before_the_os_call(self) -> None:
         controller = self.make_controller()
         hotkey = HotkeySpec(MOD_CONTROL, ord("K"))
@@ -1371,8 +1390,28 @@ class PassiveHotkeyTests(unittest.TestCase):
         controller._apply_binding("one", old)
         controller._apply_binding("one", new)
         self.assertEqual(controller._bindings_by_plugin["one"].hotkey, new)
-        self.assertNotIn(old, controller._plugins_by_hotkey)
-        self.assertEqual(controller._plugins_by_hotkey[new], "one")
+        self.assertNotIn((old, "keypress"), controller._plugins_by_hotkey)
+        self.assertEqual(controller._plugins_by_hotkey[(new, "keypress")], "one")
+
+    def test_same_key_can_have_press_and_release_action_bindings(self) -> None:
+        controller = self.make_controller()
+        controller._hook_handle = 99
+        controller._active.set()
+        hotkey = HotkeySpec(MOD_CONTROL, ord("K"))
+        controller._apply_binding("press", hotkey, event="keypress")
+        controller._apply_binding("release", hotkey, event="keyrelease")
+        self.assertEqual(controller._plugins_by_hotkey[(hotkey, "keypress")], "press")
+        self.assertEqual(controller._plugins_by_hotkey[(hotkey, "keyrelease")], "release")
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=47):
+            for _ in range(2):
+                self._key_event(controller, WM_KEYDOWN, 0xA2)
+                self._key_event(controller, WM_KEYDOWN, ord("K"))
+                self._key_event(controller, WM_KEYUP, ord("K"))
+                self._key_event(controller, WM_KEYUP, 0xA2)
+        self.assertEqual(controller._dispatch_queue.get_nowait(), "press")
+        self.assertEqual(controller._dispatch_queue.get_nowait(), ("release", "keyrelease"))
+        self.assertEqual(controller._dispatch_queue.get_nowait(), "press")
+        self.assertEqual(controller._dispatch_queue.get_nowait(), ("release", "keyrelease"))
 
     def test_consuming_action_consumes_only_its_held_key_pair(self) -> None:
         controller = self.make_controller()

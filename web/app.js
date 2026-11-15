@@ -23,6 +23,8 @@ const slotForm = document.querySelector("#slot-form");
 const choiceDialog = document.querySelector("#choice-dialog");
 const mqttDialog = document.querySelector("#mqtt-dialog");
 const mqttProfileForm = document.querySelector("#mqtt-profile-form");
+const avrDialog = document.querySelector("#avr-dialog");
+const avrProfileForm = document.querySelector("#avr-profile-form");
 
 function element(tag, options = {}, children = []) {
   const node = document.createElement(tag);
@@ -74,7 +76,7 @@ function hotkeyLabel(value) {
   if (value.modifiers & 4) parts.push(sourceText("Shift"));
   if (value.modifiers & 8) parts.push(sourceText("Win"));
   const key = Number(value.virtual_key);
-  const names = { 8: "Backspace", 9: "Tab", 13: "Enter", 19: "Pause", 20: "Caps Lock", 27: "Escape", 32: "Space", 33: "Page Up", 34: "Page Down", 35: "End", 36: "Home", 37: "Left", 38: "Up", 39: "Right", 40: "Down", 44: "Print Screen", 45: "Insert", 46: "Delete", 91: "Left Win", 92: "Right Win", 93: "Menu", 144: "Num Lock", 145: "Scroll Lock" };
+  const names = { 8: "Backspace", 9: "Tab", 13: "Enter", 16: "Shift", 17: "Ctrl", 18: "Alt", 19: "Pause", 20: "Caps Lock", 27: "Escape", 32: "Space", 33: "Page Up", 34: "Page Down", 35: "End", 36: "Home", 37: "Left", 38: "Up", 39: "Right", 40: "Down", 44: "Print Screen", 45: "Insert", 46: "Delete", 91: "Left Win", 92: "Right Win", 93: "Menu", 144: "Num Lock", 145: "Scroll Lock" };
   parts.push(sourceText(names[key]) || (key >= 65 && key <= 90 ? String.fromCharCode(key) : key >= 48 && key <= 57 ? String.fromCharCode(key) : key >= 96 && key <= 105 ? `${sourceText("Numpad")} ${key - 96}` : key >= 112 && key <= 135 ? `F${key - 111}` : `VK 0x${key.toString(16).toUpperCase().padStart(2, "0")}`));
   return parts.join("+");
 }
@@ -151,7 +153,7 @@ function switchPage(page) {
   if (!pages[page]) return;
   state.page = page;
   document.querySelector("#workspace").dataset.page = page;
-  for (const button of document.querySelectorAll("[data-page]")) {
+  for (const button of document.querySelectorAll("#navigation button[data-page]")) {
     const selected = button.dataset.page === page;
     button.classList.toggle("is-active", selected);
     if (selected) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
@@ -181,6 +183,11 @@ function emptyState(icon, title, message, action, handler) {
   const children = [element("span", { class: "empty-icon", "aria-hidden": "true", text: icon }), element("h2", { text: title }), element("p", { class: "muted", text: message })];
   if (action) children.push(element("button", { class: "primary", type: "button", text: action, onclick: handler }));
   return element("div", { class: "empty-state" }, children);
+}
+
+function automationIcon(kind, iconData = "") {
+  if (kind === "application" && iconData.startsWith("data:image/png;base64,")) return element("img", { class: "slot-icon executable-icon", src: iconData, alt: "" });
+  return element("span", { class: `slot-icon${kind === "application" ? " app-icon" : ""}`, "aria-hidden": "true" });
 }
 
 function renderRoutes() {
@@ -293,7 +300,7 @@ function renderRouteWizard() {
         const current = wizard.values[`${endpoint}_parameters`]?.[field.id] ?? field.value;
         container.append(renderField({ ...field, key: field.id, type: typeMap[field.type] || field.type }, current));
       }
-      const actions = safeArray(formDocument.actions).filter(action => action.kind === "action");
+      const actions = safeArray(formDocument.actions).filter(action => action.kind === "action" && action.hidden !== true);
       if (actions.length) {
         const buttons = element("div", { class: "button-row" });
         for (const action of actions) {
@@ -365,8 +372,16 @@ function renderActions() {
       const summary = slot.summary_translatable ? sourceText(safeText(slot.summary)) : safeText(slot.summary);
       return `${pluginName ? `${pluginName}: ` : ""}${actionLabel}${summary ? ` (${summary})` : ""}`;
     });
-    const summary = steps.length ? element("ol", { class: "automation-summary" }, steps.map(step => element("li", { text: step }))) : element("p", { class: "muted", text: sourceText(safeText(signal.description, t("automation.orderedSteps"))) });
-    const triggerParts = safeArray(signal.values?.triggers).map(trigger => trigger.kind === "app-start" ? sourceText("App start") : trigger.kind === "keyboard" ? hotkeyLabel(trigger.hotkey) : trigger.kind === "tray" ? `${sourceText("Tray menu option")}: ${safeText(trigger.label)}` : trigger.kind === "mqtt" ? sourceText("MQTT / Home Assistant") : "").filter(Boolean);
+    const summary = slots.length ? element("ol", { class: "automation-summary" }, slots.map((slot, index) => {
+      if (slot.kind === "wait") return element("li", { text: steps[index] });
+      const pluginName = sourceText(safeText(slot.plugin_name));
+      const actionLabel = sourceText(safeText(slot.action_label, safeText(slot.target)));
+      const appName = safeText(slot.summary);
+      const prefix = `${pluginName ? `${pluginName}: ` : ""}${actionLabel}`;
+      const icon = safeText(slot.icon, "action") === "application" ? automationIcon("application", safeText(slot.icon_data || slot.parameters?.session?.icon)) : null;
+      return element("li", {}, appName ? [element("span", { text: prefix }), icon, element("span", { class: "slot-summary-detail", text: appName })].filter(Boolean) : icon ? [icon, element("span", { text: prefix })] : [element("span", { text: prefix })]);
+    })) : element("p", { class: "muted", text: sourceText(safeText(signal.description, t("automation.orderedSteps"))) });
+    const triggerParts = safeArray(signal.values?.triggers).map(trigger => trigger.kind === "app-start" ? sourceText("App start") : trigger.kind === "keyboard" ? `${safeText(trigger.event, "keypress") === "keyrelease" ? sourceText("Key release") : sourceText("Key press")}: ${hotkeyLabel(trigger.hotkey)}` : trigger.kind === "tray" ? `${sourceText("Tray menu option")}: ${safeText(trigger.label)}` : trigger.kind === "mqtt" ? sourceText("MQTT / Home Assistant") : "").filter(Boolean);
     stack.append(element("article", { class: "card setting-row" }, [
       element("div", {}, [element("h3", { text: safeText(signal.name, t("automation.name")) }), summary, element("p", { class: "signal-trigger", text: triggerParts.join(" + ") || t("automation.noTrigger") })]),
       element("div", { class: "button-row" }, [element("button", { class: "secondary", type: "button", text: t("common.run"), onclick: () => execute("signal.run", { id }) }), element("button", { class: "secondary", type: "button", text: t("common.edit"), onclick: () => openEntityEditor("signal", signal) }), element("button", { class: "text-button", type: "button", text: t("common.remove"), onclick: () => confirmAction(t("automation.removeTitle"), t("automation.removeMessage", { name: safeText(signal.name, t("automation.name")) }), "signal.delete", { id }) })])
@@ -377,6 +392,11 @@ function renderActions() {
 
 function renderIntegrations() {
   const stack = element("div", { class: "stack" });
+  const avrProfiles = safeArray(state.snapshot.avr_profiles);
+  stack.append(element("article", { class: "card setting-row" }, [
+    element("div", {}, [element("h3", { text: sourceText("AVR") }), element("p", { class: "muted", text: `${avrProfiles.length} ${avrProfiles.length === 1 ? "receiver" : "receivers"} configured` })]),
+    element("button", { class: "secondary", type: "button", text: t("common.configure"), onclick: openAvrIntegration })
+  ]));
   const profiles = safeArray(state.snapshot.mqtt_profiles);
   stack.append(element("article", { class: "card setting-row" }, [
     element("div", {}, [element("h3", { text: sourceText("MQTT / Home Assistant") }), element("p", { class: "muted", text: t("integration.saved", { count: profiles.length }) })]),
@@ -384,6 +404,78 @@ function renderIntegrations() {
   ]));
   const integrations = safeArray(state.snapshot.integrations);
   for (const action of integrations) {
+    renderIntegrationCard(stack, action);
+  }
+  content.replaceChildren(stack);
+}
+
+function openAvrIntegration() {
+  state.avrProfileId = null;
+  showAvrProfileList();
+  avrDialog.showModal();
+  window.setTimeout(() => document.querySelector("#avr-add")?.focus(), 0);
+}
+
+function showAvrProfileList() {
+  avrProfileForm.hidden = true;
+  document.querySelector("#avr-list-view").hidden = false;
+  const list = document.querySelector("#avr-profile-list");
+  list.replaceChildren();
+  const profiles = safeArray(state.snapshot?.avr_profiles);
+  if (!profiles.length) {
+    list.append(element("p", { class: "muted", text: "No AVR profiles configured." }));
+    return;
+  }
+  for (const profile of profiles) {
+    const id = safeText(profile.id);
+    list.append(element("article", { class: "profile-row" }, [
+      element("div", {}, [element("strong", { text: safeText(profile.name, "AVR") }), element("span", { class: "muted", text: `${safeText(profile.type)} · ${safeText(profile.description)}` })]),
+      element("div", { class: "button-row" }, [element("button", { class: "secondary", type: "button", text: t("common.edit"), onclick: () => editAvrProfile(profile) }), element("button", { class: "text-button", type: "button", text: t("common.remove"), onclick: () => removeAvrProfile(id) })])
+    ]));
+  }
+}
+
+function editAvrProfile(profile) {
+  const schema = profile?.form || state.snapshot?.avr_profile_form;
+  const fields = safeArray(schema?.fields);
+  const values = profile?.values && typeof profile.values === "object" ? { ...profile.values, plugin_id: profile.plugin_id } : {};
+  state.avrProfileId = profile?.id || null;
+  document.querySelector("#avr-list-view").hidden = true;
+  avrProfileForm.hidden = false;
+  document.querySelector("#avr-profile-title").textContent = profile ? t("editor.edit", { name: safeText(profile.name, "AVR") }) : "Add AVR";
+  const container = document.querySelector("#avr-profile-fields");
+  container.replaceChildren();
+  for (const field of fields) container.append(renderField(field, values[field.key]));
+  syncConditionalFields(container);
+  document.querySelector("#avr-error").hidden = true;
+  window.setTimeout(() => container.querySelector("input, select, textarea")?.focus(), 0);
+}
+
+async function saveAvrProfile(event) {
+  event.preventDefault();
+  if (!avrProfileForm.reportValidity()) return;
+  const save = document.querySelector("#avr-profile-save");
+  save.disabled = true; save.textContent = t("common.saving");
+  const values = {};
+  for (const input of document.querySelector("#avr-profile-fields").querySelectorAll("[name]")) values[input.getAttribute("name")] = input.type === "checkbox" ? input.checked : input.type === "number" && input.value !== "" ? Number(input.value) : input.value;
+  try {
+    await nativeRequest("avr.profile.save", { id: state.avrProfileId, values });
+    state.revision = -1; await pollSnapshot(); showAvrProfileList();
+  } catch (error) {
+    const target = document.querySelector("#avr-error"); target.textContent = sourceText(safeText(error.message, t("error.save"))); target.hidden = false; target.focus();
+  } finally { save.disabled = false; save.textContent = t("integration.save"); }
+}
+
+async function removeAvrProfile(id) {
+  try {
+    await nativeRequest("avr.profile.delete", { id });
+    state.revision = -1; await pollSnapshot(); showAvrProfileList();
+  } catch (error) {
+    document.querySelector("#avr-list-view").prepend(element("div", { class: "inline-error", role: "alert", text: sourceText(safeText(error.message, t("integration.removeError"))) }));
+  }
+}
+
+function renderIntegrationCard(stack, action) {
     const buttons = [];
     if (safeArray(action.form?.fields).length || action.form?.ui_action) buttons.push(element("button", { class: "secondary", type: "button", text: t("common.configure"), onclick: () => openEntityEditor("action", action) }));
     for (const command of safeArray(action.ui_actions).filter(item => item.kind === "action")) {
@@ -394,8 +486,6 @@ function renderIntegrations() {
       element("div", {}, [element("h3", { text: sourceText(safeText(action.name, "Action")) }), element("p", { class: "muted", text: sourceText(safeText(action.description, "Trusted plugin action")) })]),
        element("div", { class: "button-row" }, buttons)
     ]));
-  }
-  content.replaceChildren(stack);
 }
 
 function openMqttIntegration() {
@@ -641,8 +731,35 @@ function renderField(field, current) {
       input.value = typeof initial === "string" || typeof initial === "number" ? initial : "";
     }
   }
-  const label = element("label", { for: `field-${key}`, text: sourceText(safeText(field.label, key)) });
-  if (type === "boolean") wrapper.append(input, label); else wrapper.append(label, input);
+  const labelText = sourceText(safeText(field.label, key));
+  const label = key === "session"
+    ? element("label", { for: `field-${key}` }, [field.icon ? element("img", { class: "field-app-icon executable-icon", src: safeText(field.icon), alt: "" }) : element("span", { class: "field-app-icon", "aria-hidden": "true" }), element("span", { text: labelText })])
+    : element("label", { for: `field-${key}`, text: labelText });
+  if (key === "session" && type === "select") {
+    const picker = element("div", { class: "app-session-picker", role: "listbox", "aria-label": labelText });
+    const renderPicker = () => {
+      picker.replaceChildren();
+      for (const option of safeArray(field.options)) {
+        const encoded = JSON.stringify(option.value);
+        const selected = encoded === input.value;
+        const value = option.value && typeof option.value === "object" ? option.value : {};
+        const icon = safeText(value.icon);
+        const button = element("button", { class: `app-session-option${selected ? " is-selected" : ""}`, type: "button", role: "option", "aria-selected": selected ? "true" : "false" });
+        if (icon.startsWith("data:image/png;base64,")) button.append(element("img", { class: "app-session-icon executable-icon", src: icon, alt: "" }));
+        else button.append(element("span", { class: "app-session-icon app-icon", "aria-hidden": "true" }));
+        button.append(element("span", { text: optionText(field, option) }));
+        button.addEventListener("click", () => {
+          input.value = encoded;
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+        picker.append(button);
+      }
+    };
+    input.addEventListener("change", renderPicker);
+    input.classList.add("app-session-native-select");
+    wrapper.append(label, picker, input);
+    renderPicker();
+  } else if (type === "boolean") wrapper.append(input, label); else wrapper.append(label, input);
   if (field.description) wrapper.append(element("small", { text: sourceText(safeText(field.description)) }));
   return wrapper;
 }
@@ -663,9 +780,10 @@ function renderHotkeyInput(id, current) {
     if (event.key === "Backspace" || event.key === "Delete") { input.dataset.hotkey = "null"; input.value = t("common.notSet"); return; }
     if (event.code === "AltRight") { input.dataset.rightAlt = "true"; return; }
     const virtualKey = virtualKeyFromEvent(event);
-    if (!virtualKey || [16, 17, 18, 91, 92].includes(virtualKey)) return;
+    if (!virtualKey) return;
     const altGraph = input.dataset.rightAlt === "true" || event.getModifierState?.("AltGraph") === true;
-    const value = { modifiers: (event.altKey || altGraph ? 1 : 0) | (event.ctrlKey || altGraph ? 2 : 0) | (event.shiftKey ? 4 : 0) | (event.metaKey ? 8 : 0), virtual_key: virtualKey };
+    const isModifierKey = [16, 17, 18, 91, 92].includes(virtualKey);
+    const value = { modifiers: isModifierKey ? 0 : (event.altKey || altGraph ? 1 : 0) | (event.ctrlKey || altGraph ? 2 : 0) | (event.shiftKey ? 4 : 0) | (event.metaKey ? 8 : 0), virtual_key: virtualKey };
     input.dataset.hotkey = JSON.stringify(value); input.value = hotkeyLabel(value);
   }, true);
   input.addEventListener("keyup", event => { event.preventDefault(); event.stopPropagation(); if (event.code === "AltRight") input.dataset.rightAlt = "false"; }, true);
@@ -690,7 +808,30 @@ function openChoiceDialog(kicker, title, description, options, onSelect) {
   document.querySelector("#choice-description").textContent = description;
   const container = document.querySelector("#choice-options");
   container.replaceChildren();
-  for (const option of options) {
+  const actionCategory = option => {
+    const pluginId = safeText(option.value).split("/", 1)[0].toLowerCase();
+    if (!pluginId || !safeText(option.value).includes("/")) return "";
+    if (["denon-marantz-volume", "onkyo-volume", "pioneer-elite-volume", "sony-volume", "yamaha-volume"].includes(pluginId) || pluginId.includes("avr")) return "AVR";
+    if (["windows", "audio", "discord", "bluetooth", "soundcard", "microphone"].some(token => pluginId.includes(token))) return "Audio & Windows";
+    if (["ddc", "monitor", "overlay", "display"].some(token => pluginId.includes(token))) return "Display & monitors";
+    if (["mqtt", "http", "midi", "obs", "osc", "sonos", "voicemeeter"].some(token => pluginId.includes(token))) return "Integrations";
+    if (["system", "power"].some(token => pluginId.includes(token))) return "System";
+    return "Other";
+  };
+  const categoryFor = option => safeText(option.category) || actionCategory(option);
+  const categorized = options.some(option => categoryFor(option));
+  const ordered = categorized ? [...options].sort((left, right) => {
+    const category = categoryFor(left).localeCompare(categoryFor(right), undefined, { sensitivity: "base" });
+    if (category) return category;
+    return safeText(left.label, String(left.value ?? "")).localeCompare(safeText(right.label, String(right.value ?? "")), undefined, { sensitivity: "base" });
+  }) : options;
+  let currentCategory = "";
+  for (const option of ordered) {
+    const category = categoryFor(option);
+    if (categorized && category !== currentCategory) {
+      currentCategory = category;
+      container.append(element("h3", { class: "choice-category", text: category }));
+    }
     const button = element("button", { class: "choice-card", type: "button", disabled: option.disabled ? "" : null, onclick: () => {
       const callback = state.choice?.onSelect;
       choiceDialog.close();
@@ -793,10 +934,12 @@ function renderTriggerListField(key, field, current) {
       row._triggerValue = () => ({ kind });
     } else if (kind === "keyboard") {
       const hotkey = renderHotkeyInput(`trigger-${kind}-hotkey`, trigger.hotkey);
+      const event = element("select", { id: `trigger-${kind}-event` });
+      event.append(element("option", { value: "keypress", text: sourceText("Key press"), selected: safeText(trigger.event, "keypress") === "keypress" ? "" : null }), element("option", { value: "keyrelease", text: sourceText("Key release"), selected: trigger.event === "keyrelease" ? "" : null }));
       const forward = element("input", { id: `trigger-${kind}-forward`, type: "checkbox" });
       forward.checked = trigger.forward_keys !== false;
-      body.append(element("label", { for: hotkey.id, text: t("editor.keyCombination") }), hotkey, element("label", { class: "trigger-check", for: forward.id }, [forward, element("span", { text: t("editor.forwardKeys") })]));
-      row._triggerValue = () => ({ kind, hotkey: JSON.parse(hotkey.dataset.hotkey), forward_keys: forward.checked });
+      body.append(element("label", { for: event.id, text: sourceText("Keyboard event") }), event, element("label", { for: hotkey.id, text: t("editor.keyCombination") }), hotkey, element("label", { class: "trigger-check", for: forward.id }, [forward, element("span", { text: t("editor.forwardKeys") })]));
+      row._triggerValue = () => ({ kind, hotkey: JSON.parse(hotkey.dataset.hotkey), event: event.value, forward_keys: forward.checked });
     } else if (kind === "tray") {
       const label = element("input", { id: `trigger-${kind}-label`, type: "text", maxlength: "80", value: safeText(trigger.label), placeholder: t("editor.trayText") });
       body.append(element("label", { for: label.id, text: t("editor.trayText") }), label);
@@ -834,17 +977,17 @@ async function openSlotEditor(row, target) {
   document.querySelector("#slot-refresh").hidden = true;
   document.querySelector("#slot-save").hidden = true;
   slotDialog.showModal();
-  await loadSlotEditor();
+  await loadSlotEditor(true);
 }
 
-async function loadSlotEditor() {
+async function loadSlotEditor(refreshOnOpen = false) {
   const editor = state.slotEditor;
   if (!editor) return;
   try {
-    const form = await nativeRequest("slot.ui", { target: editor.target, parameters: editor.row._parameters || {} });
+    const form = await nativeRequest("slot.ui", { target: editor.target, parameters: editor.row._parameters || {}, refresh: refreshOnOpen });
     if (state.slotEditor !== editor) return;
     editor.actionId = safeText(form.action_id);
-    editor.refreshActionId = safeText(safeArray(form.actions).find(action => action.kind === "action")?.id);
+    editor.refreshActionId = safeText(safeArray(form.actions).find(action => action.kind === "action" && action.hidden !== true)?.id);
     document.querySelector("#slot-title").textContent = sourceText(safeText(form.title, t("dialog.configureStep")));
     const loading = form.state === "loading";
     const ready = form.state === "ready";
@@ -1015,6 +1158,11 @@ primaryAction.addEventListener("click", () => { if (state.page === "routes") ope
 editorForm.addEventListener("submit", saveEditor);
 slotForm.addEventListener("submit", saveSlotEditor);
 mqttProfileForm.addEventListener("submit", saveMqttProfile);
+avrProfileForm.addEventListener("submit", saveAvrProfile);
+document.querySelector("#avr-add").addEventListener("click", () => editAvrProfile(null));
+document.querySelector("#avr-back").addEventListener("click", showAvrProfileList);
+document.querySelector("#avr-profile-cancel").addEventListener("click", showAvrProfileList);
+document.querySelector("#avr-close").addEventListener("click", () => avrDialog.close());
 document.querySelector("#mqtt-add").addEventListener("click", () => editMqttProfile(null));
 document.querySelector("#mqtt-back").addEventListener("click", showMqttProfileList);
 document.querySelector("#mqtt-profile-cancel").addEventListener("click", showMqttProfileList);

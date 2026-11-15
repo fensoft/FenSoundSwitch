@@ -141,6 +141,7 @@ class ActionSignal:
     slots: tuple[SignalSlot, ...]
     on_start: bool = False
     plugin_triggers: tuple[PluginSignalTrigger, ...] = ()
+    keyboard_event: str = "keypress"
 
     def __post_init__(self) -> None:
         if not isinstance(self.signal_id, str) or _ROUTE_ID_PATTERN.fullmatch(self.signal_id) is None:
@@ -149,6 +150,8 @@ class ActionSignal:
             raise ValueError("Automation keyboard trigger is invalid.")
         if not isinstance(self.on_start, bool):
             raise ValueError("Automation start trigger must be true or false.")
+        if self.keyboard_event not in {"keypress", "keyrelease"}:
+            raise ValueError("Automation keyboard event must be keypress or keyrelease.")
         if not isinstance(self.plugin_triggers, tuple) or len(self.plugin_triggers) > MAX_SIGNAL_TRIGGERS or not all(isinstance(trigger, PluginSignalTrigger) for trigger in self.plugin_triggers):
             raise ValueError("Automation integration triggers are invalid.")
         if not isinstance(self.slots, tuple) or not 1 <= len(self.slots) <= MAX_SIGNAL_SLOTS or not all(isinstance(slot, (ActionSlot, WaitSlot)) for slot in self.slots):
@@ -514,7 +517,7 @@ def _normalized_action_signals(value: object) -> tuple[ActionSignal, ...] | None
     signals: list[ActionSignal] = []
     signal_ids: set[str] = set()
     for item in value:
-        if not isinstance(item, dict) or set(item) - {"signal_id", "name", "hotkey", "forward_keys", "tray_label", "slots", "on_start", "plugin_triggers"}:
+        if not isinstance(item, dict) or set(item) - {"signal_id", "name", "hotkey", "forward_keys", "keyboard_event", "tray_label", "slots", "on_start", "plugin_triggers"}:
             return None
         signal_id = _optional_string(item.get("signal_id"))
         name = normalize_signal_label(item.get("name"))
@@ -523,10 +526,12 @@ def _normalized_action_signals(value: object) -> tuple[ActionSignal, ...] | None
         slots_value = item.get("slots")
         on_start = item.get("on_start", False)
         plugin_triggers_value = item.get("plugin_triggers", [])
+        keyboard_event = item.get("keyboard_event", "keypress")
         if (
             signal_id is None or _ROUTE_ID_PATTERN.fullmatch(signal_id) is None or signal_id in signal_ids
             or name is None or (tray_value is not None and tray_label is None)
             or not isinstance(on_start, bool)
+            or keyboard_event not in {"keypress", "keyrelease"}
             or not isinstance(plugin_triggers_value, list) or len(plugin_triggers_value) > MAX_SIGNAL_TRIGGERS
             or not isinstance(slots_value, list) or not 1 <= len(slots_value) <= MAX_SIGNAL_SLOTS
         ):
@@ -551,7 +556,7 @@ def _normalized_action_signals(value: object) -> tuple[ActionSignal, ...] | None
             return None
         signal_ids.add(signal_id)
         try:
-            signals.append(ActionSignal(signal_id, name, hotkey, tray_label, slots, on_start, tuple(plugin_triggers)))  # type: ignore[arg-type]
+            signals.append(ActionSignal(signal_id, name, hotkey, tray_label, slots, on_start, tuple(plugin_triggers), keyboard_event))  # type: ignore[arg-type]
         except ValueError:
             return None
     return tuple(signals)
@@ -583,6 +588,7 @@ def save_action_signals(signals: tuple[ActionSignal, ...] | list[ActionSignal]) 
             "name": signal.name,
             "hotkey": signal.hotkey.hotkey.to_json() if signal.hotkey.hotkey is not None else None,
             "forward_keys": signal.hotkey.forward_keys,
+            "keyboard_event": signal.keyboard_event,
             "tray_label": signal.tray_label,
             "slots": slots,
             "on_start": signal.on_start,

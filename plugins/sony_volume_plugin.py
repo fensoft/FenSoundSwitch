@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Mapping
 
 from plugin_api import PLUGIN_API_VERSION, HotkeySpec, PluginHostContext, plugin_ui_document, plugin_ui_result
+from plugins.avr_profiles import AVR_INPUT_ACTION, AVR_POWER_OFF_ACTION, AVR_POWER_ON_ACTION, load_profiles, new_profile_id, normalize_slot_parameters, profile_config, profile_options, save_payload, slot_actions, slot_summary, slot_ui
 
 
 CONFIG_SCHEMA_VERSION = 1
@@ -153,20 +154,60 @@ class SonyVolumePlugin:
         self._next_request_id = 1
         self._volume_range: VolumeRange | None = None
         self._activation_complete = False
+        self._profiles: dict[str, dict[str, object]] = {}
 
     def initialize(self, host: PluginHostContext) -> None:
         self._host = host
+        try:
+            saved = host.load_plugin_settings()
+            self._profiles = load_profiles(saved, lambda value: _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **value}) if isinstance(value, dict) else None)
+            if self._profiles: self._config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **next(iter(self._profiles.values()))["config"]})
+        except (OSError, ValueError, TypeError):
+            self._config = None
 
     def create_output(self, parameters: object) -> "SonyVolumePlugin":
         if not isinstance(parameters, dict):
             raise ValueError("Sony route parameters must be an object.")
         instance = SonyVolumePlugin()
-        instance._config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **parameters})
+        profile_id = parameters.get("profile_id")
+        profile = self._profiles.get(profile_id) if isinstance(profile_id, str) else None
+        legacy = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **parameters})
+        instance._config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **profile["config"]}) if profile else (self._config if self._config is not None else legacy)
         return instance
 
     def route_output_form_values(self, parameters: dict[str, object]) -> dict[str, object]:
         config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **parameters})
+        profile = self._profiles.get(parameters.get("profile_id")) if isinstance(parameters.get("profile_id"), str) else None
+        if profile is not None:
+            config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **profile["config"]})
         return {"host": config.host if config is not None else "", "port": str(config.port if config is not None else DEFAULT_PORT), "power_on": config.power_on if config is not None else False, "startup_input": config.startup_input if config is not None else ""}
+
+    def get_plugin_ui(self) -> dict[str, object]:
+        selected = next(iter(self._profiles), "")
+        profile = self._profiles.get(selected)
+        values = self.route_output_form_values(dict(profile["config"]) if profile else {})
+        return plugin_ui_document("Configure Sony AVR volume", [{"id": "profile_id", "type": "select", "label": "Profile", "value": selected, "options": profile_options(self._profiles, include_new=True)}, {"id": "name", "type": "text", "label": "Profile name", "value": str(profile["name"]) if profile else "", "required": True}, {"id": "host", "type": "text", "label": "Host or IP address", "value": values["host"], "required": True}, {"id": "port", "type": "integer", "label": "TCP port", "value": int(values["port"]), "minimum": 1, "maximum": 65535, "required": True}], [{"id": "save", "label": "Save", "kind": "submit", "async": False}, {"id": "delete", "label": "Delete profile", "kind": "action", "async": False}], "Configure named receivers once under AVR. Routes select a profile.")
+
+    def invoke_plugin_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
+        if action_id == "delete":
+            profile_id = values.get("profile_id")
+            if not isinstance(profile_id, str) or profile_id not in self._profiles: raise ValueError("Select an AVR profile to delete.")
+            self._profiles.pop(profile_id)
+            if self._host is None: raise RuntimeError("Sony integration is not initialized.")
+            self._host.save_plugin_settings(save_payload(self._profiles))
+            self._config = None if not self._profiles else _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **next(iter(self._profiles.values()))["config"]})
+            return plugin_ui_result("complete", message="Sony AVR profile deleted.")
+        if action_id != "save": raise ValueError(f"Unknown Sony integration action {action_id!r}.")
+        profile_id = values.get("profile_id") if isinstance(values.get("profile_id"), str) else ""
+        profile_id = profile_id or new_profile_id()
+        name = str(values.get("name", "")).strip()
+        config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, "host": str(values.get("host", "")), "port": _parse_port(str(values.get("port", "")))})
+        if not name or config is None: raise ValueError("Enter a profile name, valid host, and TCP port.")
+        self._profiles[profile_id] = {"id": profile_id, "name": name, "config": {"host": config.host, "port": config.port}}
+        if self._host is None: raise RuntimeError("Sony integration is not initialized.")
+        self._host.save_plugin_settings(save_payload(self._profiles))
+        self._config = config
+        return plugin_ui_result("save", values={"profile_id": profile_id, "name": name, "host": config.host, "port": config.port}, message="Sony AVR profile saved.")
 
     def validate_route_output_form(self, host: str, port: str, power_on: object = False, startup_input: object = "") -> dict[str, object]:
         config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, "host": host, "port": _parse_port(port), "power_on": power_on, "startup_input": startup_input})
@@ -175,18 +216,14 @@ class SonyVolumePlugin:
         return {"host": config.host, "port": config.port, "power_on": config.power_on, "startup_input": config.startup_input}
 
     def get_route_output_ui(self, parameters: Mapping[str, object]) -> dict[str, object]:
-        values = self.route_output_form_values(dict(parameters))
-        return plugin_ui_document("Configure Sony route", [
-            {"id": "host", "type": "text", "label": "Host or IP address", "value": values["host"], "required": True},
-            {"id": "port", "type": "integer", "label": "TCP port", "value": int(values["port"]), "minimum": 1, "maximum": 65535, "required": True},
-            {"id": "power_on", "type": "boolean", "label": "Turn on when route activates", "value": values["power_on"]},
-            {"id": "startup_input", "type": "select", "label": "Input on activation", "value": values["startup_input"], "options": [{"label": label, "value": value} for label, value in INPUT_OPTIONS], "description": "The list spans known Sony Scalar Web API models; the receiver must advertise the selected URI."},
-        ], [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Connect this route to a receiver on your local network.")
+        return plugin_ui_document("Configure Sony route", [{"id": "profile_id", "type": "select", "label": "AVR profile", "value": parameters.get("profile_id", ""), "options": profile_options(self._profiles), "required": True}], [{"id": "save", "label": "Save", "kind": "submit", "async": False}], "Select an AVR profile configured under Integrations.")
 
     def invoke_ui_action(self, action_id: str, values: Mapping[str, object]) -> dict[str, object]:
         if action_id != "save":
             raise ValueError(f"Unknown Sony UI action {action_id!r}.")
-        return plugin_ui_result("save", values=self.validate_route_output_form(str(values.get("host", "")), str(values.get("port", "")), values.get("power_on", False), values.get("startup_input", "")))
+        profile_id = values.get("profile_id")
+        if not isinstance(profile_id, str) or profile_id not in self._profiles: raise ValueError("Select a configured AVR profile.")
+        return plugin_ui_result("save", values={"profile_id": profile_id})
 
     def route_output_summary(self, parameters: dict[str, object]) -> str:
         values = self.route_output_form_values(parameters)
@@ -200,27 +237,49 @@ class SonyVolumePlugin:
 
     def is_volume_provider_available(self) -> tuple[bool, str | None]:
         if self._config is None:
-            return False, "Configure a Sony network AVR in Routes."
+            return False, "Configure a Sony network AVR in Integrations."
         return True, None
 
     def activate_volume_provider(self) -> None:
-        config = self._config
-        if config is None or self._activation_complete or not (config.power_on or config.startup_input):
-            return
-        with self._lock:
-            if self._activation_complete:
-                return
-            if config.power_on:
-                self._request_locked("setPowerStatus", [{"status": True}], path="/sony/system")
-            if config.startup_input:
-                self._request_locked("setPlayContent", [{"uri": config.startup_input}], path="/sony/avContent")
-            self._activation_complete = True
+        return
 
     def deactivate_volume_provider(self) -> None:
         return
 
     def on_volume_topology_changed(self) -> None:
         return
+
+    def get_slot_actions(self):
+        return slot_actions()
+
+    def get_slot_ui(self, action_id, parameters):
+        return slot_ui(action_id, parameters, self._profiles, [{"label": label, "value": value} for label, value in INPUT_OPTIONS if value])
+
+    def invoke_slot_ui_action(self, action_id, ui_action_id, values):
+        if ui_action_id != "save":
+            raise ValueError("Unknown AVR action configuration action.")
+        normalized = normalize_slot_parameters(action_id, values, self._profiles, set(INPUT_VALUES) - {""})
+        return plugin_ui_result("save", values=normalized)
+
+    def slot_summary(self, action_id, parameters):
+        return slot_summary(action_id, parameters, self._profiles)
+
+    def run_slot(self, action_id, parameters):
+        values = normalize_slot_parameters(action_id, parameters, self._profiles, set(INPUT_VALUES) - {""})
+        config = _valid_config({"schema_version": CONFIG_SCHEMA_VERSION, **profile_config(values, self._profiles)})
+        previous = self._config
+        self._config = config
+        try:
+            if action_id == AVR_INPUT_ACTION:
+                result = self._request_locked("setInput", [{"uri": values["input"]}])
+            elif action_id == AVR_POWER_ON_ACTION:
+                result = self._request_locked("setPowerStatus", [{"status": "on"}])
+            else:
+                result = self._request_locked("setPowerStatus", [{"status": "off"}])
+            if not isinstance(result, list):
+                raise SonyError("The receiver returned an invalid automation response.")
+        finally:
+            self._config = previous
 
     def read_volume(self) -> int:
         with self._lock:
@@ -294,7 +353,7 @@ class SonyVolumePlugin:
     def _request_locked(self, method: str, params: list[object], *, path: str = "/sony/audio") -> object:
         config = self._config
         if config is None:
-            raise SonyError("Configure a Sony network AVR in Routes.")
+            raise SonyError("Configure a Sony network AVR in Integrations.")
         request_id = self._next_request_id
         self._next_request_id += 1
         body = json.dumps({"method": method, "params": params, "id": request_id, "version": "1.0"}, separators=(",", ":")).encode("ascii")

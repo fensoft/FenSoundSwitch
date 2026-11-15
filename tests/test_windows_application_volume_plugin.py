@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import threading
 from contextlib import nullcontext
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ from plugin_api import PLUGIN_API_VERSION, validate_plugin_ui_document, validate
 from plugins.windows_application_volume_plugin import (
     WindowsApplicationVolumePlugin,
     create_plugin,
+    _display_process_name,
     validate_parameters,
 )
 
@@ -23,6 +25,11 @@ PARAMETERS = {
 
 
 class WindowsApplicationVolumePluginTests(unittest.TestCase):
+    def test_display_process_name_hides_only_exe_extension(self) -> None:
+        self.assertEqual(_display_process_name("Discord.exe"), "Discord")
+        self.assertEqual(_display_process_name("DISCORD.EXE"), "DISCORD")
+        self.assertEqual(_display_process_name("Discord"), "Discord")
+
     def test_definition_and_parameters_follow_api_v4_shape(self) -> None:
         plugin = create_plugin()
         self.assertEqual(PLUGIN_API_VERSION, 4)
@@ -55,6 +62,15 @@ class WindowsApplicationVolumePluginTests(unittest.TestCase):
         self.assertNotIn("pid", value)
         self.assertIn("1 unambiguous", result["message"])
 
+    def test_old_flat_slot_parameters_still_run(self) -> None:
+        plugin = WindowsApplicationVolumePlugin()
+        with patch(
+            "plugins.windows_application_volume_plugin.core_audio.write_application_session_volume",
+            return_value=50,
+        ) as write:
+            plugin.run_slot("set-application-volume", {**PARAMETERS, "volume": 50})
+        write.assert_called_once_with(PARAMETERS["endpoint_id"], PARAMETERS["executable_path"], 50)
+
     def test_ui_and_save_are_valid_declarative_documents(self) -> None:
         plugin = WindowsApplicationVolumePlugin()
         validate_plugin_ui_document(plugin.get_route_output_ui(PARAMETERS))
@@ -62,6 +78,43 @@ class WindowsApplicationVolumePluginTests(unittest.TestCase):
         self.assertEqual(result["status"], "save")
         self.assertEqual(result["values"], PARAMETERS)
         self.assertIn("Player", plugin.route_output_summary(PARAMETERS))
+
+    def test_slot_ui_refresh_starts_background_discovery_on_each_open(self) -> None:
+        sessions = [
+            core_audio.RenderAudioSession(
+                "render-endpoint",
+                "Desk speakers",
+                PARAMETERS["executable_path"],
+                "player.exe",
+                "Player",
+            )
+        ]
+        started = threading.Event()
+        release = threading.Event()
+
+        def discover() -> list[core_audio.RenderAudioSession]:
+            started.set()
+            release.wait(2)
+            return sessions
+
+        plugin = WindowsApplicationVolumePlugin()
+        with patch(
+            "plugins.windows_application_volume_plugin.core_audio.enumerate_render_audio_sessions",
+            side_effect=discover,
+        ):
+            plugin.refresh_slot_ui("set-application-volume", {})
+            self.assertTrue(started.wait(1))
+            loading = plugin.get_slot_ui("set-application-volume", {})
+            self.assertEqual(loading["state"], "loading")
+
+            release.set()
+            thread = plugin._session_discovery_thread
+            if thread is not None:
+                thread.join(1)
+            ready = plugin.get_slot_ui("set-application-volume", {})
+
+        self.assertEqual(ready["state"] if "state" in ready else "ready", "ready")
+        self.assertEqual(len(ready["fields"][0]["options"]), 1)
 
     def test_route_operations_delegate_without_live_audio_access(self) -> None:
         plugin = WindowsApplicationVolumePlugin(PARAMETERS)

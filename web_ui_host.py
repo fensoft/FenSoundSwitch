@@ -26,6 +26,7 @@ from urllib.parse import unquote, urlsplit
 
 
 MAX_MESSAGE_BYTES = 64 * 1024
+MAX_RESPONSE_BYTES = 256 * 1024
 MAX_MESSAGE_DEPTH = 12
 MAX_COLLECTION_ITEMS = 256
 MAX_STRING_LENGTH = 16 * 1024
@@ -166,8 +167,8 @@ def _json_bytes(value: object) -> bytes:
     return encoded
 
 
-def _decode_json(payload: bytes) -> object:
-    if len(payload) > MAX_MESSAGE_BYTES:
+def _decode_json(payload: bytes, limit: int = MAX_MESSAGE_BYTES) -> object:
+    if len(payload) > limit:
         raise ProtocolError("Message exceeds the protocol limit.")
     try:
         value = json.loads(
@@ -225,7 +226,7 @@ def make_request(request_id: int, method: str, params: object) -> bytes:
 
 
 def parse_response(payload: bytes, request_id: int) -> object:
-    message = _decode_json(payload)
+    message = _decode_json(payload, MAX_RESPONSE_BYTES)
     if not isinstance(message, dict) or set(message) - {"id", "ok", "result", "error"}:
         raise ProtocolError("Response envelope is invalid.")
     if message.get("id") != request_id or not isinstance(message.get("ok"), bool):
@@ -318,7 +319,7 @@ class PipeBridge:
             except queue.Empty:
                 try:
                     if self._connection.poll(0):
-                        self._connection.recv_bytes(MAX_MESSAGE_BYTES)
+                        self._connection.recv_bytes(MAX_RESPONSE_BYTES)
                         raise ProtocolError("Unsolicited parent message.")
                 except (EOFError, OSError, ProtocolError) as exc:
                     self._disconnect(exc)
@@ -333,7 +334,7 @@ class PipeBridge:
                 while not self._connection.poll(max(0.0, deadline - time.monotonic())):
                     if time.monotonic() >= deadline:
                         raise ProtocolError("The application did not respond in time.")
-                item.result = parse_response(self._connection.recv_bytes(MAX_MESSAGE_BYTES), request_id)
+                item.result = parse_response(self._connection.recv_bytes(MAX_RESPONSE_BYTES), request_id)
             except RemoteError as exc:
                 item.error = exc
                 item.event.set()

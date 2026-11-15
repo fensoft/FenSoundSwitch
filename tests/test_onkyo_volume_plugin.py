@@ -111,18 +111,17 @@ class OnkyoVolumePluginTests(unittest.TestCase):
         with patch("plugins.onkyo_volume_plugin.socket.create_connection", return_value=fake):
             self.assertIsNone(plugin.write_volume_fast(75))
         self.assertEqual(fake.sent, [onkyo.encode_eiscp(b"!1MVL4B\r")])
+        self.assertFalse(fake.closed)
+        self.assertTrue(plugin.shutdown(0.1))
         self.assertTrue(fake.closed)
 
-    def test_activation_powers_on_and_selects_input_once(self) -> None:
-        fake = FakeSocket([])
+    def test_route_activation_does_not_control_power_or_input(self) -> None:
         plugin = onkyo.OnkyoVolumePlugin()
         plugin._config = onkyo.ReceiverConfig("receiver", power_on=True, startup_input="10")
-        with patch("plugins.onkyo_volume_plugin.socket.create_connection", return_value=fake) as connect:
+        with patch("plugins.onkyo_volume_plugin.socket.create_connection") as connect:
             plugin.activate_volume_provider()
             plugin.activate_volume_provider()
-        connect.assert_called_once()
-        self.assertEqual(fake.sent, [onkyo.encode_eiscp(b"!1PWR01\r"), onkyo.encode_eiscp(b"!1SLI10\r")])
-        self.assertTrue(fake.closed)
+        connect.assert_not_called()
 
 
 if __name__ == "__main__":
