@@ -160,7 +160,9 @@ MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
 MOD_WIN = 0x0008
 MOD_ALTGR = 0x0010
-ALLOWED_MODIFIERS = MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN | MOD_ALTGR
+MOD_LEFT_CONTROL = 0x0020
+MOD_RIGHT_CONTROL = 0x0040
+ALLOWED_MODIFIERS = MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN | MOD_ALTGR | MOD_LEFT_CONTROL | MOD_RIGHT_CONTROL
 MODIFIER_VIRTUAL_KEYS = frozenset((0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5))
 
 
@@ -168,6 +170,8 @@ _VIRTUAL_KEY_LABELS = {
     0x10: "Shift",
     0x11: "Ctrl",
     0x12: "Alt",
+    0xA2: "Left Ctrl",
+    0xA3: "Right Ctrl",
     0x5B: "Left Win",
     0x5C: "Right Win",
     0x08: "Backspace",
@@ -259,6 +263,8 @@ class HotkeySpec:
         parts: list[str] = []
         for flag, label in (
             (MOD_CONTROL, "Ctrl"),
+            (MOD_LEFT_CONTROL, "Left Ctrl"),
+            (MOD_RIGHT_CONTROL, "Right Ctrl"),
             (MOD_ALT, "Alt"),
             (MOD_ALTGR, "AltGr"),
             (MOD_SHIFT, "Shift"),

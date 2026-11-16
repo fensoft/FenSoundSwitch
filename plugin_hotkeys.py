@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from ctypes import wintypes
 from typing import Callable
 
-from plugin_api import MOD_ALT, MOD_ALTGR, MOD_CONTROL, MOD_SHIFT, MOD_WIN, HotkeySpec
+from plugin_api import MOD_ALT, MOD_ALTGR, MOD_CONTROL, MOD_LEFT_CONTROL, MOD_RIGHT_CONTROL, MOD_SHIFT, MOD_WIN, HotkeySpec
 from windows_platform import (
     HC_ACTION,
     HOOKPROC,
@@ -36,8 +36,8 @@ _MODIFIER_FLAGS = {
     0xA0: MOD_SHIFT,
     0xA1: MOD_SHIFT,
     0x11: MOD_CONTROL,
-    0xA2: MOD_CONTROL,
-    0xA3: MOD_CONTROL,
+    0xA2: MOD_LEFT_CONTROL,
+    0xA3: MOD_RIGHT_CONTROL,
     0x12: MOD_ALT,
     0xA4: MOD_ALT,
     0xA5: MOD_ALT,
@@ -234,13 +234,26 @@ class PluginHotkeyController:
         # physical chord as AltGr instead of Ctrl+Alt. A real left/right
         # Ctrl+Alt chord never has VK_RMENU held and remains unchanged.
         if 0xA5 in self._held_modifier_keys:
-            flags &= ~(MOD_ALT | MOD_CONTROL)
+            flags &= ~(MOD_ALT | MOD_CONTROL | MOD_LEFT_CONTROL | MOD_RIGHT_CONTROL)
             flags |= MOD_ALTGR
         return flags
 
     @staticmethod
     def _canonical_virtual_key(virtual_key: int) -> int:
+        if virtual_key in (0xA2, 0xA3):
+            return virtual_key
         return _CANONICAL_MODIFIER_KEYS.get(virtual_key, virtual_key)
+
+    @staticmethod
+    def _legacy_modifier_hotkey(hotkey: HotkeySpec) -> HotkeySpec | None:
+        modifiers = hotkey.modifiers
+        if modifiers & (MOD_LEFT_CONTROL | MOD_RIGHT_CONTROL):
+            modifiers = (modifiers & ~(MOD_LEFT_CONTROL | MOD_RIGHT_CONTROL)) | MOD_CONTROL
+        if hotkey.virtual_key in (0xA2, 0xA3) and not hotkey.modifiers:
+            return HotkeySpec(0, 0x11)
+        if modifiers != hotkey.modifiers:
+            return HotkeySpec(modifiers, hotkey.virtual_key)
+        return None
 
     def _resolve_pending_modifier_action(self, virtual_key: int, w_param: int) -> bool:
         """Resolve a Ctrl key action once we know whether Ctrl was AltGr's synthetic prefix."""
@@ -279,8 +292,13 @@ class PluginHotkeyController:
                         hotkey = HotkeySpec(self._current_modifiers(), virtual_key)
                     self._held_action_hotkeys[virtual_key] = hotkey
                     with self._binding_lock:
-                        plugin_id = self._plugins_by_hotkey.get((hotkey, "keypress"))
-                        route_binding = self._routes_by_hotkey.get(hotkey)
+                        lookup_hotkey = hotkey
+                        plugin_id = self._plugins_by_hotkey.get((lookup_hotkey, "keypress"))
+                        route_binding = self._routes_by_hotkey.get(lookup_hotkey)
+                        legacy_hotkey = self._legacy_modifier_hotkey(hotkey)
+                        if legacy_hotkey is not None:
+                            plugin_id = plugin_id or self._plugins_by_hotkey.get((legacy_hotkey, "keypress"))
+                            route_binding = route_binding or self._routes_by_hotkey.get(legacy_hotkey)
                         if route_binding is not None and self._active.is_set():
                             route = self._route_bindings[route_binding]
                             self._held_route_keys[virtual_key] = (route_binding, hotkey, route.consume)
@@ -341,6 +359,9 @@ class PluginHotkeyController:
                 release_hotkey = held_action_hotkey or HotkeySpec(self._current_modifiers(), self._canonical_virtual_key(virtual_key))
                 with self._binding_lock:
                     release_plugin = self._plugins_by_hotkey.get((release_hotkey, "keyrelease")) if not synthetic_ctrl else None
+                    legacy_hotkey = self._legacy_modifier_hotkey(release_hotkey)
+                    if release_plugin is None and legacy_hotkey is not None and not synthetic_ctrl:
+                        release_plugin = self._plugins_by_hotkey.get((legacy_hotkey, "keyrelease"))
                     action = self._bindings_by_plugin.get(release_plugin) if release_plugin else None
                 if action is not None and action.event == "keyrelease" and self._active.is_set():
                     self._dispatch_queue.put((release_plugin, "keyrelease"))

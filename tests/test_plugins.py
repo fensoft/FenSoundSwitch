@@ -11,7 +11,7 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from plugin_api import MOD_ALT, MOD_ALTGR, MOD_CONTROL, HotkeySpec, OverlayRenderer, PluginHostContext, ShortcutAction, SlotAction, VolumeStatus
+from plugin_api import MOD_ALT, MOD_ALTGR, MOD_CONTROL, MOD_LEFT_CONTROL, MOD_RIGHT_CONTROL, HotkeySpec, OverlayRenderer, PluginHostContext, ShortcutAction, SlotAction, VolumeStatus
 from plugin_hotkeys import HotkeyConflictError, HotkeyRegistrationError, PluginHotkeyController
 from windows_platform import HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP
 from plugin_manager import (
@@ -1338,6 +1338,10 @@ class PassiveHotkeyTests(unittest.TestCase):
         self.assertEqual(HotkeySpec(0, 0x20).label, "Space")
         self.assertEqual(HotkeySpec(0, 0xBA).label, "VK 0xBA")
         self.assertEqual(HotkeySpec(MOD_ALTGR, 0x79).label, "AltGr+F10")
+        self.assertEqual(HotkeySpec(0, 0xA2).label, "Left Ctrl")
+        self.assertEqual(HotkeySpec(0, 0xA3).label, "Right Ctrl")
+        self.assertEqual(HotkeySpec(MOD_LEFT_CONTROL, 0x79).label, "Left Ctrl+F10")
+        self.assertEqual(HotkeySpec(MOD_RIGHT_CONTROL, 0x79).label, "Right Ctrl+F10")
 
     def _key_event(
         self, controller: PluginHotkeyController, message: int, virtual_key: int
@@ -1377,6 +1381,38 @@ class PassiveHotkeyTests(unittest.TestCase):
             self._key_event(controller, WM_KEYDOWN, 0xA3)
             self._key_event(controller, WM_KEYUP, 0xA3)
         self.assertEqual(controller._dispatch_queue.get_nowait(), ("keyrelease", "keyrelease"))
+
+    def test_left_and_right_ctrl_actions_are_distinct(self) -> None:
+        controller = self.make_controller()
+        controller._hook_handle = 99
+        controller._active.set()
+        controller._apply_binding("left", HotkeySpec(0, 0xA2))
+        controller._apply_binding("right", HotkeySpec(0, 0xA3))
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=47):
+            self._key_event(controller, WM_KEYDOWN, 0xA2)
+            self._key_event(controller, WM_KEYUP, 0xA2)
+            self._key_event(controller, WM_KEYDOWN, 0xA3)
+            self._key_event(controller, WM_KEYUP, 0xA3)
+        self.assertEqual(controller._dispatch_queue.get_nowait(), "left")
+        self.assertEqual(controller._dispatch_queue.get_nowait(), "right")
+
+    def test_left_and_right_ctrl_chords_are_distinct(self) -> None:
+        controller = self.make_controller()
+        controller._hook_handle = 99
+        controller._active.set()
+        controller._apply_binding("left", HotkeySpec(MOD_LEFT_CONTROL, 0x79))
+        controller._apply_binding("right", HotkeySpec(MOD_RIGHT_CONTROL, 0x79))
+        with patch("plugin_hotkeys.user32.CallNextHookEx", return_value=47):
+            self._key_event(controller, WM_KEYDOWN, 0xA2)
+            self._key_event(controller, WM_SYSKEYDOWN, 0x79)
+            self._key_event(controller, WM_SYSKEYUP, 0x79)
+            self._key_event(controller, WM_KEYUP, 0xA2)
+            self._key_event(controller, WM_KEYDOWN, 0xA3)
+            self._key_event(controller, WM_SYSKEYDOWN, 0x79)
+            self._key_event(controller, WM_SYSKEYUP, 0x79)
+            self._key_event(controller, WM_KEYUP, 0xA3)
+        self.assertEqual(controller._dispatch_queue.get_nowait(), "left")
+        self.assertEqual(controller._dispatch_queue.get_nowait(), "right")
 
     def test_inter_plugin_conflict_is_rejected_before_the_os_call(self) -> None:
         controller = self.make_controller()

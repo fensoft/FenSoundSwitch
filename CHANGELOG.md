@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file.
 
 No changes yet.
 
+## [1.3.1] - 2026-11-16
+
+### Fixed
+
+- Fixed AltGr handling so its synthetic Ctrl events do not trigger Ctrl key-press or key-release actions.
+- Added distinct Left Ctrl and Right Ctrl capture and matching for standalone shortcuts and key combinations, while preserving compatibility with generic Ctrl shortcuts.
+- Fixed key-release matching when modifier keys are released before the configured key.
+- Fixed release-build packaging metadata to accept patched Python 3.10.x interpreters while continuing to reject Python 3.11 and newer.
+
 ## [1.3.0] - 2026-11-15
 
 ### Added

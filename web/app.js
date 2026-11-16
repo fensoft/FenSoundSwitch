@@ -72,12 +72,14 @@ function hotkeyLabel(value) {
   if (!value || typeof value !== "object") return t("common.notSet");
   const parts = [];
   if (value.modifiers & 2) parts.push(sourceText("Ctrl"));
+  if (value.modifiers & 32) parts.push(sourceText("Left Ctrl"));
+  if (value.modifiers & 64) parts.push(sourceText("Right Ctrl"));
   if (value.modifiers & 1) parts.push(sourceText("Alt"));
   if (value.modifiers & 4) parts.push(sourceText("Shift"));
   if (value.modifiers & 8) parts.push(sourceText("Win"));
   if (value.modifiers & 16) parts.push(sourceText("AltGr"));
   const key = Number(value.virtual_key);
-  const names = { 8: "Backspace", 9: "Tab", 13: "Enter", 16: "Shift", 17: "Ctrl", 18: "Alt", 19: "Pause", 20: "Caps Lock", 27: "Escape", 32: "Space", 33: "Page Up", 34: "Page Down", 35: "End", 36: "Home", 37: "Left", 38: "Up", 39: "Right", 40: "Down", 44: "Print Screen", 45: "Insert", 46: "Delete", 91: "Left Win", 92: "Right Win", 93: "Menu", 144: "Num Lock", 145: "Scroll Lock" };
+  const names = { 8: "Backspace", 9: "Tab", 13: "Enter", 16: "Shift", 17: "Ctrl", 18: "Alt", 19: "Pause", 20: "Caps Lock", 27: "Escape", 32: "Space", 33: "Page Up", 34: "Page Down", 35: "End", 36: "Home", 37: "Left", 38: "Up", 39: "Right", 40: "Down", 44: "Print Screen", 45: "Insert", 46: "Delete", 91: "Left Win", 92: "Right Win", 93: "Menu", 144: "Num Lock", 145: "Scroll Lock", 160: "Left Shift", 161: "Right Shift", 162: "Left Ctrl", 163: "Right Ctrl", 164: "Left Alt", 165: "Right Alt" };
   parts.push(sourceText(names[key]) || (key >= 65 && key <= 90 ? String.fromCharCode(key) : key >= 48 && key <= 57 ? String.fromCharCode(key) : key >= 96 && key <= 105 ? `${sourceText("Numpad")} ${key - 96}` : key >= 112 && key <= 135 ? `F${key - 111}` : `VK 0x${key.toString(16).toUpperCase().padStart(2, "0")}`));
   return parts.join("+");
 }
@@ -91,7 +93,7 @@ function virtualKeyFromEvent(event) {
   if (match) return 48 + Number(match[1]);
   match = /^Numpad([0-9])$/.exec(code);
   if (match) return 96 + Number(match[1]);
-  const named = { Enter: 13, Escape: 27, Space: 32, PageUp: 33, PageDown: 34, End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Insert: 45 };
+  const named = { Enter: 13, Escape: 27, Space: 32, PageUp: 33, PageDown: 34, End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Insert: 45, ShiftLeft: 160, ShiftRight: 161, ControlLeft: 162, ControlRight: 163, AltLeft: 164, AltRight: 165 };
   return named[code] || Number(event.keyCode || event.which || 0);
 }
 
@@ -782,11 +784,14 @@ function renderHotkeyInput(id, current) {
     const virtualKey = virtualKeyFromEvent(event);
     if (!virtualKey) return;
     const altGraph = event.getModifierState?.("AltGraph") === true;
-    const isModifierKey = [16, 17, 18, 91, 92].includes(virtualKey);
-    const value = { modifiers: isModifierKey ? 0 : (altGraph ? 16 : 0) | (!altGraph && event.altKey ? 1 : 0) | (!altGraph && event.ctrlKey ? 2 : 0) | (event.shiftKey ? 4 : 0) | (event.metaKey ? 8 : 0), virtual_key: virtualKey };
+    const isModifierKey = [16, 17, 18, 91, 92, 160, 161, 162, 163, 164, 165].includes(virtualKey);
+    if (virtualKey === 162) input.dataset.controlSide = "left";
+    if (virtualKey === 163) input.dataset.controlSide = "right";
+    const controlModifier = input.dataset.controlSide === "left" ? 32 : input.dataset.controlSide === "right" ? 64 : (!altGraph && event.ctrlKey ? 2 : 0);
+    const value = { modifiers: isModifierKey ? 0 : (altGraph ? 16 : 0) | controlModifier | (!altGraph && event.altKey ? 1 : 0) | (event.shiftKey ? 4 : 0) | (event.metaKey ? 8 : 0), virtual_key: virtualKey };
     input.dataset.hotkey = JSON.stringify(value); input.value = hotkeyLabel(value);
   }, true);
-  input.addEventListener("keyup", event => { event.preventDefault(); event.stopPropagation(); }, true);
+  input.addEventListener("keyup", event => { event.preventDefault(); event.stopPropagation(); if (event.code === "ControlLeft" || event.code === "ControlRight") input.dataset.controlSide = ""; }, true);
   return input;
 }
 
