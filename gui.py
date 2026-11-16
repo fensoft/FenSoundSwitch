@@ -79,11 +79,20 @@ from native_platform import (
     get_user_default_locale_name,
 )
 from web_presentation import PresentationSnapshot, UserActionError, WebPresentationController
+from updater import (
+    DownloadedUpdate,
+    ReleaseUpdate,
+    check_for_update,
+    download_update,
+    is_update_supported,
+    launch_installer,
+)
 
 
 RefreshResult: TypeAlias = tuple[list[MonitorRef], SelectionMatch, int | None, Exception | None]
 WriteResult: TypeAlias = tuple[list[MonitorRef], int, int, SavedMonitorSelection]
 LOGGER = get_logger(__name__)
+UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 
 class MonitorSelectionUnavailable(RuntimeError):
@@ -262,6 +271,198 @@ class MonitorVolumeApp:
         self._start_keyboard_listener()
         self._poll_after_id = self.root.after(50, self._poll_queues)
         self._refresh_after_id = self.root.after(50, self.refresh_configured_routes)
+        self._initialize_updates()
+
+    def _initialize_updates(self) -> None:
+        self._update_supported = is_update_supported(APP_VERSION)
+        self._update_state = "idle"
+        self._update_busy = False
+        self._available_update: ReleaseUpdate | None = None
+        self._notified_update_versions: set[str] = set()
+        self._update_cancel = threading.Event()
+        self._update_download_lock = threading.Lock()
+        self._update_downloaded: DownloadedUpdate | None = None
+        self._update_after_id: str | None = None
+        self._update_prompt_after_id: str | None = None
+        self._update_error_after_id: str | None = None
+        if self._update_supported:
+            self._update_after_id = self.root.after(5000, self._scheduled_update_check)
+
+    def _update_snapshot(self) -> dict[str, object]:
+        release = getattr(self, "_available_update", None)
+        return {
+            "supported": getattr(self, "_update_supported", False),
+            "state": getattr(self, "_update_state", "idle"),
+            "version": release.version if release is not None else None,
+        }
+
+    def _schedule_next_update_check(self) -> None:
+        if not self._closing and self._update_supported:
+            self._update_after_id = self.root.after(
+                UPDATE_CHECK_INTERVAL_MS, self._scheduled_update_check,
+            )
+
+    def _scheduled_update_check(self) -> None:
+        self._update_after_id = None
+        if self._closing:
+            return
+        if self._update_busy:
+            self._schedule_next_update_check()
+        else:
+            self.check_for_updates()
+
+    def check_for_updates(self, *, manual: bool = False) -> None:
+        if self._closing or self._update_busy:
+            return
+        if not self._update_supported:
+            if manual:
+                self._set_status(tr("update.unsupported"))
+            return
+        if self._update_after_id is not None:
+            self.root.after_cancel(self._update_after_id)
+            self._update_after_id = None
+        self._update_busy = True
+        self._update_state = "checking"
+        if manual:
+            self._set_status(tr("update.checking"))
+
+        def worker() -> None:
+            try:
+                release = check_for_update(APP_VERSION, self._update_cancel)
+            except Exception as exc:
+                self._post_to_ui(lambda error=exc: self._finish_update_check(None, error, manual))
+            else:
+                self._post_to_ui(lambda: self._finish_update_check(release, None, manual))
+
+        try:
+            threading.Thread(target=worker, daemon=True, name="update-check").start()
+        except Exception as exc:
+            self._finish_update_check(None, exc, manual)
+
+    def _finish_update_check(
+        self, release: ReleaseUpdate | None, error: Exception | None, manual: bool,
+    ) -> None:
+        if self._closing:
+            return
+        self._update_busy = False
+        self._schedule_next_update_check()
+        if error is not None:
+            self._update_failed(error, notify=manual)
+            return
+        self._available_update = release
+        self._update_state = "available" if release is not None else "current"
+        if release is None:
+            if manual:
+                self._set_status(tr("update.current"))
+        elif manual or release.version not in self._notified_update_versions:
+            self.install_available_update()
+
+    def install_available_update(self) -> None:
+        if self._closing or self._update_busy or not self._update_supported:
+            return
+        release = self._available_update
+        if release is None:
+            return
+        # Latch before entering the modal Tk loop, which can process more events.
+        self._notified_update_versions.add(release.version)
+        self._update_busy = True
+        # Let the web action and queue drain finish before opening a modal. The
+        # next queue poll is then already scheduled while the dialog is open.
+        try:
+            self._update_prompt_after_id = self.root.after_idle(
+                lambda: self._confirm_available_update(release),
+            )
+        except Exception as exc:
+            self._update_failed(exc, notify=False)
+
+    def _confirm_available_update(self, release: ReleaseUpdate) -> None:
+        self._update_prompt_after_id = None
+        if self._closing:
+            return
+        try:
+            accepted = messagebox.askyesno(
+                tr("update.title"), tr("update.prompt").format(version=release.version),
+                parent=self.root,
+            )
+        finally:
+            self._update_busy = False
+        if not accepted or self._closing:
+            return
+        self._update_busy = True
+        self._update_state = "downloading"
+        self._set_status(tr("update.downloading"))
+
+        def worker() -> None:
+            try:
+                downloaded = download_update(release, self._update_cancel)
+            except Exception as exc:
+                self._post_to_ui(lambda error=exc: self._update_failed(error, notify=True))
+                return
+            # Transfer ownership under a lock so shutdown cannot miss a late file.
+            with self._update_download_lock:
+                if self._update_cancel.is_set():
+                    downloaded.cleanup()
+                    return
+                self._update_downloaded = downloaded
+                self._post_to_ui(self._finish_update_download)
+
+        try:
+            threading.Thread(target=worker, daemon=True, name="update-download").start()
+        except Exception as exc:
+            self._update_failed(exc, notify=True)
+
+    def _finish_update_download(self) -> None:
+        if self._closing:
+            return
+        with self._update_download_lock:
+            downloaded = self._update_downloaded
+            self._update_downloaded = None
+        if downloaded is None:
+            return
+        try:
+            launch_installer(downloaded)
+        except Exception as exc:
+            downloaded.cleanup()
+            self._update_failed(exc, notify=True)
+            return
+        # Windows Installer owns the staged MSI from here. Keep it on disk.
+        self._update_state = "installing"
+        self.on_close()
+
+    def _update_failed(self, error: Exception, *, notify: bool) -> None:
+        if self._closing:
+            return
+        self._update_busy = False
+        self._update_state = "error"
+        LOGGER.warning("Update failed (%s).", error.__class__.__name__)
+        if notify:
+            self._set_status(tr("update.failed"))
+            self._update_error_after_id = self.root.after_idle(self._show_update_error)
+
+    def _show_update_error(self) -> None:
+        self._update_error_after_id = None
+        if not self._closing:
+            messagebox.showerror("FenSoundSwitch", tr("update.failed"), parent=self.root)
+
+    def _stop_updates(self) -> None:
+        cancel = getattr(self, "_update_cancel", None)
+        if cancel is None:
+            return
+        cancel.set()
+        if self._update_after_id is not None:
+            self.root.after_cancel(self._update_after_id)
+            self._update_after_id = None
+        if self._update_prompt_after_id is not None:
+            self.root.after_cancel(self._update_prompt_after_id)
+            self._update_prompt_after_id = None
+        if self._update_error_after_id is not None:
+            self.root.after_cancel(self._update_error_after_id)
+            self._update_error_after_id = None
+        with self._update_download_lock:
+            downloaded = self._update_downloaded
+            self._update_downloaded = None
+        if downloaded is not None:
+            downloaded.cleanup()
 
     def _build_widgets(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -1039,7 +1240,7 @@ class MonitorVolumeApp:
             post_to_ui=self._post_to_ui,
             get_snapshot=self._web_snapshot,
             dispatch_action=self._dispatch_localized_web_action,
-            allowed_actions={"route.save", "route.endpoint-form", "route.endpoint-action", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "avr.profile.save", "avr.profile.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh"},
+            allowed_actions={"route.save", "route.endpoint-form", "route.endpoint-action", "route.delete", "signal.save", "signal.delete", "signal.run", "slot.ui", "slot.action", "slot.save", "mqtt.profile.save", "mqtt.profile.delete", "avr.profile.save", "avr.profile.delete", "action.save", "plugin.action", "appearance.save", "settings.save", "config.export", "config.import", "config.restore-default", "diagnostics.refresh", "update.check", "update.install"},
             on_exit=self.on_close,
             on_minimize=self._on_web_minimize,
             on_visibility=self._on_web_visibility,
@@ -1241,6 +1442,7 @@ class MonitorVolumeApp:
             else "Launch quietly in the notification area when you sign in."
         )
         snapshot = {"presentation": {"visible": self._presentation_requested_visible}, "application": {"name": "FenSoundSwitch", "version": APP_VERSION}, "routes": routes, "signals": signals, "integrations": integrations, "mqtt_profiles": mqtt_profiles, "avr_profiles": avr_profiles, "avr_profile_form": avr_profile_form, "appearance": {"renderers": renderers}, "settings": {"start_with_windows": bool(self.start_with_windows_var.get()), "startup_label": startup_label, "startup_description": startup_description, "ui_language": self.ui_language_preference, "resolved_ui_language": self.ui_language, "language_options": [{"value": "auto", "label": "Automatic (Windows language)"}, {"value": "en", "label": "English"}, {"value": "de", "label": "Deutsch"}, {"value": "es", "label": "Español"}, {"value": "fr", "label": "Français"}, {"value": "it", "label": "Italiano"}], "configuration_directory": str(configuration_directory()), "recent_configurations": recent_archives}, "diagnostics": {"status": "Ready", "summary": self.status_var.get(), "text": diagnostic_text}, "forms": {"route": {"method": "route.save", "fields": [{"key": "name", "type": "text", "label": "Route name", "required": True}, {"key": "route_type", "type": "select", "label": "Type", "required": True, "default": "other", "options": [{"value": value, "label": label} for value, label in ROUTE_TYPE_LABELS.items()]}, {"key": "input_id", "type": "select", "label": "Input", "required": True, "options": inputs}, {"key": "provider_id", "type": "select", "label": "Output", "required": True, "options": outputs}]}, "signal": signal_form, "mqtt_profile": mqtt_profile_form}}
+        snapshot["application"]["update"] = self._update_snapshot()
         return PresentationSnapshot(self._presentation_revision, snapshot)
 
     def _dispatch_localized_web_action(self, action: str, arguments: Mapping[str, Any]) -> Any:
@@ -1264,6 +1466,12 @@ class MonitorVolumeApp:
         return localized
 
     def _dispatch_web_action(self, action: str, arguments: Mapping[str, Any]) -> Any:
+        if action == "update.check":
+            self.check_for_updates(manual=True)
+            return {"accepted": True}
+        if action == "update.install":
+            self.install_available_update()
+            return {"accepted": True}
         manager = self._plugin_manager
         response: dict[str, object] | None = None
         if action == "route.endpoint-form":
@@ -3532,6 +3740,7 @@ class MonitorVolumeApp:
             return
         self._cancel_route_repeats()
         self._closing = True
+        self._stop_updates()
         presentation = getattr(self, "_presentation", None)
         if presentation is not None:
             presentation.shutdown()

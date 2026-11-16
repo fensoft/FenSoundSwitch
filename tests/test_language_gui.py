@@ -51,6 +51,20 @@ class LanguageGUITests(unittest.TestCase):
         app.set_start_with_windows_enabled = Mock()
         return app
 
+    def test_update_prompts_preserve_version_and_explain_installer_handoff(self) -> None:
+        for language in ("en", "de", "es", "fr", "it"):
+            set_language(language)
+            with self.subTest(language=language):
+                prompt = tr("update.prompt").format(version="1.2.3")
+                self.assertIn("FenSoundSwitch 1.2.3", prompt)
+                self.assertNotIn("{version}", prompt)
+                self.assertNotEqual(tr("update.title"), "update.title")
+                self.assertNotEqual(tr("update.unsupported"), "update.unsupported")
+        set_language("en")
+        self.assertIn("FenSoundSwitch will close for installation", tr("update.prompt"))
+        self.assertIn("administrator permission", tr("update.prompt"))
+        self.assertIn("Start Menu after installation", tr("update.prompt"))
+
     def test_language_save_does_not_change_autostart_and_recomputes_auto(self) -> None:
         app = self.make_app()
         with patch("gui.save_ui_language") as save, patch(

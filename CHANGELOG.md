@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 No changes yet.
 
+## [1.4.0] - 2026-11-16
+
+### Added
+
+- Added update notifications and About-page checks for packaged Windows releases. Accepting downloads the latest stable MSI, verifies its size and GitHub SHA-256 digest, opens Windows Installer, and closes the app cleanly; declining downloads nothing. Source and `dev` builds and macOS do not install updates.
+- Added descriptive Windows volume-mixer names for playback and voice-output keep-alive sessions.
+
+### Changed
+
+- Reuse one keep-alive stream when playback and voice output share the same Windows audio endpoint.
+
 ## [1.3.1] - 2026-11-16
 
 ### Fixed
@@ -98,10 +109,11 @@ No changes yet.
 - Added background DDC reads, serialized/coalesced rapid writes, Python 3.10+ packaging metadata, and a console-free Nuitka build.
 - Added the supported `app.py` launcher, the rejecting `main.py` stub, setup/build documentation, screenshots, and the published `FenSoundSwitch.exe` release asset.
 
-[Unreleased]: https://github.com/fensoft/windows-ddc/compare/1.3.0...HEAD
-[1.3.0]: https://github.com/fensoft/windows-ddc/compare/1.2.0...1.3.0
-[1.2.0]: https://github.com/fensoft/windows-ddc/compare/1.1.0...1.2.0
-[1.1.0]: https://github.com/fensoft/windows-ddc/compare/1.0.1...1.1.0
-[1.0.1]: https://github.com/fensoft/windows-ddc/compare/1.0.0...1.0.1
-[1.0.0]: https://github.com/fensoft/windows-ddc/compare/0.1.0...1.0.0
-[0.1.0]: https://github.com/fensoft/windows-ddc/releases/tag/0.1.0
+[Unreleased]: https://github.com/fensoft/FenSoundSwitch/compare/1.4.0...HEAD
+[1.4.0]: https://github.com/fensoft/FenSoundSwitch/compare/1.3.0...1.4.0
+[1.3.0]: https://github.com/fensoft/FenSoundSwitch/compare/1.2.0...1.3.0
+[1.2.0]: https://github.com/fensoft/FenSoundSwitch/compare/1.1.0...1.2.0
+[1.1.0]: https://github.com/fensoft/FenSoundSwitch/compare/1.0.1...1.1.0
+[1.0.1]: https://github.com/fensoft/FenSoundSwitch/compare/1.0.0...1.0.1
+[1.0.0]: https://github.com/fensoft/FenSoundSwitch/compare/0.1.0...1.0.0
+[0.1.0]: https://github.com/fensoft/FenSoundSwitch/releases/tag/0.1.0

@@ -618,7 +618,26 @@ function renderAbout() {
   const application = state.snapshot.application && typeof state.snapshot.application === "object" ? state.snapshot.application : {};
   const name = safeText(application.name, "FenSoundSwitch");
   const version = safeText(application.version, "dev");
-  content.replaceChildren(element("section", { class: "card about-card" }, [
+  const update = application.update && typeof application.update === "object" ? application.update : {};
+  const supported = update.supported === true;
+  const updateState = safeText(update.state, "idle");
+  const latestVersion = safeText(update.version).trim();
+  const busy = updateState === "checking" || updateState === "downloading";
+  const canInstall = supported && (updateState === "available" || updateState === "error") && Boolean(latestVersion);
+  const renderKey = JSON.stringify([name, version, state.language, supported, updateState, latestVersion]);
+  if (content.querySelector("[data-about-state]")?.dataset.aboutState === renderKey) return;
+  const statusKey = !supported ? "update.unsupported" : updateState === "checking" ? "update.checking" : updateState === "downloading" ? "update.downloading" : updateState === "current" ? "update.current" : updateState === "error" ? "update.failed" : canInstall ? "update.available" : "update.idle";
+  const updateButtons = [];
+  if (supported) {
+    updateButtons.push(element("button", { class: "secondary", type: "button", text: t("update.check"), disabled: busy ? "" : null, onclick: () => execute("update.check", {}) }));
+    if (canInstall || updateState === "downloading") updateButtons.push(element("button", { class: "primary", type: "button", text: t("update.install"), disabled: busy ? "" : null, onclick: () => execute("update.install", {}) }));
+  }
+  const updates = element("section", { class: "card" }, [element("div", { class: "card-body" }, [
+    element("h3", { text: t("update.heading") }),
+    element("p", { class: "muted", role: "status", "aria-live": "polite", text: t(statusKey, { version: latestVersion }) }),
+    element("div", { class: "button-row" }, updateButtons)
+  ])]);
+  const identity = element("section", { class: "card about-card", "data-about-state": renderKey }, [
     element("span", { class: "about-mark", "aria-hidden": "true", text: "F" }),
     element("div", { class: "about-copy" }, [
       element("p", { class: "eyebrow", text: t("about.eyebrow") }),
@@ -626,7 +645,8 @@ function renderAbout() {
       element("p", { class: "about-version", text: t("about.version", { version }) }),
       element("p", { class: "muted", text: t("about.description") })
     ])
-  ]));
+  ]);
+  content.replaceChildren(element("div", { class: "stack" }, [identity, updates]));
 }
 
 function openEntityEditor(kind, entity) {

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fensoundswitch"
-version = "0.1.0"
+version = "1.4.0"
 description = "FenSoundSwitch route-based monitor and network receiver volume controller."
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
@@ -37,6 +37,7 @@ py-modules = [
     "ddc",
     "settings",
     "theme",
+    "updater",
     "plugin_api",
     "plugin_hotkeys",
     "plugin_manager",

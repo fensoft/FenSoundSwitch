@@ -9,6 +9,7 @@ These instructions apply to the entire repository. Keep this file operational an
 - Runtime dependencies: `Pillow==10.1.0`, `monitorcontrol==4.2.0`, `paho-mqtt==2.1.0`, `pywebview==6.1`, and `pythonnet==3.0.5`. Optional executable builder: `Nuitka==4.2`.
 - The app is an interactive current-user process, not a service. It has no HTTP/API server, listening port, database, application account system, external broker/job queue, cron, or telemetry. The bundled Discord plugin is an OAuth client for Discord's HTTPS token endpoint and local named pipe.
 - The global Volume Down/Up hook, passive plugin shortcut observer, Discord voice-output changes, physical DDC volume/input/brightness/contrast writes, application-session and endpoint changes, outbound HTTP actions, power-plan changes, and elevated FenSound rename are safety-sensitive. Do not launch the app or call live monitor/audio/network/Discord/power operations as routine automated validation.
+- Packaged numeric-version Windows releases check official GitHub release metadata after startup and daily, then require a Tk confirmation before downloading or installing the latest stable MSI. Never use live release requests, downloads, or installer launch as automated validation; mock updater network, temporary-file, and Windows Installer boundaries.
 - There is a standard-library unit-test suite for fail-safe and registered hotkeys, plugin discovery/isolation, mocked Discord credentials/OAuth/restoration, stable identity/settings, Change speed persistence, autostart, diagnostics, display invalidation, revalidation, fail-closed audio-output matching, single-instance behavior, overlay focus safety, live theme/accessibility/scaling, resilience, CI safety, and tray recovery. GitHub Actions runs hardware-free checks on Windows for Python 3.10. There is no lint, format, type-check, or third-party test-framework configuration. State those limitations accurately.
 
 ## Runtime Shape
@@ -33,6 +34,7 @@ Always preserve Tk's thread affinity. Never call Tk methods from tray, hook, or 
 | --- | --- |
 | `app.py` | Supported process entrypoint, single-instance boundary, and Tk composition root. |
 | `app_version.py` | Loads the build-injected version resource and defaults source/local execution to `dev`. |
+| `updater.py` | Bounded official GitHub release checks, strict newer-version/MSI selection, temporary downloads, size/SHA-256 verification, and Windows Installer handoff. |
 | `audio_outputs.py` | Fail-closed monitor/render-endpoint matching, endpoint visibility policy, and fixed FenSound elevated rename helper. |
 | `bluetooth_audio.py` | Paired Windows Bluetooth device discovery and active render-endpoint resolution for Bluetooth volume routes. |
 | `core_audio.py` | Focused Core Audio endpoint/session enumeration and volume adapter for soundcard, capture-gain, and exact-application route workers, explicit default-role changes, and silent WASAPI keep-alive streams. |
@@ -96,6 +98,7 @@ Changes to the icon name or location must update `theme.APP_ICON_PATH`, `--windo
 - The Windows soundcard route adapter may enumerate or change only its explicitly selected render endpoint from route/configuration workers. Never invoke it in automated tests without mocks; it must not alter endpoint visibility, names, or defaults.
 - Plugin JSON lives under `%APPDATA%\fensoundswitch\plugin-settings`; the MQTT plugin's named profiles include optional broker credentials, while Discord OAuth secrets remain Credential Manager-only. Valid legacy JSON is copied without changing `%APPDATA%\windows-ddc`. External executable code is discovered from adjacent `external-plugins\`, `%APPDATA%\fensoundswitch\plugins`, then the legacy trusted `%APPDATA%\windows-ddc\plugins` fallback. Patch these paths to temporary directories in tests and never import untrusted fixtures from a live user directory.
 - Discord client configuration, client secret, access token, and refresh token live only in current-user Windows Credential Manager target `fensoundswitch/plugins/discord-output/oauth-rpc`; valid legacy `windows-ddc` and prototype targets are copied but never deleted. Never read, write, delete, or reset live credentials in automated work. Mock credential, browser, pipe, and HTTPS functions. Never include secrets/tokens in source, screenshots, fixtures, logs, or documentation.
+- Updater downloads use unique OS temporary directories, never settings or install directories. Workers remove incomplete, rejected, failed, or cooperatively cancelled downloads; retain an MSI successfully handed to Windows Installer for installation and eventual OS cleanup. Shutdown signals cancellation without waiting for network workers; a daemon terminated before cleanup may leave temporary files for OS cleanup. Never scan user temporary directories or block shutdown to collect them. Never run an updater check or installer against live user state in tests.
 
 There is no database and no migration command. If the settings schema changes, implement backward-compatible loading or an explicit migration, update README and architecture examples, and test old, missing, malformed, and new formats.
 
@@ -115,7 +118,7 @@ Do not call `enumerate_monitors()`, DDC reads/writes, live audio enumeration/rec
 
 There is no deploy, signing, or local publish command. The Release workflow publishes the MSI only for pushed tags. Do not push, tag, upload a release, or publish a package without explicit user authorization.
 
-CI is validation-only. Keep it free of `python app.py`, live controller `start()` calls, Discord credential/browser/pipe/network access, monitor/audio enumeration or mutation, build-script execution, artifacts, signing, publishing, and deployment.
+CI is validation-only. Keep it free of `python app.py`, live controller `start()` calls, Discord credential/browser/pipe/network access, updater network/download/installer calls, monitor/audio enumeration or mutation, build-script execution, artifacts, signing, publishing, and deployment.
 
 ## API Shape
 
@@ -151,7 +154,7 @@ Run these low-risk validation checks from the repository root:
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m compileall -q app.py app_version.py audio_outputs.py autostart.py core_audio.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py web_presentation.py web_ui_host.py windows_platform.py plugins
+python -m compileall -q app.py app_version.py audio_outputs.py autostart.py core_audio.py ddc.py diagnostics.py gui.py main.py plugin_api.py plugin_hotkeys.py plugin_manager.py settings.py theme.py updater.py web_presentation.py web_ui_host.py windows_platform.py plugins
 python -m pip check
 git diff --check
 git diff --cached --check
@@ -198,6 +201,7 @@ GUI, tray, hook, theme, or DDC changes require an authorized Windows/manual pass
 - exact, one-placeholder inference, and ambiguous audio matching; selected-output re-enable before other-screen hiding; unrelated headphones/speakers untouched; FenSound elevation approval/cancellation and restart retry; selection switching and persistence after exit;
 - disconnect/stale-handle behavior without leaving keys unexpectedly consumed.
 - shutdown during a Discord switch restores before pipe closure when possible and reports a bounded plugin stop failure otherwise.
+- authorized packaged-version update notification accept/decline, About check/retry, download failure, installer handoff, normal installer consent/cancellation, and Start Menu relaunch; do not install an update as routine manual GUI validation.
 
 Manual DDC tests can be audible and mutate monitor state. Record what was actually exercised; do not imply hardware or OS coverage that was not run.
 
@@ -206,6 +210,7 @@ Manual DDC tests can be audible and mutate monitor state. Record what was actual
 - Do not perform blocking DDC work on the Tk thread.
 - Do not mutate Tk state directly from another thread. Keep callbacks small and exception-safe so `_poll_queues()` continues rescheduling itself.
 - Keep all plugin imports/discovery and Credential Manager reads after the primary-instance/Tk boundary; duplicate launches must never execute external plugin code or touch Discord credentials.
+- Keep updater checks after the primary-instance/Tk boundary and disabled for source, `dev`, and non-Windows runs. Network work stays off Tk and returns through `_post_to_ui()`; notifications and acceptance stay on Tk. Require explicit acceptance before downloading, official latest-stable metadata and exact `FenSoundSwitch.msi` asset, bounded exact size and GitHub SHA-256 verification before installer launch, and successful handoff before clean shutdown. Preserve visible installer UI/admin consent, cancellation on app shutdown, failure retry, and unchanged settings.
 - Treat external plugins as trusted unsandboxed current-user code, auto-load them only from adjacent `external-plugins\` and per-user `plugins\` after direct bundled-package imports, reject later duplicate IDs, and isolate each load/initialize/trigger failure from monitor control.
 - Keep plugin shortcut observation separate from `GlobalVolumeKeyListener`: action shortcuts, action signals, and keyboard routes may consume only their configured non-modifier key down/repeat and matching held key up when their persisted `forward_keys` setting is false; modifier and unrelated keys always forward. Existing action shortcuts migrate to forwarding. Queue dispatch away from the native thread, execute signal slots synchronously only on their manager worker, make waits shutdown-interruptible, suppress held-key repeats and overlapping action triggers, pass native repeated key-down events through for keyboard-route decrease/increase, and keep route mute one-shot.
 - Never call Tk from Discord/auth/trigger threads. Preserve Credential Manager-only secrets, explicit first consent, silent reuse/refresh, first non-current concrete output selection, restoration in `finally`, and pipe close only as restoration fallback.

@@ -42,6 +42,7 @@ class CIWorkflowTests(unittest.TestCase):
                 self.assertIn(command, self.workflow)
         self.assertIn("autostart.py", self.workflow)
         self.assertIn("app_version.py", self.workflow)
+        self.assertIn("updater.py", self.workflow)
         self.assertIn("audio_outputs.py", self.workflow)
         self.assertIn("bluetooth_audio.py", self.workflow)
         self.assertIn("localization.py", self.workflow)
@@ -52,6 +53,7 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("plugin_manager.py", self.workflow)
         self.assertIn("web_presentation.py", self.workflow)
         self.assertIn("web_ui_host.py", self.workflow)
+        self.assertIn('"updater",', PYPROJECT_PATH.read_text(encoding="utf-8"))
 
     def test_workflow_never_launches_the_app_or_hardware_tools(self) -> None:
         forbidden_commands = (
@@ -63,6 +65,8 @@ class CIWorkflowTests(unittest.TestCase):
             "set_monitor_volume(",
             "enumerate_audio_render_endpoints(",
             "reconcile_monitor_audio_outputs(",
+            "api.github.com/repos/fensoft/FenSoundSwitch/releases/latest",
+            "msiexec",
         )
         for command in forbidden_commands:
             with self.subTest(command=command):

@@ -23,6 +23,7 @@ Build named routes for the rooms and devices you use. Choose a monitor or receiv
 - Export and restore configuration archives; protect exports because MQTT credentials are included.
 - Follow the Windows language automatically or choose English, German, Spanish, French, or Italian for the command center.
 - Check the exact release tag, or `dev` for source/local builds, on the About page.
+- Accept an update notification to download and install the latest Windows release, or check from About.
 
 ## Platform Support
 
@@ -32,7 +33,7 @@ macOS uses the local pywebview Cocoa/WebKit command center as its primary UI, wi
 
 ## Get Started
 
-1. Download `FenSoundSwitch.msi` from [GitHub Releases](https://github.com/fensoft/windows-ddc/releases) and install it.
+1. Download `FenSoundSwitch.msi` from [GitHub Releases](https://github.com/fensoft/FenSoundSwitch/releases) and install it.
 2. Launch **FenSoundSwitch** from the Start Menu and open the window from the notification area if needed.
 3. Select **New route**, give it a name and informational type, select **Windows media keys** as the input, and choose an output.
 4. Configure the output, then press Volume Up or Volume Down at a safe listening level.
@@ -40,6 +41,12 @@ macOS uses the local pywebview Cocoa/WebKit command center as its primary UI, wi
 Pass `--foreground` when launching the executable, or run `python app.py --foreground` from source, to open the command center immediately instead of starting in the notification area.
 
 Windows requires the [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section), which is included with current Windows installations. On macOS, install a Python distribution that includes Tk and pywebview's Cocoa/WebKit dependencies, then run `python app.py --foreground`. Compatible monitor control requires DDC/CI enabled in the monitor menu and is currently Windows-only. Receiver control requires a supported receiver on your home network.
+
+## Updates
+
+Packaged Windows releases check [GitHub Releases](https://github.com/fensoft/FenSoundSwitch/releases) five seconds after startup and once daily while open. A newer stable release opens a confirmation notification. Accept it to download `FenSoundSwitch.msi`; declining downloads nothing. **About** also lets you check for updates and retry an installation. Source runs, `dev` builds, and macOS do not check automatically or install Windows updates.
+
+The app verifies the download's size and GitHub-provided SHA-256 digest before opening the normal Windows Installer interface. Windows may request administrator permission. After the installer opens successfully, FenSoundSwitch closes cleanly; finish the installation, then launch it again from the Start Menu. Cancelling the installer leaves the app closed. Check, download, or installer-launch failures leave the app running and preserve your configuration. Failed or cooperatively cancelled downloads are removed. Shutdown signals cancellation without waiting for the network; exiting before the worker returns can leave a temporary file for OS cleanup. An installer handed to Windows also remains in the operating system's temporary directory for installation and later OS cleanup. Releases remain unsigned.
 
 For Homebrew Python 3.12, install its separate Tk binding before creating the virtual environment:
 

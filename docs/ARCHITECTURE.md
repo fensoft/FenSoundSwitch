@@ -1,8 +1,8 @@
 # Architecture
 
-This document describes the tagged `0.1.0` release and the current repository sources. `FenSoundSwitch` uses a two-process presentation architecture: the primary process retains a withdrawn Tk coordination loop plus native Win32 controllers and hardware workers, while a local WebView2 child renders the complete HTML interface. They communicate only through an authenticated Windows named pipe; no HTTP server or TCP port exists.
+This document describes FenSoundSwitch `1.4.0`. `FenSoundSwitch` uses a two-process presentation architecture: the primary process retains a withdrawn Tk coordination loop plus native Win32 controllers and hardware workers, while a local WebView2 child renders the complete HTML interface. They communicate only through an authenticated Windows named pipe; no HTTP server or TCP port exists.
 
-There is no server-side tier. The project has no HTTP API, listening port, database, container, service, application account system, embedded broker, cron process, or telemetry client. The bundled Discord plugin is an OAuth client that can use Discord's local named pipe and HTTPS token endpoint; the optional MQTT input is a client of a user-configured broker.
+There is no server-side tier. The project has no HTTP API, listening port, database, container, service, application account system, embedded broker, cron process, or telemetry client. The bundled Discord plugin is an OAuth client that can use Discord's local named pipe and HTTPS token endpoint; the optional MQTT input is a client of a user-configured broker. Packaged Windows releases also use bounded outbound HTTPS to check official GitHub release metadata and, after user acceptance, download the installer.
 
 ## High-level flow
 
@@ -13,7 +13,7 @@ There is no server-side tier. The project has no HTTP API, listening port, datab
 5. It dynamically imports `plugin_manager` only after the mutex/Tk boundary, directly imports first-party modules from the bundled `plugins` package, then loads adjacent `external-plugins\*.py` and per-user Python files in isolation, and starts the shared passive shortcut observer. After plugin initialization, the selected renderer-only bundled overlay creates the hidden, native-no-activate overlay on the Tk thread. The bundled package is never dynamically scanned. The bundled Discord plugin opens its app-owned setup modal only when Credential Manager has no valid configuration, then validates or creates its grant on a worker.
 6. It starts a dedicated `DisplayChangeListener` hidden window for topology and live theme/system-color broadcasts. Failure leaves all monitor-volume writes disabled; the app can still enumerate and display status.
 7. It independently starts the tray controller and low-level global media-volume hook. Tk publishes immutable menu snapshots to the tray, while tray Refresh/selection/restore/exit actions enqueue Tk callbacks. Volume Down/Up repeat as deltas; Mute dispatches once per physical press only when a ready routed provider advertises confirmed native mute. Their failures remain nonfatal to the other subsystems.
-8. It schedules the recurring Tk queue poll and a one-shot initial monitor refresh after 50 ms.
+8. It schedules the recurring Tk queue poll and a one-shot initial monitor refresh after 50 ms. Numeric-version packaged Windows builds schedule an official latest-release check after five seconds and daily while open; source, `dev`, and non-Windows runs disable the updater.
 9. The refresh worker enumerates DDC wrappers and Windows monitor identities, exact-matches the saved target, and reads its volume. With no saved selection, automatic selection occurs only when exactly one verifiable monitor exists.
 10. The worker enqueues a tokened completion callback. The Tk queue poll applies the monitor list, selection, displayed volume, readiness, and status text.
 11. After a successful exact selected-monitor read, a separate coalesced worker matches Windows render endpoints to the current monitor paths, makes the selected endpoint visible, hides positively matched other-screen endpoints, and requests the fixed FenSound rename when needed.
@@ -21,7 +21,7 @@ There is no server-side tier. The project has no HTTP API, listening port, datab
 13. The readback becomes authoritative. A coalesced follow-up starts another worker and therefore performs another fresh discovery/match.
 14. Display/device notifications invalidate a thread-safe topology generation immediately, release key consumption, clear pending writes and audio reconciliation, and schedule debounced discovery with bounded retries.
 15. A 10-second watchdog fails a stalled DDC operation closed without releasing its serialization slot; when the worker eventually returns, its result is ignored and read-only rediscovery follows.
-16. Shutdown first asks the presentation child to close within a bounded interval, then stops plugin shortcut observation, rejects new plugin triggers, signals Discord's one-second wait so restoration can finish within the shared two-second plugin budget, stops display/hook/tray loops, reports missed deadlines, closes the overlay, destroys Tk, closes diagnostics, and releases the mutex.
+16. Shutdown cancels updater timers/download work, asks the presentation child to close within a bounded interval, then stops plugin shortcut observation, rejects new plugin triggers, signals Discord's one-second wait so restoration can finish within the shared two-second plugin budget, stops display/hook/tray loops, reports missed deadlines, closes the overlay, destroys Tk, closes diagnostics, and releases the mutex.
 
 ## Runtime process and thread ownership
 
@@ -78,6 +78,7 @@ The only path before the guard is the app-generated `--internal-rename-audio-end
 | --- | --- |
 | `app.py` | Enforces the single-instance boundary, then creates and runs the application. |
 | `audio_outputs.py` | Reads monitor/render endpoint identity, matches fail-closed, changes matched endpoint visibility, and implements the fixed-purpose FenSound rename helper. |
+| `updater.py` | Checks official GitHub latest-stable metadata, validates numeric versions and the exact MSI asset, downloads to a unique OS temporary directory, verifies exact size/SHA-256, and hands the installer to Windows. |
 | `bluetooth_audio.py` | Discovers physical paired Windows Bluetooth devices and resolves a configured device's active render endpoint when volume is used. |
 | `autostart.py` | Quotes source/packaged launch commands and reads/writes the named current-user Run value. |
 | `diagnostics.py` | Configures and closes the bounded per-user rotating log and provides component loggers. |
@@ -388,14 +389,14 @@ The security-relevant boundaries are local:
 9. **Trusted external plugins.** Every discovered Python file executes unsandboxed in the primary process with current-user access. Folder placement is the opt-in boundary; there is no permissions mediation.
 10. **Discord credentials and network.** Client configuration and tokens stay in current-user Credential Manager and are excluded from deliberate logs. OAuth token/refresh exchanges use Discord HTTPS; voice-setting commands use Discord's local named pipe. The app does not host a callback server.
 
-External plugins can use arbitrary network paths. The bundled Discord plugin contacts Discord's OAuth token endpoint and local RPC pipe. Dependency installation and Nuitka's `--assume-yes-for-downloads` can also contact package/toolchain servers during development or build.
+External plugins can use arbitrary network paths. The bundled Discord plugin contacts Discord's OAuth token endpoint and local RPC pipe. The updater checks `https://api.github.com/repos/fensoft/FenSoundSwitch/releases/latest` and downloads only the validated official release MSI after acceptance. Dependency installation and Nuitka's `--assume-yes-for-downloads` can also contact package/toolchain servers during development or build.
 
 ## Build and deployment architecture
 
-`pyproject.toml` uses `setuptools.build_meta` as its PEP 517 backend, with unpinned `setuptools` and `wheel` build-system requirements. It declares project version `0.1.0`, Python `>=3.10`, and explicit flat modules:
+`pyproject.toml` uses `setuptools.build_meta` as its PEP 517 backend, with unpinned `setuptools` and `wheel` build-system requirements. It declares project version `1.4.0`, Python `>=3.10,<3.11`, and explicit flat modules:
 
 ```text
-app, app_version, audio_outputs, autostart, core_audio, diagnostics, gui, localization, ddc, settings, theme, plugin_api, plugin_hotkeys, plugin_manager, native_platform, macos_platform, macos_plugin_hotkeys, windows_platform, web_presentation, web_ui_host
+app, app_version, audio_outputs, bluetooth_audio, core_audio, config_archive, default, autostart, diagnostics, gui, localization, ddc, settings, theme, updater, plugin_api, plugin_hotkeys, plugin_manager, native_platform, macos_platform, macos_plugin_hotkeys, windows_platform, web_presentation, web_ui_host
 ```
 
 Direct runtime dependencies pin `Pillow==10.1.0`, `monitorcontrol==4.2.0`, `paho-mqtt==2.1.0`, `pywebview==6.1`, and `pythonnet==3.0.5`. Pillow supersamples the strict packaged `plugins/macos_overlay/assets/*.svg` icon geometry and overlay text before Lanczos downsampling; pywebview and pythonnet host the local Windows WebView2 presentation child. Setuptools package data and the Nuitka build both include that plugin-owned asset directory. The `build` extra pins `Nuitka==4.2`. There is no lockfile; build-system requirements and transitive build dependencies are not fully pinned.
@@ -424,9 +425,17 @@ The setuptools configuration defines no package-data rule for `FenSoundSwitch.ic
 
 Ignored `fensoundswitch.egg-info\` is setuptools-generated residue, not source of truth, and can lag behind `README.md` or `pyproject.toml`. Ignored `__pycache__\` and `dist\` are also generated. None should be hand-maintained or committed.
 
+### Accepted release updates
+
+The primary GUI owns updater state only after the single-instance/Tk boundary. Eligible builds are packaged Windows executables with numeric release versions; source execution, `dev`, and macOS do not perform checks or launch the Windows installer. Background workers fetch bounded latest-release metadata from the fixed public `fensoft/FenSoundSwitch` GitHub repository and accept only a newer stable numeric version with the exact `FenSoundSwitch.msi` asset. Worker results enter Tk through `_post_to_ui()`; workers never call Tk. About exposes an explicit check and installation retry.
+
+A Tk confirmation notification is required before any package download. Declining leaves the package undownloaded. Acceptance starts a bounded download into a unique OS temporary directory and requires the GitHub asset's exact declared size and SHA-256 digest to match before Windows Installer can open. Missing metadata, an invalid version or URL, a size/hash mismatch, download failure, cancellation, or failed installer launch prevents installation and leaves the application running with unchanged settings. Failed or cooperatively cancelled downloads are removed. Shutdown cancels pending timers and signals network workers without waiting for them. If the process exits before a daemon worker returns, its temporary files remain for OS cleanup; startup does not scan user temporary directories.
+
+Only successful installer handoff requests the existing clean application shutdown, including plugin restoration and native-controller teardown. Windows Installer retains its normal visible interface and administrator-consent path. The user completes installation and opens FenSoundSwitch again from the Start Menu; cancelling the installer leaves the application closed. An MSI handed to Windows remains in OS temporary storage so installation can read it, with later cleanup left to the OS. GitHub's digest verifies download integrity; the releases remain unsigned. This updater does not publish a release or change the tag-only release-publication workflow.
+
 ## Background activity and absent subsystems
 
-Display, tray, Volume-key-hook, and plugin-hotkey message pumps are event loops, while DDC, audio reconciliation, and plugin actions use background workers. There is no periodic monitor, volume, or audio-endpoint poll. The Discord configuration window polls in-memory status every 200 ms only while that modal exists. Display notifications schedule a 500 ms debounced refresh and at most three retry timers; tray Refresh and every actual write also perform discovery. Successful selected-monitor reads schedule coalesced audio reconciliation. There are no durable events, job queues, or cron-style tasks.
+Display, tray, Volume-key-hook, and plugin-hotkey message pumps are event loops, while DDC, audio reconciliation, plugin actions, and updater network operations use background workers. There is no periodic monitor, volume, or audio-endpoint poll. The updater's Tk timers schedule its first check after five seconds and subsequent checks daily while an eligible packaged Windows release remains open. The Discord configuration window polls in-memory status every 200 ms only while that modal exists. Display notifications schedule a 500 ms debounced refresh and at most three retry timers; tray Refresh and every actual write also perform discovery. Successful selected-monitor reads schedule coalesced audio reconciliation. There are no durable events, job queues, or cron-style tasks.
 
 There is likewise no web frontend/backend split, database schema, migration command, health endpoint, readiness probe, or liveness probe. Discord OAuth and local RPC are a client integration rather than an operated backend.
 
@@ -459,11 +468,13 @@ Known failure-state caveats include:
 
 The standard-library test suite covers fail-safe Volume hotkeys, passive forwarding plugin shortcuts, deterministic discovery/failure isolation, Discord credential migration/OAuth helpers/output restoration, EDID parsing, stable identity/settings, Change speed, autostart and diagnostics, topology generations, display/theme routing, fresh-wrapper writes, fail-closed audio endpoint matching, strict helper dispatch, single-instance composition, tray snapshots, overlay placement/no-activate behavior, live accessibility/scaling, queue containment, DDC watchdogs, native lifecycle waits, CI safety, and shutdown diagnostics. It has no third-party test framework, linter, formatter, or type checker.
 
-`.github/workflows/ci.yml` runs on `windows-latest` for pushes, pull requests, and manual dispatches with Python 3.10. It installs the runtime project, runs the unit suite, compiles runtime modules, checks installed dependencies, parses both build scripts and the WiX source without executing them, checks tracked/staged whitespace, and requires a clean repository state. It neither starts `app.py` nor invokes hardware tools, live audio enumeration/mutation, monitor enumeration, installer builds, publishing, or deployment. `.github/workflows/release.yml` builds and verifies the standalone application and MSI on `master`, publishing the MSI only for pushed tags. `tests/test_ci_workflow.py` locks down both workflow contracts.
+`.github/workflows/ci.yml` runs on `windows-latest` for pushes, pull requests, and manual dispatches with Python 3.10. It installs the runtime project, runs the unit suite, compiles runtime modules including `updater.py`, checks installed dependencies, parses both build scripts and the WiX source without executing them, checks tracked/staged whitespace, and requires a clean repository state. It neither starts `app.py` nor invokes hardware tools, live audio enumeration/mutation, monitor enumeration, live updater checks/downloads/installer launch, installer builds, publishing, or deployment. `.github/workflows/release.yml` builds and verifies the standalone application and MSI on `master`, publishing the MSI only for pushed tags. `tests/test_ci_workflow.py` locks down both workflow contracts.
 
 Do not use application launch as a routine smoke test. It reads and writes user settings, starts a global hook, creates native tray state, and contacts physical monitor hardware. `build_exe.ps1` also writes ignored artifacts and may download tooling.
 
 An authorized manual Windows/hardware pass is required for changes to plugin discovery/shortcuts, Discord RPC/OAuth, monitor discovery/selection/DDC, audio endpoint policy/rename, key interception, autostart, tray lifecycle, theme/accessibility/scaling, overlay, or shutdown. Settings use temporary paths; autostart/audio/Discord tests mock registry, native, credential, and network boundaries. Pure DDC wrapper tests use fake context-manager monitor objects.
+
+Updater tests mock HTTPS, release metadata, downloads, and Windows Installer launch, with isolated temporary paths. Test accepted/declined notifications, version/platform/build gating, malformed or missing release assets, size/hash failures, shutdown cancellation, retry, and successful handoff before app shutdown. Installing an update requires separate explicit authorization; neither unit tests nor routine GUI validation may perform a real download or installer launch.
 
 ## Things to preserve
 

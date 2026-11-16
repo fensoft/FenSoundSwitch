@@ -153,6 +153,55 @@ _translations["it"].update({
     "startup.enabled": "Avvio con Windows attivato.", "startup.disabled": "Avvio con Windows disattivato.",
     "startup.enable_failed": "Impossibile attivare l'avvio con Windows: {error}", "startup.disable_failed": "Impossibile disattivare l'avvio con Windows: {error}",
 })
+_english.update({
+    "update.title": "Update available",
+    "update.prompt": "FenSoundSwitch {version} is available. Download and install it now? FenSoundSwitch will close for installation. Windows may ask for administrator permission. Open FenSoundSwitch from the Start Menu after installation.",
+    "update.checking": "Checking for updates…",
+    "update.downloading": "Downloading update…",
+    "update.current": "FenSoundSwitch is up to date.",
+    "update.failed": "The update could not be completed. Check your connection and try again from About.",
+    "update.unsupported": "Automatic updates are available in Windows release builds.",
+})
+for _locale, _values in {
+    "de": {
+        "update.title": "Update verfügbar",
+        "update.prompt": "FenSoundSwitch {version} ist verfügbar. Jetzt herunterladen und installieren? FenSoundSwitch wird zur Installation geschlossen. Windows fragt möglicherweise nach Administratorrechten. Öffnen Sie FenSoundSwitch nach der Installation über das Startmenü.",
+        "update.checking": "Suche nach Updates…",
+        "update.downloading": "Update wird heruntergeladen…",
+        "update.current": "FenSoundSwitch ist auf dem neuesten Stand.",
+        "update.failed": "Das Update konnte nicht abgeschlossen werden. Prüfen Sie Ihre Verbindung und versuchen Sie es unter Info erneut.",
+        "update.unsupported": "Automatische Updates sind in Windows-Releaseversionen verfügbar.",
+    },
+    "es": {
+        "update.title": "Actualización disponible",
+        "update.prompt": "FenSoundSwitch {version} está disponible. ¿Descargarlo e instalarlo ahora? FenSoundSwitch se cerrará para la instalación. Windows puede solicitar permisos de administrador. Abra FenSoundSwitch desde el menú Inicio después de la instalación.",
+        "update.checking": "Buscando actualizaciones…",
+        "update.downloading": "Descargando actualización…",
+        "update.current": "FenSoundSwitch está actualizado.",
+        "update.failed": "No se pudo completar la actualización. Compruebe su conexión e inténtelo de nuevo desde Acerca de.",
+        "update.unsupported": "Las actualizaciones automáticas están disponibles en las versiones publicadas para Windows.",
+    },
+    "fr": {
+        "update.title": "Mise à jour disponible",
+        "update.prompt": "FenSoundSwitch {version} est disponible. Télécharger et installer cette version maintenant ? FenSoundSwitch se fermera pour l’installation. Windows peut demander une autorisation administrateur. Ouvrez FenSoundSwitch depuis le menu Démarrer après l’installation.",
+        "update.checking": "Recherche de mises à jour…",
+        "update.downloading": "Téléchargement de la mise à jour…",
+        "update.current": "FenSoundSwitch est à jour.",
+        "update.failed": "La mise à jour n’a pas pu être effectuée. Vérifiez votre connexion et réessayez depuis À propos.",
+        "update.unsupported": "Les mises à jour automatiques sont disponibles dans les versions publiées pour Windows.",
+    },
+    "it": {
+        "update.title": "Aggiornamento disponibile",
+        "update.prompt": "FenSoundSwitch {version} è disponibile. Scaricarlo e installarlo ora? FenSoundSwitch verrà chiuso per l’installazione. Windows potrebbe richiedere l’autorizzazione di amministratore. Apri FenSoundSwitch dal menu Start dopo l’installazione.",
+        "update.checking": "Ricerca di aggiornamenti…",
+        "update.downloading": "Download dell’aggiornamento…",
+        "update.current": "FenSoundSwitch è aggiornato.",
+        "update.failed": "Impossibile completare l’aggiornamento. Verifica la connessione e riprova da Informazioni.",
+        "update.unsupported": "Gli aggiornamenti automatici sono disponibili nelle versioni pubblicate per Windows.",
+    },
+}.items():
+    _translations[_locale].update(_values)
+
 _source_translations = {
     "de": {"Not yet read": "Noch nicht gelesen", "Provider is unavailable": "Anbieter ist nicht verfügbar", "Display-change protection is unavailable.": "Schutz vor Anzeigeänderungen ist nicht verfügbar.", "Selected monitor is unavailable.": "Der ausgewählte Monitor ist nicht verfügbar.", "The selected DDC monitor is unavailable or its identity is ambiguous.": "Der ausgewählte DDC-Monitor ist nicht verfügbar oder seine Identität ist mehrdeutig.", "Muted": "Stumm", "Unmuted": "Nicht stumm", "Playback": "Wiedergabe", "Voice output": "Sprachausgabe", "Input": "Eingabe", "Microphone": "Mikrofon", "Voice": "Sprache", "Headset": "Headset"},
     "es": {"Not yet read": "Aún no leído", "Provider is unavailable": "El proveedor no está disponible", "Display-change protection is unavailable.": "La protección ante cambios de pantalla no está disponible.", "Selected monitor is unavailable.": "El monitor seleccionado no está disponible.", "The selected DDC monitor is unavailable or its identity is ambiguous.": "El monitor DDC seleccionado no está disponible o su identidad es ambigua.", "Muted": "Silenciado", "Unmuted": "Con sonido", "Playback": "Reproducción", "Voice output": "Salida de voz", "Input": "Entrada", "Microphone": "Micrófono", "Voice": "Voz", "Headset": "Auriculares con micrófono"},
