@@ -103,7 +103,7 @@ class AudioKeepalivePlugin:
     def _run(self) -> None:
         last_position = _cursor_position()
         last_move = time.monotonic() if last_position is not None else float("-inf")
-        sessions: dict[int, tuple[threading.Event, threading.Thread]] = {}
+        sessions: dict[str, tuple[threading.Event, threading.Thread]] = {}
         try:
             while not self._shutdown.is_set():
                 settings = self._settings_snapshot()
@@ -112,18 +112,35 @@ class AudioKeepalivePlugin:
                     last_position = position
                     last_move = time.monotonic()
                 active = settings["mode"] == MODE_ALWAYS or time.monotonic() - last_move <= int(settings["mouse_seconds"])
-                desired = set()
-                if active and settings["playback_output"]:
-                    desired.add(core_audio.ROLE_CONSOLE)
-                if active and settings["voice_output"]:
-                    desired.add(core_audio.ROLE_COMMUNICATIONS)
-                for role in tuple(sessions):
-                    if role not in desired:
-                        sessions.pop(role)[0].set()
-                for role in desired - sessions.keys():
+                desired: dict[str, str] = {}
+                for role, enabled, label in (
+                    (core_audio.ROLE_CONSOLE, settings["playback_output"], "Playback"),
+                    (core_audio.ROLE_COMMUNICATIONS, settings["voice_output"], "Voice output"),
+                ):
+                    if not active or not enabled:
+                        continue
+                    try:
+                        endpoint_id = core_audio.get_default_audio_endpoint_id(core_audio.E_RENDER, role)
+                    except Exception as exc:
+                        if not self._shutdown.is_set():
+                            host = self._host
+                            if host is not None:
+                                host.logger.exception("%s keep-alive endpoint lookup failed.", label)
+                                host.report_status(f"{label} keep-alive failed: {str(exc).strip() or exc.__class__.__name__}")
+                        continue
+                    if endpoint_id in desired:
+                        desired[endpoint_id] = f"{desired[endpoint_id]} and {label}"
+                    else:
+                        desired[endpoint_id] = label
+                for endpoint_id in tuple(sessions):
+                    if endpoint_id not in desired:
+                        sessions.pop(endpoint_id)[0].set()
+                for endpoint_id, label in desired.items():
+                    if endpoint_id in sessions:
+                        continue
                     stop = threading.Event()
-                    thread = threading.Thread(target=self._keep_role_active, args=(role, stop), name=f"audio-keepalive-{role}", daemon=True)
-                    sessions[role] = (stop, thread)
+                    thread = threading.Thread(target=self._keep_endpoint_active, args=(endpoint_id, label, stop), name="audio-keepalive-endpoint", daemon=True)
+                    sessions[endpoint_id] = (stop, thread)
                     thread.start()
                 self._changed.wait(_POLL_SECONDS)
                 self._changed.clear()
@@ -134,11 +151,21 @@ class AudioKeepalivePlugin:
     def _keep_role_active(self, role: int, stop: threading.Event) -> None:
         try:
             endpoint_id = core_audio.get_default_audio_endpoint_id(core_audio.E_RENDER, role)
-            core_audio.keep_endpoint_active(endpoint_id, stop)
         except Exception as exc:
             host = self._host
             if host is not None and not self._shutdown.is_set():
                 label = "Playback" if role == core_audio.ROLE_CONSOLE else "Voice output"
+                host.logger.exception("%s keep-alive worker failed.", label)
+                host.report_status(f"{label} keep-alive failed: {str(exc).strip() or exc.__class__.__name__}")
+            return
+        self._keep_endpoint_active(endpoint_id, "Playback" if role == core_audio.ROLE_CONSOLE else "Voice output", stop)
+
+    def _keep_endpoint_active(self, endpoint_id: str, label: str, stop: threading.Event) -> None:
+        try:
+            core_audio.keep_endpoint_active(endpoint_id, stop, display_name=f"FenSoundSwitch ({label})")
+        except Exception as exc:
+            host = self._host
+            if host is not None and not self._shutdown.is_set():
                 # Keep endpoint identifiers out of diagnostics, but retain the
                 # traceback so native ctypes failures can be diagnosed.
                 host.logger.exception("%s keep-alive worker failed.", label)

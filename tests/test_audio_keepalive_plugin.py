@@ -89,7 +89,7 @@ class AudioKeepalivePluginTests(unittest.TestCase):
             plugin._keep_role_active(core_audio.ROLE_COMMUNICATIONS, stop)
 
         default_id.assert_called_once_with(core_audio.E_RENDER, core_audio.ROLE_COMMUNICATIONS)
-        keep_active.assert_called_once_with("voice-id", stop)
+        keep_active.assert_called_once_with("voice-id", stop, display_name="FenSoundSwitch (Voice output)")
 
     def test_role_worker_reports_a_nonfatal_failure(self) -> None:
         plugin = AudioKeepalivePlugin()
@@ -108,6 +108,14 @@ class AudioKeepalivePluginTests(unittest.TestCase):
 
         report_status.assert_called_once_with("Playback keep-alive failed: unavailable")
         logger.exception.assert_called_once_with("%s keep-alive worker failed.", "Playback")
+
+    def test_shared_default_endpoint_uses_one_keep_alive_stream(self) -> None:
+        plugin = AudioKeepalivePlugin()
+        stop = threading.Event()
+        with patch("plugins.audio_keepalive_plugin.core_audio.keep_endpoint_active") as keep_active:
+            plugin._keep_endpoint_active("same-id", "Playback and Voice output", stop)
+
+        keep_active.assert_called_once_with("same-id", stop, display_name="FenSoundSwitch (Playback and Voice output)")
 
 
 if __name__ == "__main__":

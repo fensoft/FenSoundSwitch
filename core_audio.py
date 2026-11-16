@@ -49,6 +49,7 @@ IID_IMMDEVICE_ENUMERATOR = GUID.parse("A95664D2-9614-4F35-A746-DE8DB63617E6")
 IID_IAUDIO_ENDPOINT_VOLUME = GUID.parse("5CDF2C82-841E-4546-9722-0CF74078229A")
 IID_IAUDIO_CLIENT = GUID.parse("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2")
 IID_IAUDIO_RENDER_CLIENT = GUID.parse("F294ACFC-3146-4483-A7BF-ADDCA7C260E2")
+IID_IAUDIO_SESSION_CONTROL = GUID.parse("F4B1A599-7266-4319-A8CA-E70ACB11E8CD")
 IID_IAUDIO_SESSION_MANAGER2 = GUID.parse("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F")
 IID_IAUDIO_SESSION_CONTROL2 = GUID.parse("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D")
 IID_ISIMPLE_AUDIO_VOLUME = GUID.parse("87CE5498-68D6-44E5-9215-6DA47EF883D8")
@@ -80,6 +81,7 @@ IAUDIO_CLIENT_GET_MIX_FORMAT = 8
 IAUDIO_CLIENT_START = 10
 IAUDIO_CLIENT_STOP = 11
 IAUDIO_CLIENT_GET_SERVICE = 14
+IAUDIO_SESSION_CONTROL_SET_DISPLAY_NAME = 5
 IAUDIO_RENDER_CLIENT_GET_BUFFER = 3
 IAUDIO_RENDER_CLIENT_RELEASE_BUFFER = 4
 IAUDIO_SESSION_MANAGER_GET_ENUMERATOR = 5
@@ -589,7 +591,7 @@ def toggle_application_session_mute(endpoint_id: str, executable_path: str) -> b
     return bool(_with_application_session(endpoint_id, executable_path, toggle))
 
 
-def keep_endpoint_active(endpoint_id: str, stop_event: object, poll_seconds: float = 0.1) -> None:
+def keep_endpoint_active(endpoint_id: str, stop_event: object, poll_seconds: float = 0.1, display_name: str | None = None) -> None:
     """Render silence to one endpoint until ``stop_event`` is signalled.
 
     This opens a shared WASAPI stream on the supplied concrete endpoint. Callers
@@ -604,6 +606,7 @@ def keep_endpoint_active(endpoint_id: str, stop_event: object, poll_seconds: flo
     with _Apartment():
         device = _device_for_id(endpoint_id)
         client = None
+        session_control = None
         renderer = ctypes.c_void_p()
         mix_format = ctypes.c_void_p()
         started = False
@@ -643,6 +646,35 @@ def keep_endpoint_active(endpoint_id: str, stop_event: object, poll_seconds: flo
             )
             _check(int(_method(client, IAUDIO_CLIENT_START, ctypes.c_long, [])(client)), "IAudioClient.Start")
             started = True
+            if display_name:
+                try:
+                    session_control = ctypes.c_void_p()
+                    _check(
+                        int(
+                            _method(
+                                client,
+                                IAUDIO_CLIENT_GET_SERVICE,
+                                ctypes.c_long,
+                                [ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)],
+                            )(client, ctypes.byref(IID_IAUDIO_SESSION_CONTROL), ctypes.byref(session_control))
+                        ),
+                        "IAudioClient.GetService(IAudioSessionControl)",
+                    )
+                    _check(
+                        int(
+                            _method(
+                                session_control,
+                                IAUDIO_SESSION_CONTROL_SET_DISPLAY_NAME,
+                                ctypes.c_long,
+                                [wintypes.LPCWSTR, ctypes.POINTER(GUID)],
+                            )(session_control, ctypes.c_wchar_p(display_name), None)
+                        ),
+                        "IAudioSessionControl.SetDisplayName",
+                    )
+                except Exception:
+                    # Naming is cosmetic; keep-alive must remain available if
+                    # a Windows audio driver rejects the session label.
+                    pass
             while not wait(float(poll_seconds)):
                 padding = wintypes.UINT()
                 _check(
@@ -670,5 +702,6 @@ def keep_endpoint_active(endpoint_id: str, stop_event: object, poll_seconds: flo
             if mix_format:
                 ole32.CoTaskMemFree(mix_format)
             _release(renderer)
+            _release(session_control)
             _release(client)
             _release(device)
